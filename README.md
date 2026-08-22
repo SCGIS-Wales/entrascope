@@ -63,6 +63,31 @@ For unattended use, place client credentials at
 `TenantID`. The file must be mode 0600 inside a directory of mode 0700, and
 entrascope refuses to run otherwise.
 
+## Commands
+
+```bash
+entrascope doctor                                  # why did that not work
+entrascope discover apps --expiring                # credentials about to expire
+entrascope discover apps --type single-page-application
+entrascope discover sps --type managed-identity
+entrascope logs audit                              # changes to applications
+entrascope logs signins --kind service-principal --failures-only
+entrascope logs graph-activity --workspace <workspace-id>
+entrascope errors explain AADSTS7000215
+entrascope errors search consent
+```
+
+`--output json` and `--output yaml` are available on every command, and are
+quiet: progress lines are suppressed so the output can be piped straight into
+another tool. `errors explain` and `errors list` need no credentials at all,
+because the mapping is configuration.
+
+Sign in and audit logs can be read two ways. `--route graph` uses the Microsoft
+Graph reporting API and works on any tenant with the right permission.
+`--route monitor` with `--workspace` uses Log Analytics, which needs a
+diagnostic setting and gives longer retention. Microsoft Graph activity exists
+only through Azure Monitor.
+
 ## Corporate networks
 
 entrascope honours a forward web proxy from `HTTPS_PROXY`, `HTTP_PROXY`,

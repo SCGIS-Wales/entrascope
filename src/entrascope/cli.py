@@ -6,7 +6,7 @@ free function in another module and renders through :mod:`entrascope.render`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -15,8 +15,20 @@ import click
 
 from entrascope import __version__
 from entrascope.config import Config, load_config
+from entrascope.credentials import resolve_auth
+from entrascope.discovery import discover_applications, discover_service_principals
 from entrascope.doctor import run_checks
+from entrascope.errors import explain, known_codes, search
+from entrascope.graph import graph_token_provider
+from entrascope.http import Session, build_session
 from entrascope.logger import bind_context, configure_logging, new_correlation_id
+from entrascope.logs import (
+    query_audit_graph,
+    query_audit_monitor,
+    query_graph_activity,
+    query_sign_ins_graph,
+    query_sign_ins_monitor,
+)
 from entrascope.models import (
     AUTH_SOURCE_ORDER,
     ApiCallError,
@@ -24,8 +36,10 @@ from entrascope.models import (
     ConfigError,
     CredentialError,
 )
+from entrascope.monitor import build_logs_client
 from entrascope.render import (
     EXIT_API,
+    EXIT_CHECKS_FAILED,
     EXIT_CONFIG,
     EXIT_CREDENTIALS,
     OUTPUT_FORMATS,
@@ -33,6 +47,7 @@ from entrascope.render import (
     emit,
     emit_error,
     exit_code_for_checks,
+    render,
     render_checks,
 )
 
@@ -40,12 +55,25 @@ from entrascope.render import (
 SETTINGS = "settings"
 
 
+def log_level(output: str, verbose: bool) -> str | None:
+    """Return the log level for one invocation.
+
+    A machine readable format is quiet unless asked otherwise, so that a caller
+    piping the output is not reading progress lines it did not ask for.
+    """
+    if verbose:
+        return "DEBUG"
+    if output in ("json", "yaml"):
+        return "WARNING"
+    return None
+
+
 def build_settings(
     config_dir: Path | None, auth: str | None, output: str, verbose: bool
 ) -> dict[str, Any]:
     """Load configuration and prepare the shared settings for every command."""
     config = load_config(config_dir)
-    configure_logging(config, surface="cli", level="DEBUG" if verbose else None)
+    configure_logging(config, surface="cli", level=log_level(output, verbose))
     new_correlation_id()
     if auth:
         bind_context(auth_source=auth)
@@ -57,6 +85,84 @@ def settings_of(context: click.Context) -> dict[str, Any]:
     values = context.obj or {}
     result = values.get(SETTINGS)
     return dict(result) if isinstance(result, dict) else {}
+
+
+#: Columns shown in a table. The full projection is always in the JSON form.
+APPLICATION_COLUMNS = (
+    "display_name",
+    "app_id",
+    "application_type",
+    "audience_label",
+    "credentials",
+    "owners",
+)
+SERVICE_PRINCIPAL_COLUMNS = (
+    "display_name",
+    "app_id",
+    "application_type",
+    "account_enabled",
+    "app_role_assignment_required",
+    "owners",
+)
+AUDIT_COLUMNS = ("timestamp", "activity", "result", "initiated_by", "target")
+SIGN_IN_COLUMNS = (
+    "timestamp",
+    "identity",
+    "app_display_name",
+    "client_app",
+    "error_code",
+    "failure_reason",
+)
+GRAPH_ACTIVITY_COLUMNS = (
+    "timestamp",
+    "app_id",
+    "method",
+    "status",
+    "uri",
+    "duration_ms",
+)
+EXPLANATION_COLUMNS = ("code", "meaning", "likely_cause", "remediation", "docs_url")
+
+#: Where a log query is answered from.
+ROUTES = ("graph", "monitor")
+
+
+def authenticated_session(settings: Mapping[str, Any]) -> tuple[Config, Session]:
+    """Resolve an identity and build a session that carries its token."""
+    config: Config = settings["config"]
+    context, credential = resolve_auth(config, settings.get("auth"))
+    bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
+    return config, build_session(config, graph_token_provider(config, credential))
+
+
+def logs_client(settings: Mapping[str, Any]) -> tuple[Config, Any]:
+    """Resolve an identity and build the Log Analytics client."""
+    config: Config = settings["config"]
+    _, credential = resolve_auth(config, settings.get("auth"))
+    return config, build_logs_client(credential, config)
+
+
+def require_workspace(workspace: str | None) -> str:
+    """Return the workspace identifier, or explain that one is needed."""
+    if workspace:
+        return workspace
+    raise ConfigError(
+        "The Azure Monitor route needs a Log Analytics workspace. Pass "
+        "--workspace with the workspace id, or use --route graph where the "
+        "source supports it."
+    )
+
+
+def show(
+    rows: Sequence[Any],
+    settings: Mapping[str, Any],
+    title: str,
+    columns: Sequence[str],
+) -> None:
+    """Render rows in the requested format and write them out."""
+    config: Config = settings["config"]
+    output: OutputFormat = settings.get("output", "table")
+    emit(render(rows, config, output, title=title, columns=columns))
 
 
 def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]:
@@ -150,14 +256,310 @@ def discover() -> None:
     """Enumerate application registrations and enterprise applications."""
 
 
+@discover.command("apps")
+@click.option(
+    "--filter", "filter_expression", default=None, help="OData filter to apply."
+)
+@click.option(
+    "--type",
+    "application_type",
+    default=None,
+    help="Show only one application type.",
+)
+@click.option(
+    "--expiring",
+    is_flag=True,
+    help="Show only applications with a credential expiring or already expired.",
+)
+@click.option(
+    "--no-details",
+    is_flag=True,
+    help="Skip owners and federated credentials, which need one call per application.",
+)
+@click.pass_context
+@handled
+def discover_apps(
+    context: click.Context,
+    filter_expression: str | None,
+    application_type: str | None,
+    expiring: bool,
+    no_details: bool,
+) -> None:
+    """List application registrations with the attributes that explain a failure."""
+    settings = settings_of(context)
+    config, session = authenticated_session(settings)
+    try:
+        rows = discover_applications(
+            session,
+            config,
+            None if no_details else session.auth,
+            filter_expression=filter_expression,
+            with_details=not no_details,
+        )
+    finally:
+        session.close()
+    if application_type:
+        rows = tuple(row for row in rows if row.application_type == application_type)
+    if expiring:
+        rows = tuple(row for row in rows if row.expiring())
+    show(rows, settings, "Application registrations", APPLICATION_COLUMNS)
+
+
+@discover.command("sps")
+@click.option(
+    "--filter", "filter_expression", default=None, help="OData filter to apply."
+)
+@click.option(
+    "--type",
+    "application_type",
+    default=None,
+    help="Show only one application type.",
+)
+@click.option(
+    "--no-details",
+    is_flag=True,
+    help="Skip owners and role assignments, which need one call per application.",
+)
+@click.pass_context
+@handled
+def discover_service_principals_command(
+    context: click.Context,
+    filter_expression: str | None,
+    application_type: str | None,
+    no_details: bool,
+) -> None:
+    """List enterprise applications, managed identities and SAML applications."""
+    settings = settings_of(context)
+    config, session = authenticated_session(settings)
+    try:
+        rows = discover_service_principals(
+            session,
+            config,
+            None if no_details else session.auth,
+            filter_expression=filter_expression,
+            with_details=not no_details,
+        )
+    finally:
+        session.close()
+    if application_type:
+        rows = tuple(row for row in rows if row.application_type == application_type)
+    show(rows, settings, "Enterprise applications", SERVICE_PRINCIPAL_COLUMNS)
+
+
 @cli.group()
 def logs() -> None:
-    """Interrogate Entra and Azure Monitor logs."""
+    """Interrogate Entra and Azure Monitor logs.
+
+    Entra directory operations do not appear in the Azure subscription activity
+    log. They are in the Entra audit logs, which is what these commands read.
+    """
+
+
+@logs.command("audit")
+@click.option("--route", type=click.Choice(ROUTES), default="graph", show_default=True)
+@click.option(
+    "--workspace",
+    default=None,
+    help="Log Analytics workspace id, for the monitor route.",
+)
+@click.option("--hours", type=int, default=None, help="How far back to look.")
+@click.option("--limit", type=int, default=None, help="Maximum rows to return.")
+@click.option(
+    "--target", default="", help="Show only events touching this application."
+)
+@click.pass_context
+@handled
+def logs_audit(
+    context: click.Context,
+    route: str,
+    workspace: str | None,
+    hours: int | None,
+    limit: int | None,
+    target: str,
+) -> None:
+    """Read directory changes to applications, the ApplicationManagement category."""
+    settings = settings_of(context)
+    if route == "monitor":
+        config, client = logs_client(settings)
+        rows = query_audit_monitor(
+            client,
+            config,
+            require_workspace(workspace),
+            target=target,
+            lookback_hours=hours,
+            row_limit=limit,
+        )
+    else:
+        config, session = authenticated_session(settings)
+        try:
+            rows = query_audit_graph(session, config, top=limit)
+        finally:
+            session.close()
+        if target:
+            rows = tuple(row for row in rows if target.lower() in row.target.lower())
+    show(rows, settings, "Application management audit events", AUDIT_COLUMNS)
+
+
+@logs.command("signins")
+@click.option("--kind", default="interactive", help="Which sign in kind to read.")
+@click.option("--route", type=click.Choice(ROUTES), default="graph", show_default=True)
+@click.option(
+    "--workspace",
+    default=None,
+    help="Log Analytics workspace id, for the monitor route.",
+)
+@click.option(
+    "--app", "app_id", default="", help="Show only sign ins for this application id."
+)
+@click.option("--failures-only", is_flag=True, help="Show only sign ins that failed.")
+@click.option("--hours", type=int, default=None, help="How far back to look.")
+@click.option("--limit", type=int, default=None, help="Maximum rows to return.")
+@click.pass_context
+@handled
+def logs_signins(
+    context: click.Context,
+    kind: str,
+    route: str,
+    workspace: str | None,
+    app_id: str,
+    failures_only: bool,
+    hours: int | None,
+    limit: int | None,
+) -> None:
+    """Read sign ins of one kind, interactive by default.
+
+    Service principal sign ins are where client credentials failures appear,
+    which is what most application authentication problems look like.
+    """
+    settings = settings_of(context)
+    if route == "monitor":
+        config, client = logs_client(settings)
+        rows = query_sign_ins_monitor(
+            client,
+            config,
+            require_workspace(workspace),
+            kind=kind,
+            app_id=app_id,
+            lookback_hours=hours,
+            row_limit=limit,
+        )
+        if failures_only:
+            rows = tuple(row for row in rows if row.failed())
+    else:
+        config, session = authenticated_session(settings)
+        try:
+            rows = query_sign_ins_graph(
+                session,
+                config,
+                kind=kind,
+                app_id=app_id or None,
+                failures_only=failures_only,
+                top=limit,
+            )
+        finally:
+            session.close()
+    show(rows, settings, f"{kind} sign ins", SIGN_IN_COLUMNS)
+
+
+@logs.command("graph-activity")
+@click.option("--workspace", default=None, help="Log Analytics workspace id.")
+@click.option(
+    "--app",
+    "app_id",
+    default="",
+    help="Show only requests from this application id.",
+)
+@click.option("--hours", type=int, default=None, help="How far back to look.")
+@click.option("--limit", type=int, default=None, help="Maximum rows to return.")
+@click.pass_context
+@handled
+def logs_graph_activity(
+    context: click.Context,
+    workspace: str | None,
+    app_id: str,
+    hours: int | None,
+    limit: int | None,
+) -> None:
+    """Read Microsoft Graph requests made against the tenant.
+
+    This source exists only through Azure Monitor, and needs the
+    MicrosoftGraphActivityLogs diagnostic category and a P1 or P2 licence.
+    """
+    settings = settings_of(context)
+    config, client = logs_client(settings)
+    rows = query_graph_activity(
+        client,
+        config,
+        require_workspace(workspace),
+        app_id=app_id,
+        lookback_hours=hours,
+        row_limit=limit,
+    )
+    show(rows, settings, "Microsoft Graph activity", GRAPH_ACTIVITY_COLUMNS)
+
+
+@logs.command("kinds")
+@click.pass_context
+@handled
+def logs_kinds(context: click.Context) -> None:
+    """List the sign in kinds that can be read."""
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    rows = [
+        {
+            "kind": name,
+            "diagnostic_category": entry.diagnostic_category,
+            "graph_filter": entry.graph_filter,
+        }
+        for name, entry in sorted(config.tables.sign_in_kinds.items())
+    ]
+    columns = ("kind", "diagnostic_category", "graph_filter")
+    show(rows, settings, "Sign in kinds", columns)
 
 
 @cli.group()
 def errors() -> None:
     """Explain authentication and authorisation error codes."""
+
+
+@errors.command("explain")
+@click.argument("code")
+@click.pass_context
+@handled
+def errors_explain(context: click.Context, code: str) -> None:
+    """Explain one error code, or a message carrying one.
+
+    Needs no credentials, because the mapping is configuration.
+    """
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    explanation = explain(code, config)
+    show([explanation], settings, f"Error {explanation.code}", EXPLANATION_COLUMNS)
+    if not explanation.known:
+        raise SystemExit(EXIT_CHECKS_FAILED)
+
+
+@errors.command("list")
+@click.pass_context
+@handled
+def errors_list(context: click.Context) -> None:
+    """List every error code entrascope can explain."""
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    rows = [explain(code, config) for code in known_codes(config)]
+    show(rows, settings, "Known error codes", ("code", "meaning"))
+
+
+@errors.command("search")
+@click.argument("term")
+@click.pass_context
+@handled
+def errors_search(context: click.Context, term: str) -> None:
+    """Search the error codes by code fragment or by meaning."""
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    rows = list(search(term, config))
+    show(rows, settings, f"Codes matching {term}", ("code", "meaning"))
 
 
 def main() -> None:
