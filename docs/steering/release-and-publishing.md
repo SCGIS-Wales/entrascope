@@ -28,9 +28,10 @@ Jobs, in the phase each arrives:
 | install-test | install the wheel in a clean environment and run the console script | 5 |
 | mcp-smoke | start the stdio server and list the tools | 7 |
 | docker | buildx and push to the GitHub container registry | 8 |
-| auto-tag | semver patch bump, commit, tag, push | 9 |
+| auto-tag | semver patch bump, commit, tag, push, build | 9 |
 | publish-testpypi | Trusted Publishing dry run | 9 |
 | publish-pypi | Trusted Publishing with a retry | 9 |
+| release | a GitHub release from the same artefact | 9 |
 
 Everything up to and including build is a required check on a pull request.
 
@@ -43,9 +44,25 @@ commits with `[skip ci]`, tags, pushes, and exports the version as a job output
 so the publish jobs in the same run consume it. No second workflow run is
 triggered by the tag push.
 
-The release jobs are gated on the repository variable `ENABLE_RELEASE`, which
-stays unset until the project is ready to publish. Ten phase merges must not
-produce ten releases.
+The release jobs are gated on two repository variables, so that a merge to main
+publishes nothing until you decide otherwise:
+
+| Variable | Set it to | Effect |
+| --- | --- | --- |
+| `ENABLE_RELEASE` | `true` | auto-tag, publish to PyPI and create the release |
+| `ENABLE_TESTPYPI` | `true` | also run the TestPyPI dry run first |
+
+`ENABLE_TESTPYPI` is separate because TestPyPI needs its own pending publisher.
+Without one that job would fail and block the real publish, so it is skipped
+rather than assumed. Set both variables with:
+
+```bash
+gh variable set ENABLE_RELEASE --body true --repo SCGIS-Wales/entrascope
+gh variable set ENABLE_TESTPYPI --body true --repo SCGIS-Wales/entrascope
+```
+
+The first release takes the version already in `pyproject.toml`, so the first
+tag is `v0.1.0`. Every merge after that bumps the patch version.
 
 ## Trusted Publishing
 

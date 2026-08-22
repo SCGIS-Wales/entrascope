@@ -304,3 +304,195 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+
+  # Everything below runs only on main, and only once the repository variable
+  # ENABLE_RELEASE is set. Ten phase merges must not produce ten releases of a
+  # package that is not finished.
+  auto-tag:
+    name: Auto-tag release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_RELEASE == 'true'
+    needs: [ lint, typecheck, guards, test, security, build, install-test, mcp-smoke ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      created: ${{ steps.create_tag.outputs.created }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Determine the next version
+        id: version
+        run: |
+          LATEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST" ]; then
+            NEXT=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          else
+            CURRENT="${LATEST#v}"
+            MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT" | cut -d. -f2)
+            PATCH=$(echo "$CURRENT" | cut -d. -f3 | cut -d- -f1)
+            NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Next version ${NEXT}"
+
+      - name: Check whether the tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump the version, commit and tag
+        id: create_tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" src/entrascope/__init__.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "version already correct, tagging the existing commit"
+          else
+            git add pyproject.toml src/entrascope/__init__.py
+            git commit -m "chore: bump version to ${VERSION} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build the distribution for this tag
+        if: steps.create_tag.outputs.created == 'true'
+        run: |
+          pip install build
+          python -m build
+
+      - name: Upload the release distribution
+        if: steps.create_tag.outputs.created == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  # The TestPyPI dry run needs its own pending publisher on test.pypi.org. It is
+  # gated separately so the real publish is not blocked while that is absent.
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: needs.auto-tag.outputs.created == 'true' && vars.ENABLE_TESTPYPI == 'true'
+    needs: auto-tag
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/entrascope/
+    steps:
+      - name: Download the release distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: always() && needs.auto-tag.outputs.created == 'true' && !contains(needs.*.result, 'failure')
+    needs: [ auto-tag, publish-testpypi ]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/entrascope/
+    steps:
+      - name: Download the release distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: List what will be published
+        run: ls -la dist/
+
+      # Publishing occasionally fails on a transient upstream error, most often
+      # a 5xx from the Sigstore transparency log while generating attestations.
+      # Three attempts with backoff, every one using the trusted publisher and
+      # skip-existing so a partial upload is skipped rather than failing.
+      - name: Publish, attempt 1
+        id: publish1
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Back off before attempt 2
+        if: steps.publish1.outcome == 'failure'
+        run: echo "Attempt 1 failed, likely transient. Waiting 30 seconds." && sleep 30
+
+      - name: Publish, attempt 2
+        id: publish2
+        if: steps.publish1.outcome == 'failure'
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Back off before the final attempt
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        run: echo "Attempt 2 failed. Waiting 60 seconds before the last try." && sleep 60
+
+      # Not continue-on-error: a persistent failure here is a real problem and
+      # must fail the job.
+      - name: Publish, attempt 3, final
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  release:
+    name: GitHub release
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, publish-pypi ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download the release distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.auto-tag.outputs.tag }}" dist/* \
+            --title "${{ needs.auto-tag.outputs.tag }}" \
+            --generate-notes
