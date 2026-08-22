@@ -129,6 +129,31 @@ errors:
       the object.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/admin-units-restricted-management
 
+  Authentication_RequestFromNonPremiumTenantOrB2CTenant:
+    meaning: >
+      The sign in log endpoint refused the request because the tenant has no
+      Entra ID premium licence.
+    likely_cause: >
+      Reading sign in logs, whether through Microsoft Graph or through a Log
+      Analytics workspace, requires Entra ID P1 or P2. Audit logs are readable
+      on any tier.
+    remediation: >
+      Read the audit logs instead, which need no premium licence, or assign an
+      Entra ID P1 or P2 licence to the tenant. Run entrascope doctor to see the
+      tier the tenant reports.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-sign-ins
+
+  Request_UnsupportedQuery:
+    meaning: >
+      The endpoint refused a query parameter, most often a custom page size.
+    likely_cause: >
+      A few Microsoft Graph collections reject $top. entrascope names those in
+      configuration and omits the parameter for them.
+    remediation: >
+      Add the endpoint to paging.no_page_size in config/retry.yaml so that no
+      page size is sent to it.
+    docs_url: https://learn.microsoft.com/en-us/graph/query-parameters
+
   Missing_Admin_Consent:
     meaning: An application permission was added but never consented.
     likely_cause: >

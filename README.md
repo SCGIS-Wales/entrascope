@@ -105,6 +105,26 @@ The tool surface mirrors the commands: `doctor`, `discover_applications`,
 corresponding `--output json` payload are the same bytes, which a test
 enforces.
 
+### As a remote server
+
+```bash
+entrascope serve http --host 0.0.0.0 --port 8000
+```
+
+An OAuth 2.1 protected resource validating Entra issued bearer tokens.
+Terminate TLS at a reverse proxy and set `ENTRASCOPE_BASE_URL` to the canonical
+https URI, which appears in the protected resource metadata and which clients
+bind their tokens to. Set `ENTRASCOPE_TENANT_ID` and `ENTRASCOPE_CLIENT_ID` for
+the application registration this server presents.
+
+The audience must equal the application id URI, a token issued for anything
+else is refused, and the caller's token is never forwarded to Microsoft Graph:
+Graph is called with the server's own credentials, because the data is tenant
+scoped rather than caller scoped.
+
+A container image is built from the `Dockerfile`, running as a non root user on
+`python:3.14-slim`.
+
 ## Corporate networks
 
 entrascope honours a forward web proxy from `HTTPS_PROXY`, `HTTP_PROXY`,

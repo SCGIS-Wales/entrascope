@@ -8,7 +8,7 @@ network, so both are tested against fixtures alone.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -385,7 +385,7 @@ def project_service_principal(
 def discover_applications(
     session: Session,
     config: Config,
-    token: object = None,
+    token: Callable[[], str] | None = None,
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
@@ -401,7 +401,7 @@ def discover_applications(
     object_ids = [text(item.get("id")) for item in payloads]
     owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
     federated: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
-    if with_details and object_ids and callable(token):
+    if with_details and object_ids and token is not None:
         owners = fan_out_objects(object_ids, config, "application_owners", token)
         federated = fan_out_objects(
             object_ids, config, "federated_identity_credentials", token
@@ -420,7 +420,7 @@ def discover_applications(
 def discover_service_principals(
     session: Session,
     config: Config,
-    token: object = None,
+    token: Callable[[], str] | None = None,
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
@@ -432,7 +432,7 @@ def discover_service_principals(
     object_ids = [text(item.get("id")) for item in payloads]
     owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
     assignments: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
-    if with_details and object_ids and callable(token):
+    if with_details and object_ids and token is not None:
         owners = fan_out_objects(object_ids, config, "service_principal_owners", token)
         assignments = fan_out_objects(object_ids, config, "app_role_assignments", token)
     log.info("discovered %s enterprise applications", len(payloads))

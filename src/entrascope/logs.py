@@ -18,7 +18,7 @@ from typing import Any
 
 from azure.monitor.query import LogsQueryClient
 
-from entrascope.config import Config
+from entrascope.config import Config, SignInKind
 from entrascope.discovery import pluck, text
 from entrascope.graph import get_collection
 from entrascope.http import Session
@@ -205,15 +205,15 @@ def query_audit_graph(
         config,
         "directory_audits",
         filter_expression=audit_filter(config, category),
-        top=top or config.tables.defaults.row_limit,
+        limit=top or config.tables.defaults.row_limit,
         order_by="activityDateTime desc",
     )
     log.info("read %s audit events through Graph", len(payloads))
     return tuple(project_audit_event(payload, config) for payload in payloads)
 
 
-def sign_in_filter(config: Config, kind: str, app_id: str | None = None) -> str:
-    """Return the OData filter for one sign in kind, optionally for one application."""
+def sign_in_entry(config: Config, kind: str) -> SignInKind:
+    """Return the configuration for one sign in kind, or explain what exists."""
     entry = config.tables.sign_in_kinds.get(kind)
     if entry is None:
         raise ApiCallError(
@@ -225,6 +225,17 @@ def sign_in_filter(config: Config, kind: str, app_id: str | None = None) -> str:
                 source="config",
             )
         )
+    return entry
+
+
+def sign_in_filter(config: Config, kind: str, app_id: str | None = None) -> str:
+    """Return the OData filter for one sign in kind, optionally for one application.
+
+    Only the beta endpoint carries signInEventTypes. The version 1.0 endpoint
+    returns interactive sign ins and rejects a filter naming that property, so
+    the interactive kind sends no event type clause.
+    """
+    entry = sign_in_entry(config, kind)
     clauses = [entry.graph_filter]
     if app_id:
         clauses.append(f"appId eq '{app_id}'")
@@ -241,12 +252,14 @@ def query_sign_ins_graph(
     top: int | None = None,
 ) -> tuple[SignInEvent, ...]:
     """Read sign ins of one kind through Microsoft Graph."""
+    entry = sign_in_entry(config, kind)
     payloads = get_collection(
         session,
         config,
         "sign_ins",
         filter_expression=sign_in_filter(config, kind, app_id),
-        top=top or config.tables.defaults.row_limit,
+        limit=top or config.tables.defaults.row_limit,
+        beta=entry.graph_beta,
     )
     events = tuple(project_sign_in_event(payload, config) for payload in payloads)
     log.info("read %s %s sign ins through Graph", len(events), kind)
@@ -267,7 +280,7 @@ def query_provisioning_graph(
         session,
         config,
         "provisioning",
-        top=top or config.tables.defaults.row_limit,
+        limit=top or config.tables.defaults.row_limit,
     )
 
 
@@ -318,17 +331,7 @@ def query_sign_ins_monitor(
     row_limit: int | None = None,
 ) -> tuple[SignInEvent, ...]:
     """Read sign ins of one kind through Azure Monitor."""
-    entry = config.tables.sign_in_kinds.get(kind)
-    if entry is None:
-        raise ApiCallError(
-            ApiError(
-                status=0,
-                code="UnknownSignInKind",
-                message=f"No sign in kind named {kind}. Known kinds: "
-                f"{list(sign_in_kinds(config))}.",
-                source="config",
-            )
-        )
+    entry = sign_in_entry(config, kind)
     parameters = query_parameters(
         config, lookback_hours=lookback_hours, row_limit=row_limit
     )

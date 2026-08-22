@@ -209,3 +209,50 @@ def test_fan_out_objects_skips_a_failing_object(config: Config) -> None:
     )
     assert results[0][0]["id"] == "owner"
     assert results[1] == ()
+
+
+@responses.activate
+def test_a_limit_caps_the_rows_not_the_page_size(config: Config) -> None:
+    """A caller asking for three rows gets three rows, not three per page.
+
+    Graph treats $top as a page size and keeps paging beyond it, so the limit
+    has to be applied here.
+    """
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={
+            "value": [{"id": str(index)} for index in range(5)],
+            NEXT_LINK: f"{ROOT}/applications?$skiptoken=x",
+        },
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={"value": [{"id": str(index)} for index in range(5, 10)]},
+        status=200,
+    )
+    rows = get_collection(build_session(config), config, "applications", limit=3)
+    assert [row["id"] for row in rows] == ["0", "1", "2"]
+
+
+@responses.activate
+def test_no_limit_returns_everything(config: Config) -> None:
+    """Without a limit every page is returned."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={"value": [{"id": "1"}, {"id": "2"}]},
+        status=200,
+    )
+    assert len(get_collection(build_session(config), config, "applications")) == 2
+
+
+def test_page_size_is_omitted_where_graph_refuses_it(config: Config) -> None:
+    """Some collections reject a custom page size, and those are configured."""
+    from entrascope.graph import accepts_page_size
+
+    assert not accepts_page_size(config, "subscribed_skus")
+    assert accepts_page_size(config, "applications")
+    assert "$top" not in collection_params(config, page_size=False)

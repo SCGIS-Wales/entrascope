@@ -1,0 +1,56 @@
+# The remote MCP server. Read by entrascope.mcp_http.
+# See docs/steering/mcp-server.md.
+
+transport:
+  # Bind inside the container and expose only through a reverse proxy that
+  # terminates TLS.
+  host: 0.0.0.0
+  port: 8000
+  path: /mcp
+  # The canonical URI clients use to reach this server. Required in production
+  # and must be https, because it appears in the protected resource metadata
+  # and clients bind their tokens to it.
+  base_url: ""
+
+health_path: /healthz
+
+cors:
+  # Empty means no cross origin request is allowed. Name the origins that need
+  # to reach this server.
+  allowed_origins: []
+  allowed_methods: [GET, POST, DELETE, OPTIONS]
+  allowed_headers:
+    - authorization
+    - content-type
+    - mcp-protocol-version
+    - mcp-session-id
+  allow_credentials: false
+
+rate_limit:
+  enabled: true
+  requests_per_second: 5
+  burst: 20
+
+authorisation:
+  # Empty means the template below is used, which is the Entra default.
+  identifier_uri: ""
+  identifier_uri_template: "api://{client_id}"
+  required_scopes: [access_as_user]
+  # The verifier accepts both the client id and the application id URI as the
+  # audience by default. The steering rule is stricter: the audience must be
+  # the application id URI. Set this to false only if a pre-registered client
+  # cannot be made to request the URI form.
+  strict_audience: true
+  resource_name: entrascope
+  resource_documentation: https://github.com/SCGIS-Wales/entrascope
+
+protocol:
+  # Asserted at startup and in a test, so that a dependency bump which changes
+  # the negotiated revision fails the build rather than changing behaviour.
+  expected_version: "2025-11-25"
+
+environment:
+  tenant_id: ENTRASCOPE_TENANT_ID
+  client_id: ENTRASCOPE_CLIENT_ID
+  identifier_uri: ENTRASCOPE_IDENTIFIER_URI
+  base_url: ENTRASCOPE_BASE_URL

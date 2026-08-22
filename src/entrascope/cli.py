@@ -18,7 +18,7 @@ from entrascope.config import Config, load_config
 from entrascope.credentials import resolve_auth
 from entrascope.discovery import discover_applications, discover_service_principals
 from entrascope.doctor import run_checks
-from entrascope.errors import explain, known_codes, search
+from entrascope.errors import explain, explain_api_error, known_codes, search
 from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
 from entrascope.logger import bind_context, configure_logging, new_correlation_id
@@ -81,10 +81,19 @@ def build_settings(
 
 
 def settings_of(context: click.Context) -> dict[str, Any]:
-    """Return the shared settings from the click context."""
-    values = context.obj or {}
-    result = values.get(SETTINGS)
-    return dict(result) if isinstance(result, dict) else {}
+    """Return the shared settings from the click context.
+
+    The settings are placed on the root context by the group callback, so a
+    subcommand and the error handler both find them by walking up.
+    """
+    current: click.Context | None = context
+    while current is not None:
+        values = current.obj or {}
+        result = values.get(SETTINGS) if isinstance(values, dict) else None
+        if isinstance(result, dict):
+            return dict(result)
+        current = current.parent
+    return {}
 
 
 #: Columns shown in a table. The full projection is always in the JSON form.
@@ -127,12 +136,20 @@ EXPLANATION_COLUMNS = ("code", "meaning", "likely_cause", "remediation", "docs_u
 ROUTES = ("graph", "monitor")
 
 
-def authenticated_session(settings: Mapping[str, Any]) -> tuple[Config, Session]:
-    """Resolve an identity and build a session that carries its token."""
+def authenticated_session(
+    settings: Mapping[str, Any],
+) -> tuple[Config, Session, Callable[[], str]]:
+    """Resolve an identity, build a session, and return the token provider too.
+
+    The provider is returned rather than taken back off the session, because
+    the session holds a requests auth callable and not a token provider, and
+    the two have different signatures.
+    """
     config: Config = settings["config"]
     context, credential = resolve_auth(config, settings.get("auth"))
     bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
-    return config, build_session(config, graph_token_provider(config, credential))
+    token = graph_token_provider(config, credential)
+    return config, build_session(config, token), token
 
 
 def logs_client(settings: Mapping[str, Any]) -> tuple[Config, Any]:
@@ -165,6 +182,29 @@ def show(
     emit(render(rows, config, output, title=title, columns=columns))
 
 
+def explanation_for(error: ApiCallError) -> str:
+    """Return the remediation for a failed call, or an empty string.
+
+    Explaining the failure is the whole purpose of this tool, so a failure that
+    carries a recognised code prints its remediation rather than only its
+    status.
+    """
+    context = click.get_current_context(silent=True)
+    settings = settings_of(context) if context is not None else {}
+    config = settings.get("config")
+    if config is None:
+        return ""
+    explanation = explain_api_error(error.error, config)
+    if not explanation.known:
+        return ""
+    lines = [f"\n{explanation.code}: {explanation.meaning}"]
+    if explanation.likely_cause:
+        lines.append(f"Likely cause: {explanation.likely_cause}")
+    lines.append(f"Remediation: {explanation.remediation}")
+    lines.append(f"See: {explanation.docs_url}")
+    return "\n".join(line.strip() for line in lines)
+
+
 def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]:
     """Turn the deliberate errors into a message and an exit code.
 
@@ -184,6 +224,7 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
             raise SystemExit(EXIT_CREDENTIALS) from error
         except ApiCallError as error:
             emit_error(error.error.summary())
+            emit_error(explanation_for(error))
             raise SystemExit(EXIT_API) from error
 
     return wrapper
@@ -287,12 +328,12 @@ def discover_apps(
 ) -> None:
     """List application registrations with the attributes that explain a failure."""
     settings = settings_of(context)
-    config, session = authenticated_session(settings)
+    config, session, token = authenticated_session(settings)
     try:
         rows = discover_applications(
             session,
             config,
-            None if no_details else session.auth,
+            None if no_details else token,
             filter_expression=filter_expression,
             with_details=not no_details,
         )
@@ -330,12 +371,12 @@ def discover_service_principals_command(
 ) -> None:
     """List enterprise applications, managed identities and SAML applications."""
     settings = settings_of(context)
-    config, session = authenticated_session(settings)
+    config, session, token = authenticated_session(settings)
     try:
         rows = discover_service_principals(
             session,
             config,
-            None if no_details else session.auth,
+            None if no_details else token,
             filter_expression=filter_expression,
             with_details=not no_details,
         )
@@ -390,7 +431,7 @@ def logs_audit(
             row_limit=limit,
         )
     else:
-        config, session = authenticated_session(settings)
+        config, session, _ = authenticated_session(settings)
         try:
             rows = query_audit_graph(session, config, top=limit)
         finally:
@@ -446,7 +487,7 @@ def logs_signins(
         if failures_only:
             rows = tuple(row for row in rows if row.failed())
     else:
-        config, session = authenticated_session(settings)
+        config, session, _ = authenticated_session(settings)
         try:
             rows = query_sign_ins_graph(
                 session,
@@ -582,6 +623,39 @@ def serve_stdio(context: click.Context) -> None:
     settings = settings_of(context)
     config: Config = settings["config"]
     run(build_server(config, settings.get("auth")))
+
+
+@serve.command("http")
+@click.option("--host", default=None, help="Address to bind inside the container.")
+@click.option("--port", type=int, default=None, help="Port to listen on.")
+@click.pass_context
+@handled
+def serve_http(context: click.Context, host: str | None, port: int | None) -> None:
+    """Serve the tools over Streamable HTTP, as an OAuth 2.1 protected resource.
+
+    Validates Entra issued bearer tokens. The audience must equal the
+    application id URI, a token issued for anything else is refused, and the
+    caller's token is never forwarded to Microsoft Graph.
+
+    Terminate TLS at a reverse proxy and set the canonical URI, which appears
+    in the protected resource metadata and which clients bind their tokens to.
+    """
+    from entrascope.mcp_http import run
+
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    if host or port:
+        transport = config.server.transport.model_copy(
+            update={
+                key: value
+                for key, value in (("host", host), ("port", port))
+                if value is not None
+            }
+        )
+        config = config.model_copy(
+            update={"server": config.server.model_copy(update={"transport": transport})}
+        )
+    run(config)
 
 
 def main() -> None:

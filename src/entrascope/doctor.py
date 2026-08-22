@@ -32,7 +32,12 @@ from entrascope.capabilities import (
 )
 from entrascope.config import Config
 from entrascope.credentials import check_permissions, resolve_auth
-from entrascope.graph import get_collection, graph_token_provider, token_provider
+from entrascope.graph import (
+    arm_token_provider,
+    get_collection,
+    graph_token_provider,
+    token_provider,
+)
 from entrascope.http import Session, build_session, network_trust
 from entrascope.logger import get_logger
 from entrascope.models import (
@@ -246,12 +251,13 @@ def check_diagnostics(
 def gather(
     config: Config,
     session: Session,
+    arm_session: Session | None = None,
 ) -> tuple[tuple[Mapping[str, Any], ...], tuple[str, ...], str]:
     """Read the subscribed licences and the diagnostic settings.
 
-    Either call may fail on a tenant that has not granted everything, and a
-    failure in one must not stop the other, because a partial report is still
-    useful.
+    Two sessions, because the two calls have different audiences. Either may
+    fail on a tenant that has not granted everything, and a failure in one must
+    not stop the other, because a partial report is still useful.
     """
     skus: tuple[Mapping[str, Any], ...] = ()
     categories: tuple[str, ...] = ()
@@ -260,8 +266,10 @@ def gather(
         skus = get_collection(session, config, "subscribed_skus")
     except ApiCallError as failure:
         log.debug("could not read the subscribed licences: %s", failure.error.summary())
+    if arm_session is None:
+        return skus, categories, "No Azure Resource Manager session was supplied."
     try:
-        categories = read_diagnostic_settings(session, config)
+        categories = read_diagnostic_settings(arm_session, config)
     except ApiCallError as failure:
         error = failure.error.summary()
     return skus, categories, error
@@ -310,9 +318,11 @@ def run_checks(
 
     owned = session is None
     active = session or build_session(config, graph_token_provider(config, credential))
+    arm = build_session(config, arm_token_provider(config, credential))
     try:
-        skus, categories, diagnostics_error = gather(config, active)
+        skus, categories, diagnostics_error = gather(config, active, arm)
     finally:
+        arm.close()
         if owned:
             active.close()
 
