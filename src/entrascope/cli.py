@@ -6,10 +6,12 @@ free function in another module and renders through :mod:`entrascope.render`.
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from functools import wraps
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import click
 
@@ -50,14 +52,18 @@ from entrascope.render import (
     EXIT_CHECKS_FAILED,
     EXIT_CONFIG,
     EXIT_CREDENTIALS,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
     OUTPUT_FORMATS,
     OutputFormat,
+    count_summary,
     emit,
     emit_error,
     exit_code_for_checks,
     render,
-    render_checks,
+    show_checks,
 )
+from entrascope.render import show as show_rows
 
 #: Key under which the shared settings are held on the click context.
 SETTINGS = "settings"
@@ -76,11 +82,30 @@ def log_level(output: str, verbose: bool) -> str | None:
     return None
 
 
+def with_timezone(config: Config, zone: str) -> Config:
+    """Return configuration that shows timestamps in one zone."""
+    display = config.fields.display
+    timestamp = display.timestamp.model_copy(update={"zone": zone})
+    return config.model_copy(
+        update={
+            "fields": config.fields.model_copy(
+                update={"display": display.model_copy(update={"timestamp": timestamp})}
+            )
+        }
+    )
+
+
 def build_settings(
-    config_dir: Path | None, auth: str | None, output: str, verbose: bool
+    config_dir: Path | None,
+    auth: str | None,
+    output: str,
+    verbose: bool,
+    timezone: str | None = None,
 ) -> dict[str, Any]:
     """Load configuration and prepare the shared settings for every command."""
     config = load_config(config_dir)
+    if timezone:
+        config = with_timezone(config, timezone)
     configure_logging(config, surface="cli", level=log_level(output, verbose))
     new_correlation_id()
     if auth:
@@ -121,7 +146,39 @@ SERVICE_PRINCIPAL_COLUMNS = (
     "app_role_assignment_required",
     "owners",
 )
-AUDIT_COLUMNS = ("timestamp", "activity", "result", "initiated_by", "target")
+AUDIT_COLUMNS = (
+    "timestamp",
+    "activity",
+    "result",
+    "initiated_by",
+    "target",
+    "target_type",
+    "target_id",
+)
+#: What a table shows. Fewer columns, because a terminal that has to elide
+#: every one of them shows nothing at all. The identifiers and the rest of the
+#: record are in --output plain, json and yaml.
+AUDIT_TABLE_COLUMNS = ("timestamp", "activity", "result", "initiated_by", "target")
+APPLICATION_TABLE_COLUMNS = (
+    "display_name",
+    "application_type",
+    "audience_label",
+    "credentials",
+)
+SERVICE_PRINCIPAL_TABLE_COLUMNS = (
+    "display_name",
+    "application_type",
+    "account_enabled",
+    "app_role_assignment_required",
+)
+SIGN_IN_TABLE_COLUMNS = (
+    "timestamp",
+    "identity",
+    "app_display_name",
+    "error_code",
+    "failure_reason",
+)
+FINDING_TABLE_COLUMNS = ("severity", "area", "subject", "occurrences", "detail")
 SIGN_IN_COLUMNS = (
     "timestamp",
     "identity",
@@ -157,10 +214,148 @@ ROUTES = ("graph", "monitor")
 ALIASES = {"apps": "applications", "sps": "enterprise-apps"}
 
 
+def global_options() -> list[click.Parameter]:
+    """Return the options that may be given before or after a subcommand.
+
+    Nobody should have to remember which side of the subcommand an option goes
+    on. These are declared on the group and on every command, and a value given
+    later wins.
+    """
+    return [
+        click.Option(
+            ["--auth"],
+            type=click.Choice(AUTH_SOURCE_ORDER),
+            default=None,
+            help=AUTH_HELP,
+        ),
+        click.Option(
+            ["--output"],
+            type=click.Choice(OUTPUT_FORMATS),
+            default=None,
+            help=OUTPUT_HELP,
+        ),
+        click.Option(["--verbose"], is_flag=True, default=None, help=VERBOSE_HELP),
+        click.Option(
+            ["--timezone"],
+            type=click.Choice(TIMEZONES),
+            default=None,
+            help=TIMEZONE_HELP,
+        ),
+    ]
+
+
+# framework contract: click decides which options a command accepts through a
+# Command subclass, so accepting the global ones after a subcommand means
+# overriding it. The merging itself is a free function.
+class GlobalOptionCommand(click.Command):
+    """A command that also accepts the options declared on the root group."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.params.extend(global_options())
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Apply any global option given after the subcommand, then run."""
+        overrides: dict[str, Any] = {
+            name: ctx.params.pop(name)
+            for name in ("auth", "output", "verbose", "timezone")
+            if name in ctx.params
+        }
+        apply_overrides(ctx, overrides)
+        return super().invoke(ctx)
+
+
+def apply_overrides(context: click.Context, overrides: Mapping[str, Any]) -> None:
+    """Merge options given after a subcommand into the shared settings."""
+    settings = settings_of(context)
+    if not settings:
+        return
+    changed = {name: value for name, value in overrides.items() if value}
+    if not changed:
+        return
+    settings.update(
+        {key: value for key, value in changed.items() if key in ("auth", "output")}
+    )
+    if changed.get("timezone"):
+        settings["config"] = with_timezone(settings["config"], str(changed["timezone"]))
+    root = context.find_root()
+    root.obj[SETTINGS] = settings
+    configure_logging(
+        settings["config"],
+        surface="cli",
+        level=log_level(settings.get("output", "table"), bool(changed.get("verbose"))),
+    )
+    if changed.get("auth"):
+        bind_context(auth_source=str(changed["auth"]))
+
+
+def nested_paths(group: click.Group, name: str) -> list[str]:
+    """Return the full path of every command with one name, at any depth.
+
+    Somebody who types the name of a subcommand at the top level has the right
+    idea and the wrong path. Telling them the path is more use than telling
+    them the command does not exist.
+    """
+    found: list[str] = []
+    for group_name, command in sorted(group.commands.items()):
+        if not isinstance(command, click.Group):
+            continue
+        for child in sorted(command.commands):
+            resolved = ALIASES.get(name, name)
+            if child in (name, resolved):
+                found.append(f"{group_name} {child}")
+    return found
+
+
+def help_for(root: click.Group, ctx: click.Context, path: str) -> str:
+    """Return the help of a command named by its path below the root."""
+    group_name, command_name = path.split(" ", 1)
+    group = root.get_command(ctx, group_name)
+    if not isinstance(group, click.Group):
+        return ""
+    command = group.get_command(ctx, command_name)
+    if command is None:
+        return ""
+    # No parent context, because the usage line already carries the full path
+    # and click would otherwise prefix the programme name a second time.
+    child = click.Context(command, info_name=f"entrascope {path}")
+    return command.get_help(child)
+
+
+# framework contract: click reports an unknown command through a Group method,
+# so improving that message means overriding it. The search is a free function.
+class RootGroup(click.Group):
+    """The top level group, which knows where its subcommands live."""
+
+    command_class = GlobalOptionCommand
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Resolve a command, pointing at the right path when there is one."""
+        name = args[0] if args else ""
+        if name and self.get_command(ctx, name) is None:
+            paths = nested_paths(self, name)
+            if paths:
+                # Show the help for what they meant, not only where it lives.
+                # Somebody who has just been corrected wants the options, and
+                # asking them to type a second command to get them is rude.
+                for path in paths:
+                    emit(help_for(self, ctx, path))
+                suggestion = " or ".join(f"entrascope {path}" for path in paths)
+                ctx.fail(
+                    f"No such command {name!r} at the top level. "
+                    f"It is a subcommand: try {suggestion}."
+                )
+        return super().resolve_command(ctx, args)
+
+
 # framework contract: click resolves a command name through a Group method, so
 # accepting an alias means overriding it. No logic beyond the lookup.
 class AliasGroup(click.Group):
     """A command group that also answers to a short form of a command name."""
+
+    command_class = GlobalOptionCommand
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         """Return the command, resolving a short form to its full name."""
@@ -173,6 +368,21 @@ class AliasGroup(click.Group):
         _, command, remaining = super().resolve_command(ctx, args)
         return (command.name if command else None), command, remaining
 
+
+#: The global options, described once and accepted on either side of a
+#: subcommand.
+AUTH_HELP = (
+    "Authentication source to use. Naming one selects it whether or not it is "
+    "enabled for automatic resolution. Without this, the credential file is "
+    "tried and then the Azure CLI session."
+)
+OUTPUT_HELP = "Output format."
+VERBOSE_HELP = "Log at debug level, including what the libraries report."
+TIMEZONE_HELP = (
+    "Zone to show timestamps in. Microsoft Graph records in UTC. Either way "
+    "the zone is named on every timestamp."
+)
+TIMEZONES = ("utc", "local")
 
 #: One idea, described one way, wherever it appears.
 APP_SELECTOR_HELP = (
@@ -303,11 +513,42 @@ def show(
     settings: Mapping[str, Any],
     title: str,
     columns: Sequence[str],
+    noun: str = "rows",
+    table_columns: Sequence[str] | None = None,
 ) -> None:
-    """Render rows in the requested format and write them out."""
+    """Render rows in the requested format and write them out.
+
+    A table shows the columns worth reading on a terminal. Every other format
+    carries the whole record, so nothing is lost, it is just not in the way.
+    """
     config: Config = settings["config"]
     output: OutputFormat = settings.get("output", "table")
-    emit(render(rows, config, output, title=title, columns=columns))
+    narrow = output == "table" and table_columns is not None
+    summary = count_summary(rows, noun)
+    if narrow and rows:
+        summary = f"{summary}. Use --output plain for every field."
+    show_rows(
+        rows,
+        config,
+        output,
+        title=title,
+        columns=table_columns if narrow else columns,
+        summary=summary,
+    )
+
+
+def leave_now() -> NoReturn:
+    """Report an interrupt and exit at once.
+
+    Raising SystemExit here would run the interpreter's shutdown, which joins
+    every worker thread and prints a second traceback over the top of the
+    first. An engineer who pressed control C wants the process gone. Output is
+    flushed first, so nothing already produced is lost.
+    """
+    emit_error("Interrupted.")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(EXIT_INTERRUPTED)
 
 
 def explanation_for(error: ApiCallError) -> str:
@@ -344,6 +585,8 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
     def wrapper(*args: Any, **kwargs: Any) -> Returns:
         try:
             return function(*args, **kwargs)
+        except KeyboardInterrupt:
+            leave_now()
         except ConfigError as error:
             emit_error(str(error))
             raise SystemExit(EXIT_CONFIG) from error
@@ -359,25 +602,22 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
 
 
 @click.group(
+    cls=RootGroup,
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog=ROOT_EPILOG,
     no_args_is_help=True,
+    invoke_without_command=True,
 )
 @click.version_option(__version__, prog_name="entrascope")
 @click.option(
-    "--auth",
-    type=click.Choice(AUTH_SOURCE_ORDER),
-    default=None,
-    help="Authentication source to use. Naming one selects it whether or not it "
-    "is enabled for automatic resolution, so az login and azure-cli need no "
-    "configuration change.",
+    "--auth", type=click.Choice(AUTH_SOURCE_ORDER), default=None, help=AUTH_HELP
 )
 @click.option(
     "--output",
     type=click.Choice(OUTPUT_FORMATS),
     default="table",
     show_default=True,
-    help="Output format.",
+    help=OUTPUT_HELP,
 )
 @click.option(
     "--config-dir",
@@ -385,7 +625,7 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
     default=None,
     help="Directory holding the configuration files.",
 )
-@click.option("--verbose", is_flag=True, help="Log at debug level.")
+@click.option("--verbose", is_flag=True, help=VERBOSE_HELP)
 @click.pass_context
 @handled
 def cli(
@@ -406,9 +646,14 @@ def cli(
     """
     context.ensure_object(dict)
     context.obj[SETTINGS] = build_settings(config_dir, auth, output, verbose)
+    if context.invoked_subcommand is None:
+        # Options but no command. Show what the commands are rather than
+        # reporting that one is missing.
+        emit(context.get_help())
+        raise SystemExit(EXIT_OK)
 
 
-@cli.command()
+@cli.command(cls=GlobalOptionCommand)
 @click.argument("target", required=False, default="")
 @click.option(
     "--severity",
@@ -484,14 +729,17 @@ def investigate(
     if not result.findings:
         emit(f"No findings for {result.target}.")
     else:
-        emit(
-            render(
-                result.findings,
-                config,
-                output,
-                title=f"Findings for {result.target}",
-                columns=FINDING_COLUMNS,
-            )
+        errors = len(result.errors())
+        show_rows(
+            result.findings,
+            config,
+            output,
+            title=f"Findings for {result.target}",
+            columns=(FINDING_TABLE_COLUMNS if output == "table" else FINDING_COLUMNS),
+            summary=(
+                f"{len(result.findings)} findings, {errors} of them errors. "
+                "Use --output plain for the remediation and the documentation."
+            ),
         )
     if full:
         show(result.applications, settings, "Applications", APPLICATION_COLUMNS)
@@ -507,7 +755,7 @@ def investigate(
         raise SystemExit(EXIT_CHECKS_FAILED)
 
 
-@cli.command()
+@cli.command(cls=GlobalOptionCommand)
 @click.pass_context
 @handled
 def doctor(context: click.Context) -> None:
@@ -522,7 +770,7 @@ def doctor(context: click.Context) -> None:
     auth: AuthSource | None = settings.get("auth")
     output: OutputFormat = settings.get("output", "table")
     results = run_checks(config, requested=auth)
-    emit(render_checks(results, config, output))
+    show_checks(results, config, output)
     raise SystemExit(exit_code_for_checks(results))
 
 
@@ -535,6 +783,11 @@ def discover() -> None:
     definition inside a tenant. A failure can come from either, so both are
     listed separately.
     """
+
+
+# Every command in this group accepts the global options too, so that nobody
+# has to remember which side of the subcommand they go on.
+discover.command_class = GlobalOptionCommand
 
 
 @discover.command("applications")
@@ -586,7 +839,14 @@ def discover_apps(
         rows = tuple(row for row in rows if row.application_type == application_type)
     if expiring:
         rows = tuple(row for row in rows if row.expiring())
-    show(rows, settings, "Application registrations", APPLICATION_COLUMNS)
+    show(
+        rows,
+        settings,
+        "Application registrations",
+        APPLICATION_COLUMNS,
+        "application registrations",
+        APPLICATION_TABLE_COLUMNS,
+    )
 
 
 @discover.command("enterprise-apps")
@@ -634,7 +894,14 @@ def discover_service_principals_command(
         rows = tuple(row for row in rows if matches_principal(row, app_selector))
     if application_type:
         rows = tuple(row for row in rows if row.application_type == application_type)
-    show(rows, settings, "Enterprise applications", SERVICE_PRINCIPAL_COLUMNS)
+    show(
+        rows,
+        settings,
+        "Enterprise applications",
+        SERVICE_PRINCIPAL_COLUMNS,
+        "enterprise applications",
+        SERVICE_PRINCIPAL_TABLE_COLUMNS,
+    )
 
 
 @cli.group(epilog=LOGS_EPILOG, no_args_is_help=True)
@@ -644,6 +911,11 @@ def logs() -> None:
     Entra directory operations do not appear in the Azure subscription activity
     log. They are in the Entra audit logs, which is what these commands read.
     """
+
+
+# Every command in this group accepts the global options too, so that nobody
+# has to remember which side of the subcommand they go on.
+logs.command_class = GlobalOptionCommand
 
 
 @logs.command("audit")
@@ -695,7 +967,14 @@ def logs_audit(
     if failures_only:
         failures = set(settings["config"].fields.findings.audit_failure_results)
         rows = tuple(row for row in rows if row.result.lower() in failures)
-    show(rows, settings, "Application management audit events", AUDIT_COLUMNS)
+    show(
+        rows,
+        settings,
+        "Application management audit events",
+        AUDIT_COLUMNS,
+        "audit events",
+        AUDIT_TABLE_COLUMNS,
+    )
 
 
 @logs.command("signins")
@@ -756,7 +1035,14 @@ def logs_signins(
             )
         finally:
             session.close()
-    show(rows, settings, f"{kind} sign ins", SIGN_IN_COLUMNS)
+    show(
+        rows,
+        settings,
+        f"{kind} sign ins",
+        SIGN_IN_COLUMNS,
+        "sign ins",
+        SIGN_IN_TABLE_COLUMNS,
+    )
 
 
 @logs.command("graph-activity")
@@ -788,31 +1074,65 @@ def logs_graph_activity(
         lookback_hours=hours,
         row_limit=limit,
     )
-    show(rows, settings, "Microsoft Graph activity", GRAPH_ACTIVITY_COLUMNS)
+    show(rows, settings, "Microsoft Graph activity", GRAPH_ACTIVITY_COLUMNS, "requests")
 
 
 @logs.command("kinds")
+@click.argument("kind", required=False, default="")
 @click.pass_context
 @handled
-def logs_kinds(context: click.Context) -> None:
-    """List the sign in kinds that can be read."""
+def logs_kinds(context: click.Context, kind: str) -> None:
+    """Describe the sign in kinds, or one of them.
+
+    Every kind is read with logs signins --kind. Name one here to see what it
+    covers and what it needs.
+    """
     settings = settings_of(context)
     config: Config = settings["config"]
+    categories = {entry.name: entry for entry in config.tables.diagnostic_categories}
     rows = [
         {
             "kind": name,
+            "covers": categories[entry.diagnostic_category].description
+            if entry.diagnostic_category in categories
+            else "",
             "diagnostic_category": entry.diagnostic_category,
-            "graph_filter": entry.graph_filter,
+            "minimum_licence": categories[entry.diagnostic_category].minimum_licence
+            if entry.diagnostic_category in categories
+            else "",
+            "graph_endpoint": "beta" if entry.graph_beta else "v1.0",
         }
         for name, entry in sorted(config.tables.sign_in_kinds.items())
+        if not kind or kind == name
     ]
-    columns = ("kind", "diagnostic_category", "graph_filter")
-    show(rows, settings, "Sign in kinds", columns)
+    if kind and not rows:
+        known = ", ".join(sorted(config.tables.sign_in_kinds))
+        raise ConfigError(f"No sign in kind named {kind}. Known kinds: {known}.")
+    columns = (
+        "kind",
+        "covers",
+        "diagnostic_category",
+        "minimum_licence",
+        "graph_endpoint",
+    )
+    show(
+        rows,
+        settings,
+        "Sign in kinds",
+        columns,
+        "kinds",
+        ("kind", "diagnostic_category", "minimum_licence", "covers"),
+    )
 
 
 @cli.group(epilog=ERRORS_EPILOG, no_args_is_help=True)
 def errors() -> None:
     """Explain authentication and authorisation error codes."""
+
+
+# Every command in this group accepts the global options too, so that nobody
+# has to remember which side of the subcommand they go on.
+errors.command_class = GlobalOptionCommand
 
 
 @errors.command("explain", no_args_is_help=True)
@@ -858,6 +1178,11 @@ def errors_search(context: click.Context, term: str) -> None:
 @cli.group(epilog=SERVE_EPILOG, no_args_is_help=True)
 def serve() -> None:
     """Run entrascope as a Model Context Protocol server."""
+
+
+# Every command in this group accepts the global options too, so that nobody
+# has to remember which side of the subcommand they go on.
+serve.command_class = GlobalOptionCommand
 
 
 @serve.command("stdio")

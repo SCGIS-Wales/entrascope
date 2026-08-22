@@ -69,15 +69,39 @@ def initiator_name(payload: Any) -> str:
     return ""
 
 
-def target_name(payload: Any) -> str:
-    """Return the display name of the first target of an audited operation."""
+def first_target(payload: Any) -> Mapping[str, Any]:
+    """Return the first target of an audited operation, or an empty mapping."""
     if isinstance(payload, Sequence) and not isinstance(payload, str):
         for item in payload:
-            if isinstance(item, Mapping):
-                name = item.get("displayName") or item.get("id")
-                if name:
-                    return text(name)
-    return ""
+            if isinstance(item, Mapping) and (
+                item.get("displayName") or item.get("id")
+            ):
+                return item
+    return {}
+
+
+def target_name(payload: Any) -> str:
+    """Return the display name of the first target of an audited operation."""
+    target = first_target(payload)
+    return text(target.get("displayName") or target.get("id") or "")
+
+
+def target_kind(payload: Any, config: Config) -> str:
+    """Say what kind of object was changed, in this tool's own words.
+
+    Graph says Application where this tool says application registration, and
+    ServicePrincipal where it says enterprise application. A log line that only
+    says "target" leaves the reader guessing which of the two it changed.
+    """
+    kind = text(first_target(payload).get("type"))
+    if not kind:
+        return ""
+    return config.fields.classification.target_types.get(kind, kind)
+
+
+def target_identifier(payload: Any) -> str:
+    """Return the object id of the target, so a name is never the only handle."""
+    return text(first_target(payload).get("id"))
 
 
 def project_audit_event(payload: Mapping[str, Any], config: Config) -> AuditEvent:
@@ -92,6 +116,8 @@ def project_audit_event(payload: Mapping[str, Any], config: Config) -> AuditEven
         timestamp=text(pluck(payload, mapping["activity_date_time"])),
         initiated_by=initiator_name(pluck(payload, mapping["initiated_by"])),
         target=target_name(pluck(payload, mapping["target_resources"])),
+        target_type=target_kind(pluck(payload, mapping["target_resources"]), config),
+        target_id=target_identifier(pluck(payload, mapping["target_resources"])),
         correlation_id=text(payload.get("correlationId")),
     )
 
@@ -127,7 +153,9 @@ def row_value(row: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
-def audit_events_from_rows(result: QueryResult) -> tuple[AuditEvent, ...]:
+def audit_events_from_rows(
+    result: QueryResult, config: Config | None = None
+) -> tuple[AuditEvent, ...]:
     """Project audit events from a Log Analytics result."""
     return tuple(
         AuditEvent(
@@ -139,6 +167,12 @@ def audit_events_from_rows(result: QueryResult) -> tuple[AuditEvent, ...]:
             timestamp=text(row_value(row, "TimeGenerated")),
             initiated_by=initiator_name(row_value(row, "InitiatedBy")),
             target=text(row_value(row, "TargetName", "TargetResources")),
+            target_type=(
+                target_kind(row_value(row, "TargetResources"), config)
+                if config is not None
+                else ""
+            ),
+            target_id=text(row_value(row, "TargetId")),
             correlation_id=text(row_value(row, "CorrelationId")),
         )
         for row in result.as_dicts()
@@ -317,7 +351,7 @@ def query_audit_monitor(
         config.tables.log_queries["audit"].kql_template,
         parameters,
     )
-    return audit_events_from_rows(result)
+    return audit_events_from_rows(result, config)
 
 
 def query_sign_ins_monitor(

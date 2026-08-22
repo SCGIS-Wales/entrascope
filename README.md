@@ -134,13 +134,37 @@ diagnostic setting and the Log Analytics Reader role, and gives longer
 retention. Microsoft Graph activity exists only through Azure Monitor. Sign in
 logs of any kind need an Entra ID P1 or P2 licence; audit logs do not.
 
-### Output and identity
+### Output
 
-`--output json` and `--output yaml` work on every command and are quiet, so the
-output can be piped straight into another tool. `--auth` chooses the identity:
-`file`, `env`, `azure-cli` or `default`. `errors explain`, `errors list` and
-`errors search` need no credentials at all, because the mapping is
-configuration.
+Four formats, each for a different reader.
+
+| Format | For |
+| --- | --- |
+| `table` | reading at a terminal. Aligned columns, no box drawing, colour where colour means something |
+| `plain` | grep, awk, a spreadsheet, or pasting into a ticket. Tab separated, every field, nothing truncated |
+| `json` | a machine. The same bytes an MCP tool returns |
+| `yaml` | a machine, read by a person |
+
+A table shows the columns worth reading and says so. Everything else is in
+`--output plain`. `json` and `yaml` are quiet, so the output can be piped
+straight into another tool. Timestamps are shown to a hundredth of a second
+with the zone named, in UTC by default, or `--timezone local` for the machine's
+own zone.
+
+### Identity
+
+`--auth` chooses it: `file`, `env`, `azure-cli` or `default`. Without it the
+credential file is tried and then the Azure CLI session, so `az login` and then
+`entrascope doctor` works with nothing else set up. The credential file wins
+when it is present, so an unattended run behaves the same whatever else is on
+the machine.
+
+`errors explain`, `errors list` and `errors search` need no credentials at all,
+because the mapping is configuration.
+
+Every option works on either side of the subcommand: `entrascope --auth
+azure-cli logs audit` and `entrascope logs audit --auth azure-cli` are the same
+command.
 
 ## As an MCP server
 

@@ -73,6 +73,44 @@ audit:
 expiry:
   warning_days: 30
 
+display:
+  # How a value is rendered for a person. Nothing here changes the JSON, which
+  # always carries the value exactly as Microsoft Graph gave it.
+  timestamp:
+    # Microsoft Graph reports to the nanosecond. Two decimal places are enough
+    # to order two events and cost a third less of the column.
+    decimals: 2
+    # utc, which is what Graph records, or local, which converts to the
+    # machine's zone. Either way the zone is named, so a timestamp is never
+    # ambiguous.
+    zone: utc
+  # A guest account is reported as its whole home tenant address. The part
+  # before the marker is the person, and the rest costs half a column.
+  guest_marker: "#EXT#"
+  # Columns that hold prose and may wrap. Everything else is kept on one line
+  # and elided, because a value split across four lines cannot be read or
+  # pasted.
+  wrapping_columns:
+    - detail
+    - remediation
+    - message
+    - meaning
+    - likely_cause
+    - description
+  # Values coloured by meaning, when the output is a terminal.
+  colours:
+    error: bold red
+    FAIL: bold red
+    failure: red
+    expired: red
+    warning: yellow
+    expiring: yellow
+    timeout: yellow
+    note: dim
+    pass: green
+    success: green
+    valid: green
+
 findings:
   # Rules the investigation applies. Thresholds and wording are configuration
   # so that a site can tighten them without a code change.
@@ -144,6 +182,18 @@ classification:
   integrated_app_tag: WindowsAzureActiveDirectoryIntegratedApp
   credential_types:
     certificate: AsymmetricX509Cert
+  # What Microsoft Graph calls a target, said the way this tool says it, so a
+  # log line names the kind of object it changed.
+  target_types:
+    Application: application registration
+    ServicePrincipal: enterprise application
+    ServicePrincipalCredential: enterprise application credential
+    User: user
+    Group: group
+    Policy: policy
+    Device: device
+    Other: object
+
   # Service principals owned by these tenants are Microsoft first party
   # applications. A tenant carries hundreds of them, almost all irrelevant to
   # diagnosing your own applications, so they are excluded unless asked for.

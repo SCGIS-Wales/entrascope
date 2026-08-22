@@ -150,3 +150,135 @@ def test_rendering_a_table_writes_nothing_by_itself(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def test_timestamps_are_trimmed_and_named(config: Config) -> None:
+    """Two decimal places, and the zone said out loud."""
+    from entrascope.render import format_timestamp
+
+    assert format_timestamp("2026-08-22T13:24:32.7891111Z", config) == (
+        "2026-08-22 13:24:32.79 UTC"
+    )
+    assert format_timestamp("2026-08-22T13:24:32Z", config).endswith("UTC")
+    assert format_timestamp("not a timestamp", config) == "not a timestamp"
+
+
+def test_an_offset_timestamp_is_converted(config: Config) -> None:
+    """A timestamp with an offset is shown in the configured zone."""
+    from entrascope.render import format_timestamp
+
+    assert format_timestamp("2026-08-22T13:24:32.78+01:00", config).startswith(
+        "2026-08-22 12:24:32.78"
+    )
+
+
+def test_timestamps_can_be_shown_in_the_local_zone(config: Config) -> None:
+    """The zone is named whichever one is chosen, so nothing is ambiguous."""
+    from entrascope.render import format_timestamp
+
+    display = config.fields.display
+    timestamp = display.timestamp.model_copy(update={"zone": "local"})
+    local = config.model_copy(
+        update={
+            "fields": config.fields.model_copy(
+                update={"display": display.model_copy(update={"timestamp": timestamp})}
+            )
+        }
+    )
+    rendered = format_timestamp("2026-08-22T13:24:32.78Z", local)
+    assert rendered.count(":") == 2
+    assert rendered.split()[-1]
+
+
+def test_a_guest_account_is_trimmed_for_reading(config: Config) -> None:
+    """The home tenant address is half a column that says nothing."""
+    from entrascope.render import shorten_guest
+
+    whole = "someone_example.com#EXT#@tenant.onmicrosoft.com"
+    assert shorten_guest(whole, config) == "someone_example.com"
+    assert shorten_guest("someone@example.invalid", config) == "someone@example.invalid"
+
+
+def test_the_plain_format_is_tab_separated_and_complete(config: Config) -> None:
+    """The format to grep, to paste and to pipe. Nothing truncated."""
+    rows = [Row(name="one", count=2, tags=("a", "b"))]
+    text = render(rows, config, "plain")
+    header, line = text.splitlines()
+    assert header.split("\t")[:2] == ["name", "count"]
+    assert line.split("\t")[0] == "one"
+
+
+def test_the_plain_format_never_breaks_a_record_across_lines(
+    config: Config,
+) -> None:
+    """One line is one record, whatever the values contain."""
+    rows = [{"a": "has\ttab", "b": "plain"}]
+    line = render(rows, config, "plain").splitlines()[1]
+    assert line.count("\t") == 1
+
+
+def test_a_list_of_objects_is_summarised_in_a_table(config: Config) -> None:
+    """A cell full of JSON tells the reader nothing and costs the whole line."""
+    from entrascope.render import cell
+
+    credentials = [{"state": "valid"}, {"state": "expired"}, {"state": "expired"}]
+    assert cell(credentials, config) == "3: 2 expired, 1 valid"
+    assert cell([{"nothing": 1}], config) == "1 items"
+
+
+def test_an_empty_cell_is_marked(config: Config) -> None:
+    """A blank cell looks like a broken column. A dash does not."""
+    from entrascope.render import EMPTY_CELL, cell
+
+    assert cell(None, config) == EMPTY_CELL
+    assert cell("", config) == EMPTY_CELL
+    assert cell([], config) == EMPTY_CELL
+
+
+def test_a_table_has_no_box_drawing(config: Config) -> None:
+    """Box drawing cannot be pasted into a ticket and reads worse at length."""
+    text = render([Row(name="one", count=2)], config, "table")
+    for character in "┏┃┡│└┘├":
+        assert character not in text
+
+
+def test_a_piped_table_is_not_truncated(config: Config) -> None:
+    """Writing a table to a file must not lose characters to a guessed width."""
+    long_name = "a" * 120
+    text = render([Row(name=long_name, count=1)], config, "table")
+    assert long_name in text
+
+
+def test_short_columns_keep_their_width(config: Config) -> None:
+    """An identifier somebody has to type is no use half printed."""
+    from entrascope.render import guaranteed_widths
+
+    granted = guaranteed_widths({"kind": 18, "detail": 400}, {"detail"}, 120)
+    assert granted == {"kind": 18}
+
+
+def test_guaranteed_widths_stay_inside_their_budget(config: Config) -> None:
+    """Guaranteeing everything would push the last columns off the line."""
+    from entrascope.render import guaranteed_widths
+
+    widths = {f"column{index}": 25 for index in range(10)}
+    granted = guaranteed_widths(widths, set(), 100)
+    assert sum(granted.values()) <= 60
+
+
+def test_a_count_summary_reads_like_a_person_wrote_it() -> None:
+    """One row is not one rows."""
+    from entrascope.render import count_summary
+
+    assert count_summary([1], "audit events") == "1 audit event"
+    assert count_summary([1, 2], "audit events") == "2 audit events"
+
+
+def test_severity_and_outcome_are_coloured(config: Config) -> None:
+    """Colour where colour means something, and nowhere else."""
+    from entrascope.render import colour_for
+
+    assert colour_for("error", config)
+    assert colour_for("FAIL", config)
+    assert colour_for("success", config)
+    assert colour_for("Update application", config) == ""

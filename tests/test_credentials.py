@@ -201,11 +201,38 @@ def test_auth_source_precedence(config: Config) -> None:
     assert resolution_order(config.credentials) == expected
 
 
-def test_only_the_file_source_is_enabled_by_default(config: Config) -> None:
-    """Fallback sources are gated off until enabled, as the steering document says."""
+def test_the_file_and_azure_cli_sources_resolve_automatically(
+    config: Config,
+) -> None:
+    """Somebody who ran az login should not have to name a source.
+
+    The credential file still wins, so an unattended run behaves the same
+    whatever else is on the machine. The environment variables and the full
+    chain stay off, because either can pick up an identity nobody intended.
+    """
     assert source_enabled(config.credentials, "file")
-    for source in ("env", "azure-cli", "default"):
+    assert source_enabled(config.credentials, "azure-cli")
+    for source in ("env", "default"):
         assert not source_enabled(config.credentials, source)
+
+
+def test_the_credential_file_still_wins_over_the_azure_cli(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unattended run must not change behaviour because somebody signed in."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    write_credentials(tmp_path, config=config)
+    context, _ = resolve_auth(config, home=tmp_path, environ={})
+    assert context.source == "file"
+
+
+def test_the_azure_cli_answers_when_there_is_no_credential_file(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason for this change: az login and then just run the tool."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    context, _ = resolve_auth(config, home=tmp_path, environ={})
+    assert context.source == "azure-cli"
 
 
 def test_explicit_source_overrides_the_gate(
@@ -217,12 +244,18 @@ def test_explicit_source_overrides_the_gate(
     assert context.source == "azure-cli"
 
 
-def test_resolution_reports_every_failure(tmp_path: Path, config: Config) -> None:
-    """When nothing works the error names each source that was tried."""
+def test_resolution_reports_every_failure(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When nothing works the error names each source tried and why."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: None)
     empty: Mapping[str, str] = {}
     with pytest.raises(CredentialError) as raised:
         resolve_auth(config, home=tmp_path, environ=empty)
-    assert "az login" in str(raised.value)
+    message = str(raised.value)
+    assert "Tried: file, azure-cli" in message
+    assert "does not exist" in message
+    assert "az login" in message
 
 
 def test_resolution_falls_through_to_the_first_working_source(

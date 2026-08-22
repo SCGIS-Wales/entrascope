@@ -522,3 +522,121 @@ def test_the_short_aliases_still_resolve() -> None:
     listing = run(["discover", "--help"]).output
     assert " apps " not in listing
     assert " sps " not in listing
+
+
+def test_a_misplaced_subcommand_says_where_it_lives() -> None:
+    """Somebody with the right idea and the wrong path is told the path."""
+    result = run(["audit"])
+    assert result.exit_code != 0
+    assert "entrascope logs audit" in result.output
+
+
+def test_a_misplaced_subcommand_also_shows_its_help() -> None:
+    """Being corrected and then having to type again to see the options is rude."""
+    output = run(["audit"]).output
+    assert "Usage: entrascope logs audit" in output
+    assert "--failures-only" in output
+    assert "Usage: entrascope entrascope" not in output
+
+
+def test_an_unknown_command_is_still_an_unknown_command() -> None:
+    """A name that is nowhere gets the ordinary message."""
+    result = run(["nonsense"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_global_options_work_after_the_subcommand() -> None:
+    """Nobody should have to remember which side of the subcommand they go on."""
+    for arguments in (
+        ["--output", "json", "errors", "explain", "AADSTS50011"],
+        ["errors", "explain", "AADSTS50011", "--output", "json"],
+    ):
+        result = run(arguments)
+        assert result.exit_code == 0, arguments
+        assert json.loads(result.stdout)[0]["code"] == "AADSTS50011"
+
+
+def test_the_timezone_option_is_available_on_either_side() -> None:
+    """Timestamps are shown where the reader wants them."""
+    for command in (["logs", "audit"], ["investigate"], ["doctor"]):
+        output = " ".join(run([*command, "--help"]).output.split())
+        assert "--timezone" in output
+
+
+def test_the_plain_format_is_offered_everywhere() -> None:
+    """The copy and paste format is not a hidden feature."""
+    output = " ".join(run(["--help"]).output.split())
+    assert "table|plain|json|yaml" in output
+
+
+@responses.activate
+def test_the_audit_listing_names_the_kind_of_object(authenticated: None) -> None:
+    """A target that only says a name leaves the reader guessing which object."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/directoryAudits",
+        json=load_fixture("audit_events"),
+        status=200,
+    )
+    result = run(["--auth", "file", "--output", "plain", "logs", "audit"])
+    header, first = result.stdout.splitlines()[:2]
+    assert "target_type" in header
+    assert "target_id" in header
+    assert "application registration" in first
+
+
+@responses.activate
+def test_a_listing_says_how_long_it_was(authenticated: None) -> None:
+    """A screen of rows should say how many there were."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/directoryAudits",
+        json=load_fixture("audit_events"),
+        status=200,
+    )
+    result = run(["--auth", "file", "logs", "audit"])
+    assert "2 audit events" in result.output
+
+
+def test_the_default_listing_is_small() -> None:
+    """A log listing is for reading, and a wall of rows is not."""
+    from entrascope.config import load_config
+
+    assert load_config().tables.defaults.row_limit <= 25
+
+
+def test_logs_kinds_describes_each_kind() -> None:
+    """The graph filter is ours to worry about. What it covers is theirs."""
+    output = run(["logs", "kinds"]).output
+    assert "Interactive user sign ins" in output
+    assert "signInEventTypes" not in output
+
+
+def test_logs_kinds_can_name_one() -> None:
+    """Naming a kind shows that one, and an unknown one says which exist."""
+    assert "managed-identity" not in run(["logs", "kinds", "interactive"]).output
+    unknown = run(["logs", "kinds", "telepathy"])
+    assert unknown.exit_code == EXIT_CONFIG
+    assert "service-principal" in unknown.output
+
+
+def test_an_interrupt_leaves_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raising SystemExit would join every worker and print a second traceback.
+
+    An engineer who pressed control C wants the process gone, with whatever it
+    had already written kept.
+    """
+    from entrascope import cli as cli_module
+
+    left: dict[str, int] = {}
+    monkeypatch.setattr(
+        cli_module.os, "_exit", lambda code: left.setdefault("code", code)
+    )
+
+    @cli_module.handled
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    interrupted()
+    assert left["code"] == 130
