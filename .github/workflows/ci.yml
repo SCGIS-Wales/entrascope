@@ -489,7 +489,12 @@ jobs:
 
   release:
     name: GitHub release
-    if: needs.auto-tag.outputs.created == 'true'
+    # always() is needed here as well as on publish-pypi. A skipped job
+    # propagates its skip to everything downstream, so without this the
+    # release is skipped whenever the TestPyPI dry run is switched off.
+    if: >-
+      always() && needs.auto-tag.outputs.created == 'true' &&
+      needs.publish-pypi.result == 'success'
     needs: [ auto-tag, publish-pypi ]
     runs-on: ubuntu-latest
     permissions:
