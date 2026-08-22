@@ -180,6 +180,51 @@ jobs:
           print('configuration read from', config.root)
           "
 
+  mcp-smoke:
+    name: MCP smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      # Start the tool surface and list the tools through the in memory client.
+      # This proves the server builds and every tool registers, without needing
+      # a tenant or a transport.
+      - name: List the tools through the in memory client
+        run: |
+          python -c "
+          import asyncio
+          from fastmcp import Client
+          from entrascope.mcp_stdio import build_server
+          from entrascope.mcp_tools import tool_names
+
+          async def main() -> None:
+              async with Client(build_server()) as client:
+                  tools = await client.list_tools()
+              found = {tool.name for tool in tools}
+              assert found == set(tool_names()), found
+              print('registered', len(found), 'tools')
+
+          asyncio.run(main())
+          "
+
+      - name: Confirm the server starts over stdio
+        run: |
+          printf '' | timeout 10 entrascope serve stdio || status=$?
+          if [ "${status:-0}" -ne 0 ] && [ "${status:-0}" -ne 124 ]; then
+            echo "the stdio server exited with ${status}"
+            exit 1
+          fi
+
   build:
     name: Build
     runs-on: ubuntu-latest
