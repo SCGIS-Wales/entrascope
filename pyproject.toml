@@ -94,5 +94,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=entrascope --cov-report=term-missing --cov-report=xml"
+addopts = "--cov=entrascope --cov-report=term-missing --cov-report=xml --cov-fail-under=90"
 timeout = 120

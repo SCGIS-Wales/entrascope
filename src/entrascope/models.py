@@ -63,6 +63,44 @@ class AuthContext(NamedTuple):
     description: str
 
 
+class ApiError(NamedTuple):
+    """One failure from Microsoft Graph, Azure Monitor or the token endpoint."""
+
+    status: int
+    code: str
+    message: str
+    correlation_id: str = ""
+    request_id: str = ""
+    source: str = ""
+
+    def summary(self) -> str:
+        """Return a one line description of the failure."""
+        source = self.source or "api"
+        return f"{source} returned {self.status} {self.code}: {self.message}"
+
+
+# framework contract: Python requires a class to define an exception type.
+class ApiCallError(EntrascopeError):
+    """An API call failed. The structured detail is on the error attribute."""
+
+    def __init__(self, error: ApiError) -> None:
+        super().__init__(error.summary())
+        self.error = error
+
+
+class QueryResult(NamedTuple):
+    """The result of one Azure Monitor log query."""
+
+    columns: tuple[str, ...]
+    rows: tuple[tuple[object, ...], ...]
+    partial: bool = False
+    detail: str = ""
+
+    def as_dicts(self) -> tuple[dict[str, object], ...]:
+        """Return the rows keyed by column name."""
+        return tuple(dict(zip(self.columns, row, strict=False)) for row in self.rows)
+
+
 class CheckResult(NamedTuple):
     """The outcome of one preflight check."""
 
