@@ -64,6 +64,17 @@ gh variable set ENABLE_TESTPYPI --body true --repo SCGIS-Wales/entrascope
 The first release takes the version already in `pyproject.toml`, so the first
 tag is `v0.1.0`. Every merge after that bumps the patch version.
 
+A release can also be started by hand, from the Actions tab or with:
+
+```bash
+gh workflow run ci.yml --repo SCGIS-Wales/entrascope
+gh workflow run ci.yml --repo SCGIS-Wales/entrascope -f version=0.2.0
+```
+
+Without a version it takes the next patch, exactly as a merge does. With one it
+releases that version, which is how a minor or major release is cut and how a
+re-run after a transient publishing failure is done.
+
 ## Trusted Publishing
 
 PyPI Trusted Publishing over OpenID Connect. No API tokens anywhere. The

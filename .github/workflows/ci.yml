@@ -8,6 +8,16 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # A release normally happens on a merge to main. This lets one be started by
+  # hand as well, for a re-run after a transient publishing failure.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to release. Leave empty to take the next patch after the
+          latest tag, which is what a merge to main does.
+        required: false
+        type: string
 
 env:
   PYTHON_VERSION: "3.14"
@@ -310,7 +320,10 @@ jobs:
   # package that is not finished.
   auto-tag:
     name: Auto-tag release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_RELEASE == 'true'
+    if: >-
+      vars.ENABLE_RELEASE == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       github.event_name == 'workflow_dispatch')
     needs: [ lint, typecheck, guards, test, security, build, install-test, mcp-smoke ]
     runs-on: ubuntu-latest
     permissions:
@@ -327,9 +340,13 @@ jobs:
 
       - name: Determine the next version
         id: version
+        env:
+          REQUESTED: ${{ inputs.version }}
         run: |
           LATEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
-          if [ -z "$LATEST" ]; then
+          if [ -n "$REQUESTED" ]; then
+            NEXT="${REQUESTED#v}"
+          elif [ -z "$LATEST" ]; then
             NEXT=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
           else
             CURRENT="${LATEST#v}"

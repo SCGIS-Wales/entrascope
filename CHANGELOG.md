@@ -140,5 +140,8 @@ versioning.
   attestations, and a GitHub release is created from the same artefact.
 - SECURITY.md, stating what entrascope does with credentials, how to report a
   vulnerability, and the three rules the remote server holds to.
+- A release can be started by hand as well as by a merge, optionally naming the
+  version, which is how a minor release is cut and how a re-run after a
+  transient publishing failure is done.
 
 [0.1.0]: https://github.com/SCGIS-Wales/entrascope/releases/tag/v0.1.0
