@@ -22,6 +22,12 @@ quiet_loggers:
   azure.core: ERROR
   urllib3: WARNING
   httpx: WARNING
+  # The server frameworks announce themselves in their own format. entrascope
+  # already logs that the server is ready, with the canonical URI, as a JSON
+  # line, and one format on one stream is the point.
+  fastmcp: WARNING
+  uvicorn: WARNING
+  uvicorn.error: WARNING
 
 context_fields:
   - correlation_id

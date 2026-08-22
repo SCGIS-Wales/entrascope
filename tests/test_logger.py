@@ -269,3 +269,21 @@ def test_exception_is_recorded(tmp_path: Path, config: Config) -> None:
     except ValueError:
         get_logger("demo").exception("failed")
     assert "ValueError" in read_json_lines(destination)[0]["exception"]
+
+
+def test_third_party_loggers_are_quietened(tmp_path: Path, config: Config) -> None:
+    """Libraries that report the same thing in their own format are quietened.
+
+    azure-identity logs a token failure and we then explain it. The server
+    frameworks announce startup and we already log that as a JSON line. One
+    report, in one format, on one stream.
+    """
+    configure_logging(config, surface="cli")
+    for name in ("azure.identity", "fastmcp", "uvicorn"):
+        assert logging.getLogger(name).level >= logging.WARNING
+
+
+def test_verbose_restores_the_third_party_loggers(config: Config) -> None:
+    """Debugging a dependency needs the dependency's own account of itself."""
+    configure_logging(config, surface="cli", level="DEBUG")
+    assert logging.getLogger("azure.identity").level == logging.DEBUG

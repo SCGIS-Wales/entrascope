@@ -405,3 +405,29 @@ def test_the_http_server_is_reachable_from_the_command_line() -> None:
     assert "never forwarded to Microsoft Graph" in normalised
     assert "--host" in result.output
     assert "--port" in result.output
+
+
+def test_the_web_server_installs_no_logging_of_its_own(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One format on one stream.
+
+    uvicorn resets the levels it owns and announces itself in a second format
+    unless it is told to install no logging configuration.
+    """
+    recorded: dict[str, Any] = {}
+
+    # framework contract: FastMCP expresses the server as an object, so the
+    # double must present the same run method.
+    class Recording:
+        def run(self, **kwargs: Any) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr("entrascope.mcp_http.build_server", lambda *a, **k: Recording())
+    from entrascope.mcp_http import run
+
+    run(config, ENVIRON)
+    assert recorded["uvicorn_config"] == {"log_config": None}
+    assert recorded["show_banner"] is False
+    assert recorded["host"] == config.server.transport.host
+    assert recorded["port"] == config.server.transport.port

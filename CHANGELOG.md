@@ -106,7 +106,9 @@ versioning.
   private attribute is touched.
 - The negotiated protocol revision is pinned in configuration, checked at
   startup and asserted in a test.
-- entrascope serve http runs the remote server.
+- entrascope serve http runs the remote server. Every line the container emits
+  is a JSON line from the common logger, because the web server is told to
+  install no logging configuration of its own.
 - entrascope serve stdio runs the local server. Standard output carries the
   protocol alone, with logging and the banner on standard error, which a
   subprocess test enforces.

@@ -276,7 +276,13 @@ def http_app(
 
 
 def run(config: Config | None = None, environ: Mapping[str, str] | None = None) -> None:
-    """Run the remote server over Streamable HTTP."""
+    """Run the remote server over Streamable HTTP.
+
+    The web server is told to install no logging configuration of its own, so
+    that everything on the stream is a JSON line from our own logger. Without
+    that, uvicorn resets the levels it owns and announces its startup in a
+    second format, which a log parser then has to cope with.
+    """
     settings = config or load_config()
     transport = settings.server.transport
     build_server(settings, environ).run(
@@ -285,6 +291,7 @@ def run(config: Config | None = None, environ: Mapping[str, str] | None = None) 
         port=transport.port,
         path=transport.path,
         show_banner=False,
+        uvicorn_config={"log_config": None},
     )
 
 
