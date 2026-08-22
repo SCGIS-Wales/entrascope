@@ -58,6 +58,13 @@ Issues = "https://github.com/SCGIS-Wales/entrascope/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/entrascope"]
 
+# The configuration directory lives at the repository root, as the steering
+# documents require, and is mapped into the wheel so that an installed
+# entrascope carries its own defaults. A development checkout finds the
+# repository directory instead. See entrascope.config.candidate_directories.
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "entrascope/_config"
+
 [tool.hatch.build.targets.sdist]
 include = ["src/entrascope", "config", "tests", "README.md", "LICENSE"]
 

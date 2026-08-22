@@ -48,6 +48,18 @@ MCP servers. The context fields attached to every record. The redaction
 placeholder, the keys whose values are always replaced, and the regular
 expressions that catch bearer tokens and JSON web tokens wherever they appear.
 
+### credentials.yaml
+
+The credential contract: the directory and file name, the required modes as
+octal strings, and the exact JSON keys. The three environment variable names.
+The authentication source order, which sources are enabled for automatic
+resolution, and whether each yields application or delegated access.
+
+Only the credential file source is enabled by default, because the steering
+document requires the fallbacks to be gated. Naming a source with `--auth`
+selects it whether or not it is enabled, so `az login` followed by
+`--auth azure-cli` works with no configuration change.
+
 ### error-codes.yaml
 
 A default entry for unrecognised codes, then one entry per known code carrying

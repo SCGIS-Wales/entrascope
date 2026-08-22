@@ -22,6 +22,7 @@ EXPECTED_FILES = (
     "retry.yaml",
     "fields.yaml",
     "logging.yaml",
+    "credentials.yaml",
 )
 
 EXPECTED_KQL = (
@@ -119,3 +120,101 @@ def test_redaction_configuration_present() -> None:
     assert "Secret" in redaction["keys"]
     assert redaction["placeholder"]
     assert redaction["patterns"]
+
+
+def test_credentials_contract_is_fixed() -> None:
+    """The credential contract keys and modes are exactly as specified."""
+    credentials = load("credentials.yaml")
+    assert credentials["file"]["directory"] == "~/.entra"
+    assert credentials["file"]["filename"] == "provisioner-credentials.json"
+    assert credentials["file"]["required_file_mode"] == "0600"
+    assert credentials["file"]["required_directory_mode"] == "0700"
+    assert credentials["file"]["keys"] == {
+        "client_id": "ClientID",
+        "secret": "Secret",
+        "tenant_id": "TenantID",
+    }
+
+
+def test_authentication_sources_are_ordered() -> None:
+    """The four sources resolve in the documented order."""
+    sources = load("credentials.yaml")["sources"]
+    assert sources["order"] == ["file", "env", "azure-cli", "default"]
+    assert sources["identity_kind"]["azure-cli"] == "delegated"
+
+
+def test_config_loads_through_the_loader() -> None:
+    """The loader validates every file and reports where they came from."""
+    from entrascope.config import load_config
+
+    config = load_config()
+    assert config.root == CONFIG_ROOT
+    assert config.endpoints.graph.paths["applications"] == "/applications"
+    assert config.retry.concurrency.max_workers >= 1
+    assert config.credentials.file.filename
+
+
+def test_config_schema_rejects_bad_yaml(tmp_path: Path) -> None:
+    """A malformed configuration directory fails at load time, and says why."""
+    from entrascope.config import ConfigError, build_config, find_config_dir
+
+    everything = (*EXPECTED_FILES, "error-codes.yaml", "capabilities.yaml")
+    for name in everything:
+        (tmp_path / name).write_text((CONFIG_ROOT / name).read_text())
+    (tmp_path / "endpoints.yaml").write_text("graph: {base_url: 1}\n")
+    with pytest.raises(ConfigError) as raised:
+        build_config(tmp_path)
+    assert "failed validation" in str(raised.value)
+    assert find_config_dir(tmp_path) == tmp_path
+
+
+def test_config_directory_search_reports_what_it_tried(tmp_path: Path) -> None:
+    """An absent configuration directory names every path that was searched."""
+    from entrascope.config import ConfigError, find_config_dir
+
+    empty = tmp_path / "nowhere"
+    empty.mkdir()
+    import entrascope.config as config_module
+
+    original = config_module.candidate_directories
+    config_module.candidate_directories = lambda explicit=None: (empty,)
+    try:
+        with pytest.raises(ConfigError) as raised:
+            find_config_dir()
+    finally:
+        config_module.candidate_directories = original
+    assert str(empty) in str(raised.value)
+
+
+def test_kql_templates_render_with_their_parameters() -> None:
+    """Every template renders once its declared parameters are supplied."""
+    from entrascope.config import load_config, load_kql, render_kql
+
+    config = load_config()
+    parameters = {
+        "lookback_hours": 24,
+        "app_filter": "",
+        "target_filter": "",
+        "row_limit": 50,
+    }
+    for name in ("signins_failures", "audit_applicationmanagement", "graph_activity"):
+        rendered = render_kql(load_kql(name, config), parameters)
+        assert "{" not in rendered.replace("{app_filter}", "")
+
+
+def test_missing_kql_template_lists_the_available_ones() -> None:
+    """Asking for a template that does not exist says which do."""
+    from entrascope.config import ConfigError, load_config, load_kql
+
+    with pytest.raises(ConfigError) as raised:
+        load_kql("no_such_template", load_config())
+    assert "signins_failures" in str(raised.value)
+
+
+def test_render_kql_reports_a_missing_parameter() -> None:
+    """A template rendered without a parameter says which one is missing."""
+    from entrascope.config import ConfigError, render_kql
+
+    with pytest.raises(ConfigError) as raised:
+        render_kql("take {row_limit}", {})
+    assert "row_limit" in str(raised.value)
