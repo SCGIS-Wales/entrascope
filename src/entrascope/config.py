@@ -169,6 +169,18 @@ class ExpirySettings(_Frozen):
     warning_days: int
 
 
+class TimestampDisplay(_Frozen):
+    decimals: int
+    zone: str
+
+
+class Display(_Frozen):
+    timestamp: TimestampDisplay
+    guest_marker: str
+    wrapping_columns: tuple[str, ...]
+    colours: dict[str, str]
+
+
 class FindingRule(_Frozen):
     severity: str
     detail: str
@@ -193,6 +205,7 @@ class Classification(_Frozen):
     gallery_tags: tuple[str, ...]
     integrated_app_tag: str
     credential_types: dict[str, str]
+    target_types: dict[str, str]
     first_party_owner_tenants: tuple[str, ...]
     audiences: dict[str, str]
 
@@ -204,6 +217,7 @@ class Fields(_Frozen):
     sign_in: dict[str, str]
     audit: dict[str, str]
     expiry: ExpirySettings
+    display: Display
     findings: FindingRules
     classification: Classification
 

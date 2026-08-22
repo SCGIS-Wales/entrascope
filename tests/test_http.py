@@ -345,3 +345,33 @@ def test_the_azure_clients_take_the_same_verification_setting(
     bundle.write_text("-----BEGIN CERTIFICATE-----\n")
     assert verify_setting(config, {"SSL_CERT_FILE": str(bundle)}) == str(bundle)
     assert verify_setting(config, {}) is True
+
+
+def test_an_interrupted_fan_out_abandons_its_queue(config: Config) -> None:
+    """Control C means stop, not finish everything already queued.
+
+    The pool is driven by hand rather than through its context manager, because
+    that manager drains the queue on the way out.
+    """
+    started: list[int] = []
+
+    def work(session: requests.Session, item: int) -> int:
+        started.append(item)
+        if item == 0:
+            raise KeyboardInterrupt
+        return item
+
+    single = config.model_copy(
+        update={
+            "retry": config.retry.model_copy(
+                update={
+                    "concurrency": config.retry.concurrency.model_copy(
+                        update={"max_workers": 1}
+                    )
+                }
+            )
+        }
+    )
+    with pytest.raises(KeyboardInterrupt):
+        fan_out(list(range(50)), work, single)
+    assert len(started) < 50

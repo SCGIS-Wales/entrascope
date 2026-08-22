@@ -4,28 +4,42 @@ One renderer, shared by the command line and the MCP tool surface, so that an
 MCP tool result and a CLI ``--output json`` payload are the same bytes rather
 than two implementations that drift apart.
 
+Four formats, each for a different reader:
+
+- ``table``, for a person at a terminal. Aligned columns, no box drawing,
+  colour where colour means something, and one row per line so that a screen of
+  output can still be read.
+- ``plain``, tab separated with a header. This is the one to pipe into grep,
+  awk or a spreadsheet, and the one to paste into a ticket.
+- ``json`` and ``yaml``, for a machine, carrying every field exactly as
+  Microsoft Graph gave it.
+
 This is also the only module permitted to write to a terminal.
 """
 
 from __future__ import annotations
 
-import io
 import json
+import os
+import re
+import sys
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from datetime import UTC, datetime, tzinfo
+from typing import Any, Literal, TextIO
 
 import click
 import yaml
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from entrascope.config import Config
 from entrascope.redaction import redact_with_config
 
 #: The output formats every command supports.
-OutputFormat = Literal["table", "json", "yaml"]
+OutputFormat = Literal["table", "plain", "json", "yaml"]
 
-OUTPUT_FORMATS: tuple[OutputFormat, ...] = ("table", "json", "yaml")
+OUTPUT_FORMATS: tuple[OutputFormat, ...] = ("table", "plain", "json", "yaml")
 
 #: Exit codes, in one place, shared by every command.
 EXIT_OK = 0
@@ -33,10 +47,69 @@ EXIT_CHECKS_FAILED = 1
 EXIT_CREDENTIALS = 2
 EXIT_API = 3
 EXIT_CONFIG = 4
+#: 128 plus SIGINT, which is what a shell expects from an interrupted process.
+EXIT_INTERRUPTED = 130
 
-#: Marks in a table, chosen to read the same in a pipe as on a terminal.
+#: Marks in a check report, chosen to read the same in a pipe as on a terminal.
 PASS_MARK = "pass"
 FAIL_MARK = "FAIL"
+
+#: Separator for the plain format. A tab survives copy and paste and is what
+#: cut and awk expect.
+PLAIN_SEPARATOR = "\t"
+
+#: Written in a cell that has no value, so a column never looks misaligned.
+EMPTY_CELL = "-"
+
+#: Width used when the destination is not a terminal and says nothing about how
+#: wide it is. A table written to a file or a pipe must not lose characters to a
+#: guess of eighty columns.
+PIPED_WIDTH = 240
+
+#: A column no wider than this may be given its full width rather than elided.
+NARROW_COLUMN = 30
+
+#: The share of the width that guaranteed columns may take between them. The
+#: rest is left for the columns that carry prose, which can wrap.
+GUARANTEED_SHARE = 0.6
+
+
+def column_widths(
+    rows: Sequence[Any], names: Sequence[str], config: Config
+) -> dict[str, int]:
+    """Return the widest rendered value in each column, including the heading."""
+    widths = {name: len(name) for name in names}
+    for row in rows:
+        payload = payload_for(row, config)
+        if not isinstance(payload, Mapping):
+            continue
+        for name in names:
+            widths[name] = max(widths[name], len(cell(payload.get(name), config)))
+    return widths
+
+
+def guaranteed_widths(
+    widths: Mapping[str, int], wrapping: set[str], available: int
+) -> dict[str, int]:
+    """Decide which columns keep their full width.
+
+    A short column holding an identifier is no use half printed, so it is given
+    the room it needs. The narrowest are granted first, and only while a share
+    of the line remains, because guaranteeing everything would push the last
+    columns off the end entirely.
+    """
+    budget = int(available * GUARANTEED_SHARE)
+    granted: dict[str, int] = {}
+    candidates = sorted(
+        ((name, width) for name, width in widths.items() if name not in wrapping),
+        key=lambda pair: pair[1],
+    )
+    for name, width in candidates:
+        if width > NARROW_COLUMN or width > budget:
+            continue
+        granted[name] = width
+        budget -= width
+    return granted
 
 
 def to_payload(value: Any) -> Any:
@@ -74,17 +147,180 @@ def columns_for(rows: Sequence[Any]) -> tuple[str, ...]:
     return ("value",)
 
 
-def cell(value: Any) -> str:
-    """Render one value for a table cell."""
-    if value is None:
-        return ""
+#: A Graph timestamp, which may carry any number of fractional digits.
+TIMESTAMP = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def zone_for(config: Config) -> tzinfo:
+    """Return the zone timestamps are shown in."""
+    if config.fields.display.timestamp.zone == "local":
+        return datetime.now().astimezone().tzinfo or UTC
+    return UTC
+
+
+def format_timestamp(value: str, config: Config) -> str:
+    """Render a Graph timestamp for a person, with its zone named.
+
+    Graph reports to the nanosecond in UTC. Nine decimal places cost a third of
+    the column and settle nothing, and a timestamp with no zone on it invites
+    the wrong conclusion, so the zone is always named.
+    """
+    settings = config.fields.display.timestamp
+    match = TIMESTAMP.match(value)
+    if match is None:
+        return value
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    shown = moment.astimezone(zone_for(config))
+    stamp = shown.strftime("%Y-%m-%d %H:%M:%S")
+    if settings.decimals > 0:
+        fraction = f"{shown.microsecond / 1_000_000:.{settings.decimals}f}"
+        stamp = f"{stamp}{fraction[1:]}"
+    return f"{stamp} {shown.strftime('%Z') or 'UTC'}"
+
+
+def cell(value: Any, config: Config) -> str:
+    """Render one value for a person to read."""
+    if value is None or value == "":
+        return EMPTY_CELL
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, Mapping):
         return json.dumps(value, default=str)
     if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-        return ", ".join(cell(item) for item in value)
+        if value and all(isinstance(item, Mapping) for item in value):
+            return summarise(value, config)
+        rendered = ", ".join(cell(item, config) for item in value)
+        return rendered or EMPTY_CELL
+    if isinstance(value, str):
+        return shorten_guest(format_timestamp(value, config), config)
     return str(value)
+
+
+def shorten_guest(value: str, config: Config) -> str:
+    """Trim a guest account to the part that names the person.
+
+    A guest is reported as their whole home tenant address, which is half a
+    column of characters that say nothing the reader did not already know. The
+    full value is kept in every machine readable format.
+    """
+    marker = config.fields.display.guest_marker
+    if marker and marker in value:
+        return value.split(marker)[0]
+    return value
+
+
+#: Keys whose values are worth tallying when a cell holds a list of objects.
+TALLY_KEYS = ("state", "severity", "result", "kind", "type")
+
+
+def summarise(items: Sequence[Any], config: Config) -> str:
+    """Summarise a list of objects for a table cell.
+
+    A cell holding the JSON of three credentials tells the reader nothing and
+    costs the whole line. A count, and a tally of whatever distinguishes them,
+    tells them whether to look closer. The objects themselves are in every
+    machine readable format.
+    """
+    _ = config
+    key = next((name for name in TALLY_KEYS if any(name in item for item in items)), "")
+    if not key:
+        return f"{len(items)} items"
+    tally: dict[str, int] = {}
+    for item in items:
+        value = str(item.get(key, "")) or "unknown"
+        tally[value] = tally.get(value, 0) + 1
+    parts = ", ".join(f"{count} {name}" for name, count in sorted(tally.items()))
+    return f"{len(items)}: {parts}"
+
+
+def colour_for(text: str, config: Config) -> str:
+    """Return the style for a value whose meaning is worth seeing at a glance."""
+    return config.fields.display.colours.get(text, "")
+
+
+def styled(text: str, config: Config) -> Text:
+    """Return a cell, coloured when the value carries a severity or an outcome."""
+    return Text(text, style=colour_for(text, config))
+
+
+def console_for(stream: TextIO | None = None, record: bool = False) -> Console:
+    """Build the console.
+
+    rich decides for itself whether the destination is a terminal, so colour
+    appears for a person and disappears in a pipe or a file without anything
+    here having to ask. NO_COLOR is honoured because rich honours it.
+    """
+    # framework contract: rich expresses output as a Console object. It carries
+    # presentation only.
+    console = Console(
+        file=stream or sys.stdout,
+        record=record,
+        soft_wrap=False,
+        highlight=False,
+    )
+    if not console.is_terminal:
+        # A pipe or a file has no width. Leaving rich to guess eighty columns
+        # would silently cut characters out of the record. COLUMNS is honoured
+        # only for a real terminal, where it means something.
+        console.width = PIPED_WIDTH
+    return console
+
+
+def build_table(
+    rows: Sequence[Any],
+    config: Config,
+    *,
+    title: str = "",
+    columns: Sequence[str] | None = None,
+    available: int = 100,
+) -> Table:
+    """Build a borderless, aligned table.
+
+    No box drawing. A grid of vertical bars cannot be pasted into a ticket, and
+    at ninety rows it is harder to read than plain columns. Only prose columns
+    wrap; everything else stays on one line and is elided, because a value split
+    across four lines can be neither read nor copied.
+    """
+    names = tuple(columns) if columns else columns_for(rows)
+    wrapping = set(config.fields.display.wrapping_columns)
+    # framework contract: rich expresses a table as an object, for presentation.
+    table = Table(
+        title=title or None,
+        box=None,
+        show_edge=False,
+        pad_edge=False,
+        title_justify="left",
+        title_style="bold",
+        header_style="bold",
+        padding=(0, 2, 0, 0),
+    )
+    guaranteed = guaranteed_widths(
+        column_widths(rows, names, config), wrapping, available
+    )
+    for name in names:
+        wraps = name in wrapping
+        table.add_column(
+            name.replace("_", " "),
+            overflow="fold" if wraps else "ellipsis",
+            no_wrap=not wraps,
+            min_width=guaranteed.get(name),
+        )
+    for row in rows:
+        payload = payload_for(row, config)
+        if isinstance(payload, Mapping):
+            table.add_row(
+                *[styled(cell(payload.get(name), config), config) for name in names]
+            )
+        else:
+            table.add_row(styled(cell(payload, config), config))
+    return table
 
 
 def render_table(
@@ -95,26 +331,39 @@ def render_table(
     columns: Sequence[str] | None = None,
     width: int | None = None,
 ) -> str:
-    """Render rows as a table for a person to read."""
+    """Render rows as a table and return the text, for a test or a file."""
+    console = console_for(record=True)
+    console.width = width or console.width
+    console.begin_capture()
+    console.print(
+        build_table(rows, config, title=title, columns=columns, available=console.width)
+    )
+    return console.end_capture()
+
+
+def render_plain(
+    rows: Sequence[Any],
+    config: Config,
+    *,
+    columns: Sequence[str] | None = None,
+) -> str:
+    """Render rows as tab separated lines with a header.
+
+    This is the format to pipe, to paste and to grep. Values are never
+    truncated and never wrapped, so a line is a record.
+    """
     names = tuple(columns) if columns else columns_for(rows)
-    # framework contract: rich expresses a table as an object. It is used for
-    # presentation only and carries none of our logic.
-    table = Table(title=title or None, show_lines=False)
-    for name in names:
-        table.add_column(name.replace("_", " "), overflow="fold")
+    if not names:
+        return ""
+    lines = [PLAIN_SEPARATOR.join(names)]
     for row in rows:
         payload = payload_for(row, config)
         if isinstance(payload, Mapping):
-            table.add_row(*[cell(payload.get(name)) for name in names])
+            values = [cell(payload.get(name), config) for name in names]
         else:
-            table.add_row(cell(payload))
-    # The console writes into a buffer rather than to the terminal. Printing
-    # here as well as returning the text would render every table twice.
-    console = Console(
-        record=True, width=width or 200, no_color=True, file=io.StringIO()
-    )
-    console.print(table)
-    return console.export_text()
+            values = [cell(payload, config)]
+        lines.append(PLAIN_SEPARATOR.join(value.replace("\t", " ") for value in values))
+    return "\n".join(lines)
 
 
 def render(
@@ -135,9 +384,46 @@ def render(
     if output == "yaml":
         payload = payload_for(list(rows), config)
         return yaml.safe_dump(payload, sort_keys=False, default_flow_style=False)
+    if output == "plain":
+        return render_plain(rows, config, columns=columns)
     if not rows:
-        return f"{title or 'No rows'}: nothing to show.\n"
+        return f"{title or 'No rows'}: nothing to show."
     return render_table(rows, config, title=title, columns=columns)
+
+
+def show(
+    rows: Sequence[Any],
+    config: Config,
+    output: OutputFormat = "table",
+    *,
+    title: str = "",
+    columns: Sequence[str] | None = None,
+    summary: str = "",
+) -> None:
+    """Write rows to the terminal in the requested format.
+
+    A table is written through the console rather than rendered to a string
+    first, so that colour and the real terminal width are used when there is a
+    terminal, and neither when the output is piped.
+    """
+    if output != "table":
+        emit(render(rows, config, output, title=title, columns=columns))
+        return
+    if not rows:
+        emit(f"{title or 'No rows'}: nothing to show.")
+        return
+    console = console_for()
+    console.print(
+        build_table(rows, config, title=title, columns=columns, available=console.width)
+    )
+    if summary:
+        console.print(Text(summary, style="dim"))
+
+
+def count_summary(rows: Sequence[Any], noun: str) -> str:
+    """Return a one line count, so a long listing says how long it was."""
+    total = len(rows)
+    return f"{total} {noun}" if total != 1 else f"1 {noun.rstrip('s')}"
 
 
 def emit(text: str) -> None:
@@ -146,7 +432,7 @@ def emit(text: str) -> None:
 
 
 def emit_error(text: str) -> None:
-    """Write an error message to standard error."""
+    """Write a message to standard error."""
     click.echo(text.rstrip("\n"), err=True)
 
 
@@ -155,13 +441,9 @@ def mark(passed: bool) -> str:
     return PASS_MARK if passed else FAIL_MARK
 
 
-def render_checks(
-    results: Sequence[Any], config: Config, output: OutputFormat = "table"
-) -> str:
-    """Render preflight check results, which have their own column layout."""
-    if output != "table":
-        return render(results, config, output)
-    rows = [
+def check_rows(results: Sequence[Any]) -> list[dict[str, Any]]:
+    """Project check results into the columns the report shows."""
+    return [
         {
             "outcome": mark(bool(result.passed)),
             "check": result.check,
@@ -171,9 +453,43 @@ def render_checks(
         }
         for result in results
     ]
-    return render_table(rows, config, title="entrascope doctor")
+
+
+def render_checks(
+    results: Sequence[Any], config: Config, output: OutputFormat = "table"
+) -> str:
+    """Render preflight check results, which have their own column layout."""
+    if output in ("json", "yaml"):
+        return render(results, config, output)
+    return render(check_rows(results), config, output, title="entrascope doctor")
+
+
+def show_checks(
+    results: Sequence[Any], config: Config, output: OutputFormat = "table"
+) -> None:
+    """Write the preflight report."""
+    if output in ("json", "yaml"):
+        emit(render(results, config, output))
+        return
+    failed = sum(1 for result in results if not result.passed)
+    show(
+        check_rows(results),
+        config,
+        output,
+        title="entrascope doctor",
+        summary=(
+            f"{len(results)} checks, {failed} failed"
+            if failed
+            else f"{len(results)} checks, all passed"
+        ),
+    )
 
 
 def exit_code_for_checks(results: Sequence[Any]) -> int:
     """Return the exit code for a set of checks."""
     return EXIT_OK if all(result.passed for result in results) else EXIT_CHECKS_FAILED
+
+
+def colour_disabled() -> bool:
+    """Return whether colour has been switched off in the environment."""
+    return bool(os.environ.get("NO_COLOR"))

@@ -283,20 +283,31 @@ def run_checks(
 ) -> tuple[CheckResult, ...]:
     """Run every preflight check and return the results in report order."""
     results: list[CheckResult] = [check_network(config)]
-    results.extend(check_credential_storage(config, requested))
 
+    # Authentication is resolved before the credential file is reported on,
+    # because which storage matters depends on which source answered. Reporting
+    # a missing credential file to somebody who signed in with the Azure CLI
+    # tells them off for nothing.
     try:
         context, credential = resolve_auth(config, requested)
     except CredentialError as failure:
+        lines = [line.strip() for line in str(failure).splitlines() if line.strip()]
         results.append(
             CheckResult(
                 check="authentication",
                 passed=False,
-                detail=str(failure).splitlines()[0],
-                remediation="Run az login and pass --auth azure-cli, or place "
-                "client credentials in the credential file.",
+                detail=" ".join(lines[:2]),
+                remediation=lines[-1]
+                if len(lines) > 2
+                else (
+                    "Run az login, or place client credentials in the "
+                    "credential file, or name a source with --auth."
+                ),
             )
         )
+        # Only now are the file checks useful, because they say why that source
+        # could not answer.
+        results.extend(check_permissions(config.credentials))
         return tuple(results)
 
     results.append(
@@ -306,6 +317,7 @@ def run_checks(
             detail=f"Using {context.description}.",
         )
     )
+    results.extend(check_credential_storage(config, context.source))
 
     token_result, token = check_token(config, credential, context)
     results.append(token_result)

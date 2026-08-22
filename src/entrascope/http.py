@@ -348,13 +348,21 @@ def fan_out[Item, Result](
         return ()
     workers = max(1, min(config.retry.concurrency.max_workers, len(items)))
     sessions = [build_session(config, token_provider) for _ in range(workers)]
+    # The pool is driven by hand rather than through its context manager,
+    # because that manager waits for every queued task on the way out. An
+    # engineer pressing control C wants the queue abandoned, not drained.
+    pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            indexed = list(enumerate(items))
-            results = pool.map(
-                lambda pair: work(sessions[pair[0] % workers], pair[1]), indexed
-            )
-            return tuple(results)
+        futures = [
+            pool.submit(work, sessions[index % workers], item)
+            for index, item in enumerate(items)
+        ]
+        return tuple(future.result() for future in futures)
+    except KeyboardInterrupt:
+        log.warning("interrupted, abandoning %s queued calls", len(items))
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
     finally:
+        pool.shutdown(wait=False)
         for session in sessions:
             session.close()

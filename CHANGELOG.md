@@ -7,6 +7,44 @@ versioning.
 
 ## [Unreleased]
 
+### Changed
+- The Azure CLI session resolves automatically. Somebody who ran az login no
+  longer has to name a source. The credential file still wins when present, so
+  an unattended run is unchanged, and the environment variables and the full
+  azure-identity chain stay off because either can pick up an identity nobody
+  intended.
+- Every global option works on either side of the subcommand.
+- Output reworked for reading and for copying. Tables lost their box drawing,
+  which could not be pasted and read worse the longer they got, and gained
+  colour on the values that carry a severity or an outcome, adaptive width, a
+  count on the end, and a readable subset of columns rather than every field
+  squeezed into none. A new plain format is tab separated, complete and
+  untruncated, for grep, a spreadsheet or a ticket. A table written to a pipe
+  is no longer truncated to a guessed eighty columns.
+- Timestamps show a hundredth of a second and name their zone, in UTC by
+  default or the machine's own with --timezone local. Guest accounts are shown
+  as the part that names the person.
+- Audit events say what kind of object was changed, in this tool's own words,
+  and carry its identifier.
+- A cell holding a list of objects is summarised by count and state rather than
+  filling the line with JSON.
+- The default log listing is 25 rows rather than 100.
+- logs kinds describes what each kind covers and what it needs, rather than
+  showing the OData filter, and can be given one kind to describe.
+
+### Fixed
+- Control C now stops the tool. A threaded fan out abandons its queue instead
+  of draining it, and the process leaves at once rather than joining every
+  worker and printing a second traceback over the first.
+- A subcommand typed at the top level says where it lives and prints its help,
+  rather than only reporting that no such command exists.
+- Options given with no command show the help rather than reporting a missing
+  command.
+- The doctor reports the credential file only when the credential file is the
+  source that answered, rather than telling somebody who signed in with the
+  Azure CLI off for not having one.
+
+
 ## [0.1.0]
 
 ### Added

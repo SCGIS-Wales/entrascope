@@ -253,6 +253,8 @@ class AuditEvent(NamedTuple):
     timestamp: str
     initiated_by: str
     target: str
+    target_type: str = ""
+    target_id: str = ""
     correlation_id: str = ""
 
 

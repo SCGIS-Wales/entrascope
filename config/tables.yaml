@@ -82,4 +82,7 @@ log_queries:
 
 defaults:
   lookback_hours: 24
-  row_limit: 100
+  # Deliberately small. A log listing is for reading, and a wall of rows is
+  # not. Raise it with --limit when you want the lot, or use --output plain and
+  # pipe it somewhere that can hold it.
+  row_limit: 25

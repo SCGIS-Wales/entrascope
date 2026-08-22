@@ -369,10 +369,15 @@ def resolve_auth(
         log.debug("authenticated using %s", context.description)
         return context, credential
 
+    tried = ", ".join(
+        source
+        for source in resolution_order(settings)
+        if source_enabled(settings, source)
+    )
     detail = "\n  ".join(failures) if failures else "no source is enabled."
     raise CredentialError(
-        "No authentication source succeeded.\n  "
+        f"No authentication source succeeded. Tried: {tried}.\n  "
         f"{detail}\n"
-        "Run az login and pass --auth azure-cli, or place client credentials "
-        "in the credential file."
+        "Run az login, or place client credentials in the credential file, or "
+        "name a source explicitly with --auth."
     )
