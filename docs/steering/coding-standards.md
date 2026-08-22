@@ -60,5 +60,9 @@ pre-commit hooks. The build fails on any finding.
 1. No endpoint, table name or documentation URL literal in `src/`.
 2. No class without a framework contract comment.
 3. No secret in any command or tool output.
-4. `requests` imported only in `http.py`, `httpx` imported nowhere.
+4. `requests` imported only in `http.py`, `httpx` imported nowhere. Other
+   modules take the `Session` alias that `http.py` re-exports, so they depend
+   on our transport rather than on the library. A bare URL scheme such as
+   `https://`, needed to mount a transport adapter, names no endpoint and is
+   exempt from guard one.
 5. No direct `logging.getLogger` call, and no `print` outside `render.py`.

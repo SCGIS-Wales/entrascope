@@ -35,3 +35,17 @@ versioning.
   variables, the Azure CLI session and DefaultAzureCredential. Only the file
   source resolves automatically by default, and naming any source with --auth
   selects it regardless.
+- The HTTP transport: one session factory, retry and backoff expressed as a
+  urllib3 policy mounted on the adapter, timeouts and pool sizes from
+  configuration, an access log line per call, and one structured error carrying
+  the status, code, message, correlation id and request id, recognising the
+  Microsoft Graph, Azure Resource Manager and token endpoint error shapes.
+- Threaded fan out over independent sessions, ordered results, worker count
+  from configuration.
+- Microsoft Graph calls with every endpoint read from configuration, next link
+  paging bounded by a page ceiling, OData query parameters, single object and
+  collection reads, and a token provider that caches inside a closure and
+  renews before expiry.
+- Azure Monitor log queries rendered from KQL templates by named parameter,
+  returning an immutable result that keeps partial data along with the reason
+  it was partial.

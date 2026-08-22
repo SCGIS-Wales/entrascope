@@ -23,6 +23,10 @@ HTTP_MODULE = "http.py"
 RENDER_MODULE = "render.py"
 LOGGER_MODULE = "logger.py"
 
+#: Literals that are a bare URL scheme rather than an endpoint. Mounting a
+#: transport adapter needs the scheme and names no host.
+SCHEME_LITERALS = frozenset({"https://", "http://"})
+
 #: Patterns that indicate an endpoint, table name or documentation URL has been
 #: written into code rather than into config/.
 FORBIDDEN_LITERALS = (
@@ -74,6 +78,7 @@ def test_guard_no_hardcoded_endpoints(path: Path) -> None:
     offenders = [
         literal
         for literal in string_literals(tree)
+        if literal not in SCHEME_LITERALS
         for pattern in FORBIDDEN_LITERALS
         if pattern.search(literal)
     ]
