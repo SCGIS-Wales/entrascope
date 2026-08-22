@@ -162,3 +162,299 @@ errors:
       Run az ad app permission admin-consent for the application, or grant
       consent in the portal under API permissions.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
+
+  # ----------------------------------------------------------------------
+  # OAuth 2.0 and OpenID Connect
+  # ----------------------------------------------------------------------
+
+  AADSTS50194:
+    meaning: >
+      The application is registered for a single tenant but the request went to
+      the common endpoint.
+    likely_cause: >
+      A single tenant application must authenticate against its own tenant.
+      The common and organizations endpoints are for multi tenant applications.
+    remediation: >
+      Send the request to https://login.microsoftonline.com/{tenant}/ instead
+      of /common/, or change the sign in audience of the registration to
+      AzureADMultipleOrgs.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/howto-convert-app-to-be-multi-tenant
+
+  AADSTS50105:
+    meaning: >
+      The signed in user is not assigned to a role for the application.
+    likely_cause: >
+      The enterprise application requires assignment, and this user or their
+      groups have not been assigned. Consent alone does not grant access.
+    remediation: >
+      Assign the user or a group they belong to, or set the assignment
+      requirement to false if the application should be open to the tenant.
+      Run entrascope investigate to see the assignment requirement.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal
+
+  AADSTS7000112:
+    meaning: The application is disabled.
+    likely_cause: >
+      The service principal has accountEnabled set to false, so every sign in
+      to it fails whatever else is configured.
+    remediation: >
+      Enable the enterprise application, or remove it if it is retired. Run
+      entrascope discover enterprise-apps to see which are disabled.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/disable-user-sign-in-portal
+
+  AADSTS7000218:
+    meaning: >
+      The request body must contain either client_assertion or client_secret.
+    likely_cause: >
+      A confidential client authenticated with neither a secret nor a
+      certificate assertion, often because the client was configured as public.
+    remediation: >
+      Send the client secret, or a signed client assertion, or configure the
+      application as a public client if it genuinely holds no credential.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow
+
+  AADSTS700027:
+    meaning: Client assertion validation failed.
+    likely_cause: >
+      The certificate that signed the assertion is not registered on the
+      application, has expired, or the assertion itself is malformed or past
+      its lifetime.
+    remediation: >
+      Register the signing certificate on the application, check its expiry
+      with entrascope discover applications --expiring, and confirm the
+      assertion audience and lifetime.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+
+  AADSTS700051:
+    meaning: >
+      The response type token is not enabled for the application.
+    likely_cause: >
+      An implicit flow was requested and the registration does not allow it.
+    remediation: >
+      Use the authorization code flow with PKCE, which is what a single page
+      application should use, or enable the implicit grant on the registration
+      if a legacy client genuinely needs it.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
+
+  AADSTS700082:
+    meaning: The refresh token has expired because of inactivity.
+    likely_cause: The token was not used within its inactivity window.
+    remediation: Sign in again to obtain a new refresh token.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens
+
+  AADSTS650053:
+    meaning: The application asked for a scope the resource does not expose.
+    likely_cause: >
+      The scope name is wrong, or it is defined on a different resource, or the
+      resource exposes it under a different application id URI.
+    remediation: >
+      Check the scopes the resource exposes under Expose an API and request one
+      of those. Run entrascope inspect on the resource to list them.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc
+
+  AADSTS650052:
+    meaning: >
+      The application needs access to a service that the organisation has not
+      subscribed to or enabled.
+    likely_cause: >
+      A permission was requested for a first party service the tenant does not
+      have, or the resource service principal is not provisioned.
+    remediation: >
+      Subscribe to or enable the service, or remove the permission from the
+      application.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS9002325:
+    meaning: >
+      A single page application must use the authorization code flow with
+      PKCE rather than the implicit flow.
+    likely_cause: >
+      The redirect URI is registered on the single page application platform
+      and the request asked for an implicit grant, or a cross origin token
+      request was made without PKCE.
+    remediation: >
+      Use the authorization code flow with a code challenge, and register the
+      redirect URI on the single page application platform.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
+
+  AADSTS9002313:
+    meaning: The request is malformed or invalid.
+    likely_cause: >
+      A required parameter is missing or misspelled, or a value was sent that
+      the endpoint does not accept.
+    remediation: >
+      Compare the request against the reference for the flow in use. The
+      correlation id in the response identifies the request in the sign in
+      logs.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
+
+  AADSTS90002:
+    meaning: The tenant was not found.
+    likely_cause: >
+      The tenant identifier or domain in the authority is wrong, or the tenant
+      has been deleted.
+    remediation: >
+      Check the tenant id or domain in the authority URL. Run entrascope whoami
+      to see the tenant this tool is querying.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS53003:
+    meaning: Access was blocked by a conditional access policy.
+    likely_cause: >
+      A policy applies to this user, application or device and its conditions
+      were not met.
+    remediation: >
+      Find the policy in the sign in log entry for the correlation id. Run
+      entrascope whoami to list the conditional access policies in the tenant.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/conditional-access/troubleshoot-conditional-access
+
+  AADSTS50076:
+    meaning: Multifactor authentication is required.
+    likely_cause: >
+      A policy requires a second factor, and the flow in use cannot prompt for
+      one. A client credentials flow never can.
+    remediation: >
+      Use a flow that can prompt, or exclude the application from the policy if
+      it runs unattended, or use a workload identity.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/authentication/concept-mfa-howitworks
+
+  AADSTS50058:
+    meaning: A silent sign in request was sent but there is no signed in user.
+    likely_cause: The browser session has expired or was never established.
+    remediation: Fall back to an interactive sign in.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS50020:
+    meaning: >
+      The user account is from an identity provider that this tenant does not
+      accept, or the account does not exist here.
+    likely_cause: >
+      A personal account signed in to a single tenant application, or a guest
+      was never invited.
+    remediation: >
+      Invite the user as a guest, or change the sign in audience of the
+      application to accept the account type.
+    docs_url: https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/app-integration/error-code-aadsts50020-user-account-identity-provider-does-not-exist
+
+  AADSTS500341:
+    meaning: The user account has been deleted.
+    likely_cause: The account was removed while a token was still in use.
+    remediation: >
+      Use a different account, or restore the deleted user within the recovery
+      window.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  # ----------------------------------------------------------------------
+  # SAML single sign on
+  # ----------------------------------------------------------------------
+
+  AADSTS75005:
+    meaning: The request is not a valid SAML 2.0 protocol message.
+    likely_cause: >
+      The service provider sent something the endpoint could not parse, often a
+      SAML 1.1 message, an unsupported binding, or a malformed request.
+    remediation: >
+      Confirm the service provider is configured for SAML 2.0 and check the
+      binding it uses. Compare its metadata against the enterprise application.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
+
+  AADSTS750054:
+    meaning: >
+      The request carried no SAMLRequest or SAMLResponse parameter.
+    likely_cause: >
+      The service provider posted to the wrong endpoint, or a redirect lost the
+      parameter.
+    remediation: >
+      Point the service provider at the sign on URL published in the enterprise
+      application, and confirm the binding.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
+
+  AADSTS7500514:
+    meaning: >
+      A supported response type was not found in the SAML request.
+    likely_cause: >
+      The service provider asked for a response type the endpoint does not
+      issue.
+    remediation: >
+      Check the assertion consumer service configuration on the service
+      provider side.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
+
+  AADSTS75011:
+    meaning: >
+      The authentication method the user used does not match the one the
+      application requested.
+    likely_cause: >
+      The service provider asked for a specific authentication context, and the
+      existing session was established another way.
+    remediation: >
+      Remove the authentication context requirement from the service provider,
+      or make the user re-authenticate with the method it asks for.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
+
+  AADSTS50107:
+    meaning: The requested federation realm object was not found.
+    likely_cause: >
+      The identifier the service provider sent does not match any identifier
+      URI on the enterprise application.
+    remediation: >
+      Add the exact entity id the service provider sends to the identifier URIs
+      of the enterprise application. Run entrascope inspect on it to see the
+      identifiers currently set.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-saml-single-sign-on
+
+  AADSTS51004:
+    meaning: The user account does not exist in the directory.
+    likely_cause: >
+      The name identifier the service provider expects does not resolve to a
+      user here, often because the claim maps to the wrong attribute.
+    remediation: >
+      Check the name identifier claim mapping on the enterprise application
+      against what the service provider expects.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-claims-mapping
+
+  AADSTS50008:
+    meaning: The SAML assertion is missing or misconfigured.
+    likely_cause: >
+      A federated identity provider did not return an assertion, or the
+      assertion could not be validated.
+    remediation: >
+      Check the federation configuration and the signing certificate on both
+      sides.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
+
+  Microsoft.Online.Workflows.EntitlementValidationException:
+    meaning: >
+      The directory refused the change because the tenant is not entitled to
+      the feature it needs.
+    likely_cause: >
+      Configuring SAML single sign on, or another feature gated by licence, on
+      a tenant without the licence that allows it. Entra ID Free allows a
+      limited number of applications with SAML single sign on.
+    remediation: >
+      Check the licence tier with entrascope doctor. Assign an Entra ID P1 or
+      P2 licence, or make the change in a tenant that has one.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/what-is-single-sign-on
+
+  # ----------------------------------------------------------------------
+  # Microsoft Graph
+  # ----------------------------------------------------------------------
+
+  Request_ResourceNotFound:
+    meaning: The object named in the request does not exist.
+    likely_cause: >
+      An identifier is wrong, the object was deleted, or the caller cannot see
+      it and Graph reports absence rather than refusal.
+    remediation: >
+      Confirm the identifier. A deleted application can be restored from the
+      deleted items within thirty days.
+    docs_url: https://learn.microsoft.com/en-us/graph/errors
+
+  Authorization_IdentityNotFound:
+    meaning: The identity making the request could not be resolved.
+    likely_cause: >
+      The service principal for the application does not exist in this tenant,
+      even though the application registration does.
+    remediation: >
+      Create the service principal with az ad sp create --id <app-id>.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/app-objects-and-service-principals

@@ -30,6 +30,7 @@ from typing import Any, Literal, TextIO
 import click
 import yaml
 from rich.console import Console
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -245,9 +246,52 @@ def colour_for(text: str, config: Config) -> str:
     return config.fields.display.colours.get(text, "")
 
 
-def styled(text: str, config: Config) -> Text:
-    """Return a cell, coloured when the value carries a severity or an outcome."""
-    return Text(text, style=colour_for(text, config))
+def styled(text: str, config: Config, link: str = "") -> Text:
+    """Return a cell, coloured by meaning and linked where there is somewhere to go.
+
+    A terminal that understands hyperlinks makes the value clickable. One that
+    does not shows exactly the same characters, and the URL itself is in every
+    machine readable format, so nothing depends on the terminal.
+    """
+    style = colour_for(text, config)
+    if link:
+        style = f"{style} link {link}".strip()
+    return Text(text, style=style)
+
+
+def portal_link(row: Mapping[str, Any], column: str, config: Config) -> str:
+    """Return the portal address for one cell, or an empty string.
+
+    A listing names an object. The next thing anybody wants is to look at it.
+    """
+    portal = config.endpoints.portal
+    if column == "docs_url":
+        return str(row.get(column) or "")
+    if column in ("target", "target_id"):
+        kind = str(row.get("target_type") or "")
+        identifier = str(row.get("target_id") or "")
+        if not identifier:
+            return ""
+        if kind.startswith("application"):
+            return portal.application_by_object.format(object_id=identifier)
+        if kind.startswith("enterprise"):
+            return portal.enterprise_application.format(object_id=identifier)
+        if kind == "user":
+            return portal.user.format(object_id=identifier)
+        if kind == "group":
+            return portal.group.format(object_id=identifier)
+        return ""
+    if column in ("display_name", "app_id", "object_id"):
+        app_id = str(row.get("app_id") or "")
+        object_id = str(row.get("object_id") or "")
+        kind = str(row.get("service_principal_type") or "")
+        if kind and object_id:
+            return portal.enterprise_application.format(object_id=object_id)
+        if app_id:
+            return portal.application.format(app_id=app_id)
+    if column in ("app_display_name", "app_id") and row.get("app_id"):
+        return portal.application.format(app_id=str(row["app_id"]))
+    return ""
 
 
 def console_for(stream: TextIO | None = None, record: bool = False) -> Console:
@@ -316,7 +360,14 @@ def build_table(
         payload = payload_for(row, config)
         if isinstance(payload, Mapping):
             table.add_row(
-                *[styled(cell(payload.get(name), config), config) for name in names]
+                *[
+                    styled(
+                        cell(payload.get(name), config),
+                        config,
+                        portal_link(payload, name, config),
+                    )
+                    for name in names
+                ]
             )
         else:
             table.add_row(styled(cell(payload, config), config))
@@ -420,10 +471,62 @@ def show(
         console.print(Text(summary, style="dim"))
 
 
+def render_record(row: Any, config: Config, *, title: str = "") -> str:
+    """Render one object as a list of fields, for reading in full.
+
+    A row in a listing is a summary. This is the whole thing, which is what
+    somebody who has picked one row out of ninety actually wants.
+    """
+    payload = payload_for(row, config)
+    if not isinstance(payload, Mapping):
+        return cell(payload, config)
+    width = max((len(str(name)) for name in payload), default=0)
+    lines = [f"{title}"] if title else []
+    for name, value in payload.items():
+        rendered = cell(value, config)
+        if isinstance(value, Mapping | list) and value:
+            rendered = json.dumps(value, default=str)
+        lines.append(f"  {str(name).replace('_', ' '):<{width}}  {rendered}")
+    return "\n".join(lines)
+
+
 def count_summary(rows: Sequence[Any], noun: str) -> str:
     """Return a one line count, so a long listing says how long it was."""
     total = len(rows)
     return f"{total} {noun}" if total != 1 else f"1 {noun.rstrip('s')}"
+
+
+def yaml_text(payload: Any, config: Config) -> str:
+    """Return a payload as YAML, in the order it was built rather than sorted."""
+    return yaml.safe_dump(
+        payload_for(payload, config),
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+        width=100,
+    )
+
+
+def show_yaml(payload: Any, config: Config, output: OutputFormat = "yaml") -> None:
+    """Write a payload as YAML, coloured when there is a terminal to colour.
+
+    A report of this size is far easier to read with its keys picked out, and
+    YAML is the shape it already has. Piped, it is exactly the same text with
+    no escape codes, so it can be saved or parsed.
+    """
+    if output == "json":
+        emit(json.dumps(payload_for(payload, config), indent=2, default=str))
+        return
+    text_form = yaml_text(payload, config)
+    console = console_for()
+    if not console.is_terminal:
+        emit(text_form)
+        return
+    # framework contract: rich expresses highlighting as a Syntax object. It is
+    # presentation only, and the text is identical without it.
+    console.print(
+        Syntax(text_form, "yaml", theme="ansi_dark", background_color="default")
+    )
 
 
 def emit(text: str) -> None:

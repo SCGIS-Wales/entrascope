@@ -18,6 +18,7 @@ from azure.core.credentials import TokenCredential
 from entrascope.capabilities import (
     ROLES_CLAIM,
     SCOPES_CLAIM,
+    acts_as_the_user,
     capability_results,
     claim_values,
     decode_claims,
@@ -130,6 +131,20 @@ def check_authorisation(
     """
     if context.identity_kind == "delegated":
         held = claim_values(claims, SCOPES_CLAIM)
+        acting = acts_as_the_user(claims, config)
+        if acting:
+            return (
+                CheckResult(
+                    check="authorisation",
+                    passed=True,
+                    detail=(
+                        f"Delegated token carries {acting}, so it reads whatever "
+                        "you can read. Your directory roles decide that. Run "
+                        "entrascope whoami to see them."
+                    ),
+                ),
+                held,
+            )
         missing = missing_scopes(claims, config)
         roles = ", ".join(sufficient_directory_roles(config))
         return (

@@ -22,6 +22,10 @@ from entrascope.doctor import run_checks
 from entrascope.errors import explain, known_codes, search
 from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
+from entrascope.identity import graph_session_for
+from entrascope.identity import whoami as run_whoami
+from entrascope.inspect import inspect as run_inspect
+from entrascope.inspect import search_gallery
 from entrascope.investigate import investigate as run_investigation
 from entrascope.logger import get_logger, new_correlation_id
 from entrascope.logs import (
@@ -97,6 +101,7 @@ def register_tools(
     server: FastMCP,
     config: Config,
     credential: CredentialFactory,
+    requested: AuthSource | None = None,
 ) -> FastMCP:
     """Register every tool on a server.
 
@@ -146,6 +151,94 @@ def register_tools(
         finally:
             session.close()
         return dict(payload(result, config))
+
+    @server.tool(
+        name="whoami",
+        description=(
+            "Show which tenant and identity entrascope is querying as, the "
+            "tenants it can reach, the permissions the token actually carries, "
+            "the directory roles held, the administrative units that bound "
+            "them, and the conditional access policies in force. Start here "
+            "when a result is not what was expected."
+        ),
+    )
+    def whoami_tool(with_policies: bool = True) -> dict[str, Any]:
+        new_correlation_id()
+        auth_context, azure_credential = resolve_auth(config, requested)
+        session = graph_session_for(config, azure_credential)
+        try:
+            return dict(
+                payload(
+                    run_whoami(
+                        session,
+                        config,
+                        azure_credential,
+                        auth_context,
+                        with_policies=with_policies,
+                    ),
+                    config,
+                )
+            )
+        finally:
+            session.close()
+
+    @server.tool(
+        name="inspect",
+        description=(
+            "Show everything about one application: the registration and the "
+            "enterprise application together, the scopes it exposes, the roles "
+            "it defines, what it asked for against what was consented, every "
+            "URL it is registered with, its credentials and their expiry, and "
+            "its single sign on configuration. Give part of a display name, an "
+            "application id or an object id."
+        ),
+    )
+    def inspect_tool(
+        target: str, application_type: str | None = None
+    ) -> dict[str, Any]:
+        new_correlation_id()
+        session, token = graph_session(config, credential())
+        try:
+            return dict(
+                payload(
+                    run_inspect(
+                        session,
+                        config,
+                        token,
+                        target=target,
+                        kinds=[application_type] if application_type else [],
+                    ),
+                    config,
+                )
+            )
+        finally:
+            session.close()
+
+    @server.tool(
+        name="gallery_applications",
+        description=(
+            "Search the gallery of applications that can be added to the "
+            "tenant, which answers whether something is available ready made "
+            "and which single sign on modes it supports."
+        ),
+    )
+    def gallery_applications(term: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        new_correlation_id()
+        session, _ = graph_session(config, credential())
+        try:
+            rows, _note = search_gallery(session, config, term, limit)
+        finally:
+            session.close()
+        return [
+            {
+                "display_name": row.get("displayName"),
+                "publisher": row.get("publisher"),
+                "categories": row.get("categories"),
+                "single_sign_on_modes": row.get("supportedSingleSignOnModes"),
+                "id": row.get("id"),
+            }
+            for row in rows
+        ]
 
     @server.tool(
         name="discover_applications",
@@ -344,11 +437,35 @@ def register_tools(
     return server
 
 
+#: Which tool answers which command, so that the two surfaces cannot drift
+#: apart in what they can do. A test walks the command line and checks that
+#: every command below serve appears here.
+COMMAND_TOOLS: dict[str, str] = {
+    "doctor": "doctor",
+    "investigate": "investigate",
+    "whoami": "whoami",
+    "inspect": "inspect",
+    "discover applications": "discover_applications",
+    "discover enterprise-apps": "discover_service_principals",
+    "discover gallery": "gallery_applications",
+    "logs audit": "audit_events",
+    "logs signins": "sign_ins",
+    "logs graph-activity": "graph_activity",
+    "logs kinds": "sign_in_kinds",
+    "errors explain": "explain_error",
+    "errors list": "list_error_codes",
+    "errors search": "list_error_codes",
+}
+
+
 def tool_names() -> tuple[str, ...]:
     """Return the names of every tool, in registration order."""
     return (
         "doctor",
         "investigate",
+        "whoami",
+        "inspect",
+        "gallery_applications",
         "discover_applications",
         "discover_service_principals",
         "audit_events",

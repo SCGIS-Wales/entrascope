@@ -31,6 +31,14 @@ graph_permissions:
       Grant application role assignments. Excluded by default because it lets
       an application grant privileges to itself.
 
+delegated_equivalents:
+  # A delegated token carrying one of these acts as the signed in person, so
+  # what it can read is decided by their directory roles rather than by the
+  # scope names. Reporting the read permissions as missing in that case is
+  # simply wrong, and sends the engineer to grant something they already have.
+  - Directory.AccessAsUser.All
+  - Directory.Read.All
+
 directory_roles:
   # Used when the active authentication source is delegated, for example the
   # Azure CLI session, where directory roles apply instead of app roles.

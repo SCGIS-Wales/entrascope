@@ -32,7 +32,43 @@ versioning.
 - logs kinds describes what each kind covers and what it needs, rather than
   showing the OData filter, and can be given one kind to describe.
 
+### Added
+- entrascope whoami: the tenant by name and identifier, the tenants this
+  identity can reach, the permissions the token actually carries, the directory
+  roles held, the administrative units that bound them, and the conditional
+  access policies in force.
+- entrascope inspect: one application in full as YAML, coloured at a terminal,
+  covering the registration and the enterprise application together, the scopes
+  exposed, the roles defined, what was asked for against what was consented,
+  every URL, the credentials and their expiry, and the single sign on
+  configuration. With no argument it offers a chooser that moves with the arrow
+  keys or with j and k and searches with a slash, as in vi.
+- entrascope discover gallery: search the applications that can be added ready
+  made, and which single sign on modes each supports.
+- A pick option on the log commands, which numbers the lines, asks which to
+  open, and shows that record whole with its explanation and a link into the
+  portal.
+- Names in a listing link into the Azure portal, and documentation links are
+  clickable, in a terminal that understands hyperlinks.
+- Twenty seven more error codes, covering the OAuth 2.0 and OpenID Connect
+  failures and the SAML ones, and the entitlement exception a tenant without a
+  premium licence meets when configuring single sign on.
+- The Model Context Protocol surface gained tools for whoami, inspect and the
+  gallery, and a test now walks the command line and asserts that every command
+  has a tool and that the tools take the arguments the commands take.
+
 ### Fixed
+- The servers no longer fail with a stack trace when their dependency is
+  missing or half installed. fastmcp moved to an optional extra, so a command
+  line install does not carry it, and a broken one is reported as a sentence
+  with the command that repairs it.
+- The doctor no longer reports a Global Administrator as unauthorised. A
+  delegated token carrying Directory.AccessAsUser.All reads whatever the person
+  can read, and their directory roles decide that.
+- The Azure Monitor route explains what it needs and what to use instead, and a
+  workspace can be set once in configuration.
+- An audit listing shows the reason whenever something failed, and says how to
+  look closer.
 - Control C now stops the tool. A threaded fan out abandons its queue instead
   of draining it, and the process leaves at once rather than joining every
   worker and printing a second traceback over the first.

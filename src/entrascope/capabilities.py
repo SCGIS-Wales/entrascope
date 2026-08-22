@@ -93,6 +93,21 @@ def missing_scopes(claims: Mapping[str, Any], config: Config) -> tuple[str, ...]
     )
 
 
+def acts_as_the_user(claims: Mapping[str, Any], config: Config) -> str:
+    """Return the scope that makes this token act as the signed in person.
+
+    A delegated token carrying Directory.AccessAsUser.All can read whatever
+    that person can read, which their directory roles decide. Checking scope
+    names against a list of application permissions would report a Global
+    Administrator as unauthorised.
+    """
+    held = {value.lower() for value in claim_values(claims, SCOPES_CLAIM)}
+    for scope in config.capabilities.delegated_equivalents:
+        if scope.lower() in held:
+            return scope
+    return ""
+
+
 def sufficient_directory_roles(config: Config) -> tuple[str, ...]:
     """Return the directory roles that cover the read surface on their own."""
     return tuple(

@@ -68,9 +68,21 @@ class AzureEndpoints(_Frozen):
     arm_base_url: str
     arm_api_version: str
     diagnostic_settings_api_version: str
+    tenants_api_version: str
     arm_scope: str
     log_analytics_scope: str
     paths: dict[str, str]
+
+
+class Portal(_Frozen):
+    base_url: str
+    application: str
+    application_by_object: str
+    enterprise_application: str
+    user: str
+    group: str
+    audit_logs: str
+    sign_in_logs: str
 
 
 class ProtectedResourceMetadata(_Frozen):
@@ -81,6 +93,7 @@ class Endpoints(_Frozen):
     graph: GraphEndpoints
     azure: AzureEndpoints
     authority: Authority
+    portal: Portal
     protected_resource_metadata: ProtectedResourceMetadata
 
 
@@ -115,6 +128,7 @@ class Tables(_Frozen):
     audit_categories: dict[str, str]
     sign_in_kinds: dict[str, SignInKind]
     log_queries: dict[str, LogQuery]
+    workspace_id: str = ""
     defaults: LogDefaults
 
 
@@ -373,6 +387,7 @@ class Licences(_Frozen):
 
 class Capabilities(_Frozen):
     graph_permissions: tuple[GraphPermission, ...]
+    delegated_equivalents: tuple[str, ...]
     directory_roles: tuple[DirectoryRole, ...]
     capabilities: tuple[Capability, ...]
     licences: Licences

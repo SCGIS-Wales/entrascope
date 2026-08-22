@@ -76,6 +76,37 @@ always the next step.
 | delegated permission | acts as a signed in person, a `scp` claim |
 | application permission | acts as itself, a `roles` claim |
 
+### Knowing where you stand
+
+```bash
+entrascope whoami      # which tenant, which identity, what it may do
+entrascope doctor      # can entrascope see what it needs
+```
+
+`whoami` answers the question every diagnosis starts with and most people get
+wrong: the tenant by name and identifier, the tenants this identity can reach,
+the permissions the token actually carries, the directory roles held, the
+administrative units that bound them, and the conditional access policies in
+force.
+
+### Looking at one application
+
+```bash
+entrascope inspect                 # choose from a list, with / to search
+entrascope inspect saml2           # by name
+entrascope inspect d6bdb5c4-1722-4c63-930f-fa264d4778bc
+entrascope inspect --type managed-identity
+```
+
+Shows the registration and the enterprise application together, as YAML,
+coloured at a terminal and plain in a pipe: the scopes it exposes, the roles it
+defines, what it asked for against what was actually consented, every URL it is
+registered with, its credentials and their expiry, and its single sign on
+configuration.
+
+With no argument and a terminal to draw on, it offers the list. Move with the
+arrow keys or with j and k, search with `/` as in vi, enter to open, q to stop.
+
 ### Diagnosing a failure
 
 Start wide, then narrow. `investigate` gathers credentials, directory changes
@@ -110,6 +141,9 @@ entrascope logs signins --kind service-principal --failures-only
 entrascope logs signins --app my-api --hours 6
 entrascope logs graph-activity --workspace <workspace-id>
 entrascope logs kinds                                # which sign in kinds exist
+entrascope logs audit --pick                         # number the lines and open one
+
+entrascope discover gallery saml                     # what can be added ready made
 
 entrascope errors explain AADSTS7000215
 entrascope errors explain "AADSTS50011: The redirect URI does not match"

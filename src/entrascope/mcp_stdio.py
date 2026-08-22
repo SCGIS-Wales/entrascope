@@ -41,7 +41,7 @@ def build_server(
     # framework contract: FastMCP expresses a server as an object. Every tool
     # is a free function registered onto it.
     server = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS)
-    register_tools(server, settings, credential_factory(settings, requested))
+    register_tools(server, settings, credential_factory(settings, requested), requested)
     log.info("local server ready", extra={"surface": SURFACE})
     return server
 
