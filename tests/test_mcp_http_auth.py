@@ -431,3 +431,20 @@ def test_the_web_server_installs_no_logging_of_its_own(
     assert recorded["show_banner"] is False
     assert recorded["host"] == config.server.transport.host
     assert recorded["port"] == config.server.transport.port
+
+
+def test_a_plain_canonical_uri_is_refused(config: Config) -> None:
+    """It is published in the metadata and clients bind their tokens to it."""
+    with pytest.raises(ConfigError, match="not https"):
+        base_url(config, {"ENTRASCOPE_BASE_URL": "http://entrascope.example.invalid"})
+
+
+def test_a_loopback_address_is_accepted(config: Config) -> None:
+    """Somebody writing a client on their own machine needs no certificate."""
+    for address in ("http://localhost:8000", "http://127.0.0.1:8000"):
+        assert base_url(config, {"ENTRASCOPE_BASE_URL": address}) == address
+
+
+def test_https_is_accepted(config: Config) -> None:
+    """The ordinary case."""
+    assert base_url(config, ENVIRON) == BASE

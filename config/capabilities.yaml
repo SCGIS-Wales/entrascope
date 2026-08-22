@@ -131,6 +131,115 @@ capabilities:
       the identity entrascope authenticates as.
     docs_url: https://learn.microsoft.com/en-us/azure/azure-monitor/logs/manage-access
 
+provisioning:
+  # The vocabulary the entra-app-provisioner uses in its parameters schema, so
+  # that an application can be read back in the same words it was created with
+  # and the two compared. See parameters/parameters.schema.json in that
+  # repository, and parameters/unity-deploy-resource.json for the Unity Deploy
+  # wrapper around it.
+  platform_types:
+    - spa
+    - web
+    - publicClient
+
+  # PROVISIONAL. These names were derived here, not taken from an authoritative
+  # list. They follow the flow and client type naming that
+  # OAuth2_authorize_code_confidential is an example of, and they cover the
+  # shapes described by RFC 001 (single page application), RFC 002 (on behalf
+  # of middle tier) and RFC 003 (AWS agent passwordless) in the provisioner
+  # repository, together with the platform, exposedApi, obo and
+  # federatedCredentials sections of its parameters schema.
+  #
+  # Replace the names below with the authoritative list when it is to hand.
+  # Nothing but this file needs to change, and the status line is reported in
+  # every inspection so that nobody mistakes a derived name for a settled one.
+  app_type_vocabulary:
+    status: provisional
+    derived_from: >
+      The provisioner parameters schema and RFCs 001 to 003, not an
+      authoritative list. Replace the names in app_types and set status to
+      authoritative.
+  # Rules are tried in order and the first that matches wins, so the more
+  # specific ones come first.
+  app_types:
+    - name: OAUTH2_CLIENT_CREDENTIALS_FEDERATED
+      when: {federated: true}
+      description: >
+        Authenticates with a federated credential and no secret. This is the
+        AWS agent passwordless shape in RFC 003.
+    - name: OAUTH2_ON_BEHALF_OF_MIDDLE_TIER
+      when: {exposes_api: true, known_client_applications: true}
+      description: >
+        Exposes an API and names the clients that may call through it, so it
+        can exchange a caller token for a downstream one. RFC 002.
+    - name: SAML2_SSO_GALLERY
+      when: {sso_mode: saml, gallery: true}
+      description: A gallery SAML application configured for single sign on.
+    - name: SAML2_SSO_CUSTOM
+      when: {sso_mode: saml}
+      description: A SAML application configured by hand.
+    - name: MANAGED_IDENTITY
+      when: {service_principal_type: ManagedIdentity}
+      description: >
+        A managed identity, created by Azure alongside a resource rather than
+        by an application provisioning pipeline.
+    - name: LEGACY_SERVICE_PRINCIPAL
+      when: {service_principal_type: Legacy}
+      description: A service principal predating the current application model.
+    - name: OAUTH2_AUTHORIZATION_CODE_PUBLIC_SPA
+      when: {platform: spa}
+      description: >
+        A single page application using the authorization code flow with a
+        proof key and holding no secret. RFC 001.
+    - name: OAUTH2_AUTHORIZATION_CODE_CONFIDENTIAL
+      when: {platform: web, credentials: any}
+      description: >
+        A web application using the authorization code flow and holding a
+        secret or a certificate.
+    - name: OAUTH2_AUTHORIZATION_CODE_PUBLIC_WEB
+      when: {platform: web}
+      description: >
+        A web application registered with no credential, which can only use
+        the authorization code flow as a public client.
+    - name: OAUTH2_AUTHORIZATION_CODE_PUBLIC_NATIVE
+      when: {platform: publicClient}
+      description: A native, mobile or desktop client holding no secret.
+    - name: OAUTH2_CLIENT_CREDENTIALS_CERTIFICATE
+      when: {platform: none, credentials: certificate}
+      description: >
+        A daemon or service authenticating with a certificate and no user
+        present.
+    - name: OAUTH2_CLIENT_CREDENTIALS_SECRET
+      when: {platform: none, credentials: secret}
+      description: >
+        A daemon or service authenticating with a shared secret and no user
+        present.
+    - name: OAUTH2_RESOURCE_API
+      when: {platform: none, exposes_api: true}
+      description: >
+        An API that other applications call and that signs nobody in itself.
+    - name: UNKNOWN
+      when: {}
+      description: >
+        Nothing registered says how this application authenticates. It may be
+        a placeholder, or configured somewhere other than the registration.
+  # Shapes an application can have that the provisioner vocabulary does not
+  # describe. Meeting one of these means the application was not created by
+  # that pipeline, or was changed afterwards.
+  outside_the_vocabulary:
+    saml-gallery: >
+      A gallery SAML application. The provisioner creates OAuth and OpenID
+      Connect applications, not SAML single sign on.
+    saml-non-gallery: >
+      A SAML application configured by hand. The provisioner creates OAuth and
+      OpenID Connect applications, not SAML single sign on.
+    managed-identity: >
+      A managed identity, created by Azure alongside a resource rather than by
+      an application provisioning pipeline.
+    legacy: >
+      A legacy service principal, predating the application model the
+      provisioner uses.
+
 licences:
   # Service plan identifiers that indicate the Entra ID tier, read from
   # subscribedSkus. Reported as observed, never asserted as entitlement.

@@ -256,3 +256,25 @@ def test_page_size_is_omitted_where_graph_refuses_it(config: Config) -> None:
     assert not accepts_page_size(config, "subscribed_skus")
     assert accepts_page_size(config, "applications")
     assert "$top" not in collection_params(config, page_size=False)
+
+
+def test_a_quote_cannot_escape_a_filter_literal() -> None:
+    """A value is matched by the filter, it does not get to rewrite it."""
+    from entrascope.graph import odata_literal
+
+    assert odata_literal("o'brien") == "o''brien"
+    assert odata_literal("x' or startswith(appId,'") == "x'' or startswith(appId,''"
+
+
+def test_control_characters_never_reach_a_filter() -> None:
+    """Nothing legitimate in a name or an identifier is a control character."""
+    from entrascope.graph import odata_literal
+
+    assert odata_literal("name\x00\x1bhere") == "namehere"
+
+
+def test_a_filter_value_is_bounded() -> None:
+    """A value of unbounded length is a mistake or an attack, not a name."""
+    from entrascope.graph import MAX_FILTER_VALUE, odata_literal
+
+    assert len(odata_literal("a" * 5000)) == MAX_FILTER_VALUE

@@ -159,6 +159,13 @@ server mounted at `/mcp` publishes its document at
 parameter in the `WWW-Authenticate` header points there. A test asserts the URL
 the refusal advertises is the URL that answers.
 
+## The canonical URI
+
+The server refuses to start unless its canonical URI is https, or a loopback
+address for somebody writing a client on their own machine. It is published in
+the protected resource metadata and clients bind their tokens to it, so a plain
+address invites a token to be sent in clear.
+
 ## Deployment
 
 Terminate TLS at a reverse proxy. Production base URLs and redirect URIs are

@@ -86,6 +86,29 @@ applies the same function before writing a table or a JSON payload.
 A test drives every command and every MCP tool with a sentinel secret and
 asserts the sentinel appears in no output stream and no log record.
 
+## Values that reach a query
+
+Anything an engineer types can end up inside a Microsoft Graph filter or a
+Kusto query, and both are languages. A value is matched by a query; it does not
+get to rewrite one.
+
+- OData literals are escaped by doubling a single quote, in `graph.odata_literal`,
+  which every filter goes through.
+- Kusto values are escaped where the template is rendered, in
+  `config.render_kql`, rather than at the call sites, because a call site is a
+  place to forget. Numbers are coerced, so a template expecting a row count
+  cannot be handed a fragment of query. Kusto expresses a great deal more than
+  a filter, so this one matters most.
+- Control characters are removed and lengths are bounded in both, because
+  neither belongs in a name or an identifier.
+
+## Values that reach a terminal
+
+A display name in a directory is somebody else's input, and a terminal obeys
+escape sequences. Control characters are removed from every rendered value. In
+the plain format a newline or a tab is replaced too, because there one line is
+one record and one tab is one column, so either would forge a row.
+
 ## Local MCP server guidance
 
 A stdio MCP server runs with the privileges of the user who launched it, and

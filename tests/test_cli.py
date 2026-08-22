@@ -772,7 +772,8 @@ def test_the_servers_explain_a_missing_dependency(
     )
     result = run(["serve", "stdio"])
     assert result.exit_code == EXIT_CONFIG
-    assert "entrascope[mcp]" in result.output
+    assert "fastmcp is not installed" in result.output
+    assert "force-reinstall" in result.output
 
 
 def test_the_servers_explain_a_broken_dependency(

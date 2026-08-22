@@ -19,6 +19,15 @@ application:
   app_roles: appRoles
   oauth2_permission_scopes: api.oauth2PermissionScopes
   requested_access_token_version: api.requestedAccessTokenVersion
+  known_client_applications: api.knownClientApplications
+  group_membership_claims: groupMembershipClaims
+  optional_claims: optionalClaims
+  tags: tags
+  notes: notes
+  service_management_reference: serviceManagementReference
+  publisher_domain: publisherDomain
+  verified_publisher: verifiedPublisher.displayName
+  disabled_by_microsoft: disabledByMicrosoftStatus
 
 service_principal:
   object_id: id

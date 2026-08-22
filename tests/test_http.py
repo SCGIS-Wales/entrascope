@@ -375,3 +375,52 @@ def test_an_interrupted_fan_out_abandons_its_queue(config: Config) -> None:
     with pytest.raises(KeyboardInterrupt):
         fan_out(list(range(50)), work, single)
     assert len(started) < 50
+
+
+def test_a_session_is_never_shared_between_two_running_tasks(config: Config) -> None:
+    """A requests session belongs to one thread.
+
+    Dividing a list of sessions by the worker count hands the same one to items
+    that can run at the same time, which is a race. Thread local storage gives
+    each worker its own and no more than one.
+    """
+    import threading
+
+    seen: dict[int, set[int]] = {}
+    lock = threading.Lock()
+    barrier = threading.Barrier(4, timeout=10)
+
+    def work(session: requests.Session, item: int) -> int:
+        # Every worker waits for the others, so all four are inside at once and
+        # any sharing is visible rather than a matter of timing.
+        barrier.wait()
+        with lock:
+            seen.setdefault(id(session), set()).add(threading.get_ident())
+        return item
+
+    wide = config.model_copy(
+        update={
+            "retry": config.retry.model_copy(
+                update={
+                    "concurrency": config.retry.concurrency.model_copy(
+                        update={"max_workers": 4}
+                    )
+                }
+            )
+        }
+    )
+    fan_out(list(range(4)), work, wide)
+    assert all(len(threads) == 1 for threads in seen.values())
+    assert len(seen) == 4
+
+
+def test_the_correlation_id_reaches_the_workers(config: Config) -> None:
+    """A worker thread does not inherit context variables, so they are carried."""
+    from entrascope.logger import get_correlation_id, new_correlation_id
+
+    correlation = new_correlation_id()
+
+    def work(session: requests.Session, item: int) -> str:
+        return get_correlation_id()
+
+    assert set(fan_out([1, 2, 3], work, config)) == {correlation}

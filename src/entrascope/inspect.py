@@ -18,9 +18,11 @@ from entrascope.config import Config
 from entrascope.discovery import (
     discover_applications,
     discover_service_principals,
+    pluck,
+    strings,
     text,
 )
-from entrascope.graph import get_collection, get_object
+from entrascope.graph import get_collection, get_object, odata_literal
 from entrascope.http import Session
 from entrascope.logger import get_logger
 from entrascope.models import (
@@ -223,7 +225,7 @@ def search_gallery(
             session,
             config,
             "application_templates",
-            filter_expression=f"startswith(displayName,'{candidate}')",
+            filter_expression=(f"startswith(displayName,'{odata_literal(candidate)}')"),
         )
         if not rows:
             continue
@@ -402,6 +404,7 @@ def inspect(
         else [],
         "owners": list(application.owners) if application else [],
         "tags": list(principal.tags) if principal else [],
+        "provisioning": provisioning_view(application, principal, payload, config),
         "portal": {
             "registration": portal_link(
                 {"app_id": application.app_id if application else ""},
@@ -461,3 +464,170 @@ def summarise_target(report: Mapping[str, Any]) -> str:
         f"{text(identity.get('display_name'))} "
         f"({text(identity.get('application_type'))})"
     )
+
+
+def platform_facts(
+    application: ApplicationSummary | None,
+    principal: ServicePrincipalSummary | None,
+    payload: Mapping[str, Any],
+    config: Config,
+) -> dict[str, Any]:
+    """Reduce an application to the facts the type rules are written against.
+
+    Each fact is something registered on the object, so the mapping can be
+    checked by anybody reading the same registration.
+    """
+    mapping = config.fields.application
+    redirects = application.redirect_uris if application else None
+    credentials = application.credentials if application else ()
+    kinds = {item.kind for item in credentials}
+    known = pluck(payload, mapping["known_client_applications"]) or []
+    exposed = exposed_api(payload)
+    platform = "none"
+    if redirects and redirects.single_page:
+        platform = "spa"
+    elif redirects and redirects.web:
+        platform = "web"
+    elif redirects and redirects.public_client:
+        platform = "publicClient"
+    return {
+        "platform": platform,
+        "credentials": (
+            "certificate"
+            if kinds == {"certificate"}
+            else "secret"
+            if "secret" in kinds
+            else "none"
+        ),
+        "federated": bool(application.federated_credentials) if application else False,
+        "exposes_api": bool(
+            exposed["delegated_scopes"]
+            or exposed["application_roles"]
+            or exposed["identifier_uris"]
+        ),
+        "known_client_applications": bool(known),
+        "sso_mode": (
+            principal.saml.preferred_single_sign_on_mode
+            if principal and principal.saml
+            else ""
+        ),
+        "gallery": bool(principal.saml.is_gallery)
+        if principal and principal.saml
+        else False,
+        "service_principal_type": (
+            principal.service_principal_type if principal else ""
+        ),
+    }
+
+
+def rule_matches(rule: Mapping[str, Any], facts: Mapping[str, Any]) -> bool:
+    """Return whether every condition of one rule holds.
+
+    The value ``any`` means the fact must be present and not the word none,
+    which is how a rule says "holds a credential of some kind".
+    """
+    for name, expected in rule.items():
+        actual = facts.get(name)
+        if expected == "any":
+            if not actual or actual == "none":
+                return False
+        elif isinstance(expected, bool):
+            if bool(actual) is not expected:
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def classify_app_type(facts: Mapping[str, Any], config: Config) -> dict[str, Any]:
+    """Map an application onto the provisioning vocabulary.
+
+    The vocabulary is configuration, and its status is reported alongside the
+    answer, because a derived name must not be mistaken for a settled one.
+    """
+    vocabulary = config.capabilities.provisioning
+    for rule in vocabulary.app_types:
+        if rule_matches(rule.when, facts):
+            return {
+                "app_type": rule.name,
+                "meaning": rule.description.strip(),
+                "matched_on": dict(rule.when)
+                or "nothing matched, this is the fallback",
+                "vocabulary_status": vocabulary.app_type_vocabulary.status,
+                "vocabulary_note": vocabulary.app_type_vocabulary.derived_from.strip(),
+                "evidence": dict(facts),
+            }
+    return {
+        "app_type": "UNKNOWN",
+        "vocabulary_status": vocabulary.app_type_vocabulary.status,
+        "evidence": dict(facts),
+    }
+
+
+def provisioning_view(
+    application: ApplicationSummary | None,
+    principal: ServicePrincipalSummary | None,
+    payload: Mapping[str, Any],
+    config: Config,
+) -> dict[str, Any]:
+    """Report the application in the words the provisioner creates it with.
+
+    Reading it back in the same vocabulary is what lets the live object be
+    compared against the parameters that were meant to produce it.
+    """
+    mapping = config.fields.application
+    redirects = application.redirect_uris if application else None
+    web = as_mapping(payload.get("web"))
+    exposed = exposed_api(payload)
+    facts = platform_facts(application, principal, payload, config)
+    outside = config.capabilities.provisioning.outside_the_vocabulary
+    kind = (
+        application.application_type
+        if application
+        else (principal.application_type if principal else "unknown")
+    )
+    return {
+        **classify_app_type(facts, config),
+        "outside_the_provisioner_vocabulary": outside.get(kind, "").strip() or None,
+        "platforms": {
+            "spa": {
+                "enabled": bool(redirects and redirects.single_page),
+                "redirectUris": list(redirects.single_page) if redirects else [],
+            },
+            "web": {
+                "enabled": bool(redirects and redirects.web),
+                "redirectUris": list(redirects.web) if redirects else [],
+                "implicitGrant": web.get("implicitGrantSettings"),
+            },
+            "publicClient": {
+                "enabled": bool(redirects and redirects.public_client),
+                "redirectUris": list(redirects.public_client) if redirects else [],
+            },
+        },
+        "exposedApi": {
+            "enabled": facts["exposes_api"],
+            "identifierUri": (exposed["identifier_uris"] or [None])[0],
+            "scopes": exposed["delegated_scopes"],
+            "appRoles": exposed["application_roles"],
+        },
+        "obo": {
+            "enabled": facts["known_client_applications"],
+            "knownClientApplicationIds": list(
+                pluck(payload, mapping["known_client_applications"]) or []
+            ),
+        },
+        "signInAudience": application.sign_in_audience if application else None,
+        "tokenVersion": application.requested_access_token_version
+        if application
+        else None,
+        "groupMembershipClaims": pluck(payload, mapping["group_membership_claims"]),
+        "optionalClaims": pluck(payload, mapping["optional_claims"]),
+        "tags": strings(pluck(payload, mapping["tags"])),
+        "notes": pluck(payload, mapping["notes"]),
+        "serviceManagementReference": pluck(
+            payload, mapping["service_management_reference"]
+        ),
+        "publisherDomain": pluck(payload, mapping["publisher_domain"]),
+        "verifiedPublisher": pluck(payload, mapping["verified_publisher"]),
+        "disabledByMicrosoft": pluck(payload, mapping["disabled_by_microsoft"]),
+    }
