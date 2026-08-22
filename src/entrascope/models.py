@@ -101,6 +101,135 @@ class QueryResult(NamedTuple):
         return tuple(dict(zip(self.columns, row, strict=False)) for row in self.rows)
 
 
+#: How an application or enterprise application is classified.
+ApplicationType = Literal[
+    "confidential-client",
+    "public-client",
+    "single-page-application",
+    "native-or-mobile",
+    "saml-gallery",
+    "saml-non-gallery",
+    "managed-identity",
+    "workload-identity-federation",
+    "legacy",
+    "unknown",
+]
+
+#: The state of one credential relative to the configured warning window.
+CredentialState = Literal["valid", "expiring", "expired", "unknown"]
+
+
+class CredentialSummary(NamedTuple):
+    """One password or certificate credential, with its expiry state."""
+
+    key_id: str
+    display_name: str
+    kind: Literal["secret", "certificate"]
+    start: str
+    end: str
+    days_remaining: int | None
+    state: CredentialState
+
+
+class RedirectUris(NamedTuple):
+    """Redirect URIs, kept apart by platform because Entra treats them apart."""
+
+    web: tuple[str, ...] = ()
+    single_page: tuple[str, ...] = ()
+    public_client: tuple[str, ...] = ()
+
+    def total(self) -> int:
+        """Return how many redirect URIs are registered across all platforms."""
+        return len(self.web) + len(self.single_page) + len(self.public_client)
+
+
+class PermissionRequest(NamedTuple):
+    """Permissions requested against one resource, before consent."""
+
+    resource_app_id: str
+    delegated: tuple[str, ...] = ()
+    application: tuple[str, ...] = ()
+
+
+class PermissionGrant(NamedTuple):
+    """A permission actually granted, which is what consent produces."""
+
+    resource_app_id: str
+    kind: Literal["delegated", "application"]
+    value: str
+    principal: str = ""
+
+
+class FederatedCredential(NamedTuple):
+    """One workload identity federation credential."""
+
+    name: str
+    issuer: str
+    subject: str
+    audiences: tuple[str, ...]
+
+
+class SamlConfiguration(NamedTuple):
+    """Single sign on configuration for a SAML enterprise application."""
+
+    identifier_uris: tuple[str, ...]
+    reply_urls: tuple[str, ...]
+    preferred_single_sign_on_mode: str
+    signing_certificates: tuple[CredentialSummary, ...]
+    is_gallery: bool
+
+
+class ApplicationSummary(NamedTuple):
+    """One application registration, projected for diagnosis."""
+
+    object_id: str
+    app_id: str
+    display_name: str
+    application_type: ApplicationType
+    sign_in_audience: str
+    audience_label: str
+    redirect_uris: RedirectUris
+    identifier_uris: tuple[str, ...]
+    requested_permissions: tuple[PermissionRequest, ...]
+    credentials: tuple[CredentialSummary, ...]
+    federated_credentials: tuple[FederatedCredential, ...]
+    owners: tuple[str, ...]
+    requested_access_token_version: int | None
+    created: str
+
+    def expiring(self) -> tuple[CredentialSummary, ...]:
+        """Return the credentials that are expiring or already expired."""
+        return tuple(
+            item for item in self.credentials if item.state in ("expiring", "expired")
+        )
+
+
+class ServicePrincipalSummary(NamedTuple):
+    """One enterprise application, projected for diagnosis."""
+
+    object_id: str
+    app_id: str
+    display_name: str
+    application_type: ApplicationType
+    service_principal_type: str
+    sign_in_audience: str
+    account_enabled: bool
+    app_role_assignment_required: bool
+    reply_urls: tuple[str, ...]
+    service_principal_names: tuple[str, ...]
+    credentials: tuple[CredentialSummary, ...]
+    granted_permissions: tuple[PermissionGrant, ...]
+    saml: SamlConfiguration | None
+    owners: tuple[str, ...]
+    tags: tuple[str, ...]
+
+    def expiring(self) -> tuple[CredentialSummary, ...]:
+        """Return the credentials that are expiring or already expired."""
+        return tuple(
+            item for item in self.credentials if item.state in ("expiring", "expired")
+        )
+
+
 class CheckResult(NamedTuple):
     """The outcome of one preflight check."""
 

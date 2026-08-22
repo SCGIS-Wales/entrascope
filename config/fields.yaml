@@ -71,3 +71,27 @@ audit:
 
 expiry:
   warning_days: 30
+
+classification:
+  # Values Microsoft Graph reports, used to classify an application or an
+  # enterprise application. Nothing here is hardcoded in src.
+  service_principal_types:
+    managed_identity: ManagedIdentity
+    application: Application
+    legacy: Legacy
+    social_identity_provider: SocialIdentityProvider
+  single_sign_on_modes:
+    saml: saml
+    password: password
+    oidc: notSupported
+  gallery_tags:
+    - WindowsAzureActiveDirectoryGalleryApplicationPrimaryV1
+    - WindowsAzureActiveDirectoryGalleryApplicationNonPrimaryV1
+  integrated_app_tag: WindowsAzureActiveDirectoryIntegratedApp
+  credential_types:
+    certificate: AsymmetricX509Cert
+  audiences:
+    single_tenant: AzureADMyOrg
+    multi_tenant: AzureADMultipleOrgs
+    multi_tenant_and_personal: AzureADandPersonalMicrosoftAccount
+    personal_only: PersonalMicrosoftAccount

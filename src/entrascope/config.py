@@ -135,6 +135,15 @@ class ExpirySettings(_Frozen):
     warning_days: int
 
 
+class Classification(_Frozen):
+    service_principal_types: dict[str, str]
+    single_sign_on_modes: dict[str, str]
+    gallery_tags: tuple[str, ...]
+    integrated_app_tag: str
+    credential_types: dict[str, str]
+    audiences: dict[str, str]
+
+
 class Fields(_Frozen):
     application: dict[str, str]
     service_principal: dict[str, str]
@@ -142,6 +151,7 @@ class Fields(_Frozen):
     sign_in: dict[str, str]
     audit: dict[str, str]
     expiry: ExpirySettings
+    classification: Classification
 
 
 class RedactionPattern(_Frozen):

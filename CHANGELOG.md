@@ -49,3 +49,16 @@ versioning.
 - Azure Monitor log queries rendered from KQL templates by named parameter,
   returning an immutable result that keeps partial data along with the reason
   it was partial.
+- Discovery of application registrations and enterprise applications, with
+  projection driven entirely by the field mappings in configuration: sign in
+  audience and a readable description of it, redirect URIs kept apart by
+  platform, requested permissions with delegated and application entries kept
+  apart, granted permissions from consent grants and role assignments, owners,
+  credentials with their expiry state, federated identity credentials, SAML
+  configuration with the signing certificate, and the assignment requirement.
+- Classification covering confidential clients, public clients, native and
+  mobile clients, single page applications, workload identity federation,
+  gallery and non gallery SAML enterprise applications, managed identities and
+  legacy applications, driven by values in configuration rather than literals.
+- Synthetic Graph fixtures, with a test asserting that no identifier in them
+  could be a real tenant identifier, because the repository is public.
