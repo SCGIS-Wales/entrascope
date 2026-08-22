@@ -205,30 +205,55 @@ def classify_application(
     redirect_uris: RedirectUris,
     credentials: Sequence[CredentialSummary],
     federated: Sequence[FederatedCredential],
+    exposes_api: bool = False,
 ) -> ApplicationType:
     """Classify an application registration from its projected attributes.
 
     The order matters. Federation is decisive because it changes how the
     application authenticates. A single page application is next, because its
-    redirect URIs are registered on their own platform. A confidential client
-    is one that holds a credential or registers a web redirect URI. What is
-    left with only public client redirect URIs is a native or mobile client.
+    redirect URIs are registered on their own platform. An application that
+    exposes an API and signs nobody in is a resource, not a client of any kind.
+    A confidential client is one that holds a credential; a web application
+    without one is a client all the same, and calling it confidential would say
+    it holds a secret it does not have. What is left with only public client
+    redirect URIs is a native or mobile client.
     """
     if federated:
         return "workload-identity-federation"
     if redirect_uris.single_page:
         return "single-page-application"
-    if credentials or redirect_uris.web:
+    if exposes_api and redirect_uris.total() == 0:
+        return "api-or-resource"
+    if credentials:
         return "confidential-client"
+    if redirect_uris.web:
+        return "web-client"
     if redirect_uris.public_client:
         return "native-or-mobile"
     return "public-client"
 
 
+def exposes_an_api(payload: Mapping[str, Any], config: Config) -> bool:
+    """Return whether an application offers anything for others to call."""
+    mapping = config.fields.application
+    return bool(
+        strings(pluck(payload, mapping["identifier_uris"]))
+        or pluck(payload, mapping["app_roles"])
+        or pluck(payload, mapping["oauth2_permission_scopes"])
+    )
+
+
 def classify_service_principal(
     payload: Mapping[str, Any], config: Config, tags: Sequence[str]
 ) -> ApplicationType:
-    """Classify an enterprise application from its Graph payload."""
+    """Classify an enterprise application from its Graph payload.
+
+    A service principal is the instance, not the definition. Whether the
+    application behind it is confidential, public or a single page application
+    is decided by its registration, which this object does not carry, so
+    anything left after the kinds a service principal genuinely determines is
+    named for what it is rather than guessed at.
+    """
     rules = config.fields.classification
     mapping = config.fields.service_principal
     kind = text(pluck(payload, mapping["service_principal_type"]))
@@ -241,7 +266,7 @@ def classify_service_principal(
         gallery = any(tag in set(rules.gallery_tags) for tag in tags)
         return "saml-gallery" if gallery else "saml-non-gallery"
     if kind == rules.service_principal_types["application"]:
-        return "confidential-client"
+        return "enterprise-application"
     return "unknown"
 
 
@@ -260,12 +285,13 @@ def project_application(
     federated_credentials = project_federated_credentials(federated)
     audience = text(pluck(payload, mapping["sign_in_audience"]))
     version = pluck(payload, mapping["requested_access_token_version"])
+    exposes = exposes_an_api(payload, config)
     return ApplicationSummary(
         object_id=text(pluck(payload, mapping["object_id"])),
         app_id=text(pluck(payload, mapping["app_id"])),
         display_name=text(pluck(payload, mapping["display_name"])),
         application_type=classify_application(
-            redirect_uris, credentials, federated_credentials
+            redirect_uris, credentials, federated_credentials, exposes
         ),
         sign_in_audience=audience,
         audience_label=audience_label(audience, config),
@@ -279,6 +305,7 @@ def project_application(
         if isinstance(version, int)
         else None,
         created=text(pluck(payload, mapping["created"])),
+        exposes_api=exposes,
     )
 
 

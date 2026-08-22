@@ -46,6 +46,19 @@ ever carries the caller's token.
 figure is a floor and not a target. A module with a low branch count and no
 test is a gap even when the percentage looks healthy.
 
+## End to end against a real tenant
+
+The suite is offline, and some things only a tenant can tell you. An end to end
+run creates one application of every kind, gives one a secret and another a
+certificate, exercises the flows that can be driven without a browser, reads
+the events back through the command line, and removes everything it made.
+
+It is deliberately not part of the suite: it needs a tenant, it writes to a
+directory, and it takes minutes. It is run by hand when the classification or
+the error mapping changes, and whatever it finds becomes an offline test. The
+codes it observed are now covered by name in `test_errors.py`, and the
+classification rules it corrected by fixtures in `test_discovery.py`.
+
 ## Speed
 
 The whole suite runs offline and finishes in seconds. A test that needs a
