@@ -265,7 +265,10 @@ def console_for(stream: TextIO | None = None, record: bool = False) -> Console:
         soft_wrap=False,
         highlight=False,
     )
-    if not console.is_terminal and not os.environ.get("COLUMNS"):
+    if not console.is_terminal:
+        # A pipe or a file has no width. Leaving rich to guess eighty columns
+        # would silently cut characters out of the record. COLUMNS is honoured
+        # only for a real terminal, where it means something.
         console.width = PIPED_WIDTH
     return console
 

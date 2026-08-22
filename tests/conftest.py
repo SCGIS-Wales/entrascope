@@ -22,6 +22,19 @@ CONFIG_ROOT = REPO_ROOT / "config"
 SENTINEL_SECRET = "s3ntinel-cl13nt-s3cret-do-not-log"
 
 
+@pytest.fixture(autouse=True)
+def predictable_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Render as though writing to a pipe, whatever the runner has set.
+
+    A continuous integration runner sets COLUMNS, and anything setting
+    FORCE_COLOR turns on escape codes, either of which changes what a test
+    reads back. Neither says anything about the code being tested.
+    """
+    for name in ("COLUMNS", "LINES", "FORCE_COLOR", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
 @pytest.fixture
 def repo_root() -> Path:
     """Return the repository root."""
