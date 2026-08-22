@@ -87,6 +87,13 @@ versioning.
 - Command line foundation: the --auth, --output, --config-dir and --verbose
   options, a correlation id per invocation, and deliberate errors rendered as a
   message and an exit code rather than a stack trace.
+- Commands: discover apps and discover sps with filtering by type and by
+  expiring credential, logs audit, logs signins and logs graph-activity each
+  choosing between the Graph route and the Azure Monitor route, logs kinds, and
+  errors explain, errors list and errors search which need no credentials.
+- Machine readable output is quiet. Progress lines are suppressed under
+  --output json and --output yaml so the output can be piped directly.
+- Continuous integration actions moved to the majors that run on Node 24.
 - Error interpretation from configuration: exact and case insensitive lookup, a
   code extracted from a longer message, the specific AADSTS code preferred over
   a generic one such as invalid_client, and a configured default for anything
