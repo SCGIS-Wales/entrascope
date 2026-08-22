@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from itertools import islice
 from typing import Any
 
 from azure.core.credentials import TokenCredential
+from azure.core.exceptions import ClientAuthenticationError
 
 from entrascope.config import Config
 from entrascope.http import Session, fan_out, get_json
@@ -84,7 +86,20 @@ def token_provider(
         now = clock()
         if cached is not None and cached[1] - TOKEN_REFRESH_MARGIN_SECONDS > now:
             return cached[0]
-        token = credential.get_token(scope)
+        try:
+            token = credential.get_token(scope)
+        except ClientAuthenticationError as error:
+            # The authority refusing us is the failure this tool exists to
+            # explain, so it becomes the one structured error rather than a
+            # stack trace from a dependency.
+            raise ApiCallError(
+                ApiError(
+                    status=401,
+                    code="AuthenticationFailed",
+                    message=str(error.message or error),
+                    source="token",
+                )
+            ) from error
         cache[scope] = (token.token, float(token.expires_on))
         log.debug("acquired an access token", extra={"scope": scope})
         return token.token
@@ -97,6 +112,17 @@ def graph_token_provider(
 ) -> Callable[[], str]:
     """Return a token provider for the configured Microsoft Graph scope."""
     return token_provider(credential, config.endpoints.graph.scope)
+
+
+def arm_token_provider(
+    config: Config, credential: TokenCredential
+) -> Callable[[], str]:
+    """Return a token provider for Azure Resource Manager.
+
+    A Graph token is not accepted by Resource Manager. The audiences differ, so
+    the diagnostic settings call needs its own token and its own session.
+    """
+    return token_provider(credential, config.endpoints.azure.arm_scope)
 
 
 def page(
@@ -137,6 +163,16 @@ def page(
         query = None
 
 
+def accepts_page_size(config: Config, endpoint: str) -> bool:
+    """Return whether one endpoint accepts a custom page size.
+
+    Microsoft Graph refuses $top on a handful of collections with
+    Request_UnsupportedQuery, so those are named in configuration rather than
+    discovered by failing.
+    """
+    return endpoint not in config.retry.paging.no_page_size
+
+
 def collection_params(
     config: Config,
     *,
@@ -144,9 +180,12 @@ def collection_params(
     filter_expression: str | None = None,
     top: int | None = None,
     order_by: str | None = None,
+    page_size: bool = True,
 ) -> dict[str, Any]:
     """Build the OData query parameters for a collection request."""
-    params: dict[str, Any] = {"$top": top or config.retry.paging.page_size}
+    params: dict[str, Any] = {}
+    if page_size:
+        params["$top"] = top or config.retry.paging.page_size
     if select:
         params["$select"] = ",".join(select)
     if filter_expression:
@@ -165,18 +204,29 @@ def get_collection(
     filter_expression: str | None = None,
     top: int | None = None,
     order_by: str | None = None,
+    limit: int | None = None,
+    beta: bool = False,
     path_parameters: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Return every item of one configured Graph collection."""
-    url = graph_url(config, endpoint, path_parameters)
+    """Return every item of one configured Graph collection.
+
+    A page size and a limit are different things. Graph treats $top as the
+    number of items per page and keeps paging beyond it, so a caller asking for
+    twelve rows is given twelve rows here rather than every page of twelve.
+    """
+    url = graph_url(config, endpoint, path_parameters, beta=beta)
     params = collection_params(
         config,
         select=select,
         filter_expression=filter_expression,
         top=top,
         order_by=order_by,
+        page_size=accepts_page_size(config, endpoint),
     )
-    return tuple(page(session, url, config, params=params))
+    items = page(session, url, config, params=params)
+    if limit is None:
+        return tuple(items)
+    return tuple(islice(items, max(0, limit)))
 
 
 def get_object(

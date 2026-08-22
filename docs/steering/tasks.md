@@ -177,7 +177,15 @@ server independently:
 tool results and the CLI `--output json` payloads drift apart, and they must not,
 because they are the same data.
 
-### 0.6 MCP protocol revision
+### 0.6 MCP protocol revision (resolved in phase 8)
+
+Verified: FastMCP 3.4.7 resolves `mcp` 1.29.0, whose `LATEST_PROTOCOL_VERSION`
+is `2025-11-25`, the revision this plan targeted. It is pinned in
+`config/server.yaml`, checked at server startup and asserted in a test.
+
+The original wording follows.
+
+### 0.6a MCP protocol revision, as planned
 
 The steering document sets the build target to revision 2025-11-25 and notes
 that 2026-07-28 was scheduled to publish on 28 July 2026, which is now four
@@ -186,7 +194,16 @@ verification task: read the protocol version fastmcp 3.4.7 actually negotiates
 from the installed source, record it in `docs/steering/mcp-server.md`, and
 assert it in a test so a dependency bump that changes it fails CI.
 
-### 0.7 The FastMCP audience override
+### 0.7 The FastMCP audience override (resolved in phase 8)
+
+Verified: no private attribute is needed. FastMCP 3.4.7 exposes a public
+`identifier_uri` parameter and a public `audience` attribute. entrascope uses
+both, and narrows the audience to the application id URI as the steering rule
+requires.
+
+The original wording follows.
+
+### 0.7a The FastMCP audience override, as planned
 
 The steering document sets `verifier._audience`, a private attribute, citing
 two upstream issues. Phase 8 will read the installed fastmcp 3.4.7 source first

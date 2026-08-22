@@ -75,9 +75,16 @@ def credential_factory(
     return provide
 
 
-def graph_session(config: Config, credential: TokenCredential) -> Session:
-    """Build a session carrying a Microsoft Graph token."""
-    return build_session(config, graph_token_provider(config, credential))
+def graph_session(
+    config: Config, credential: TokenCredential
+) -> tuple[Session, Callable[[], str]]:
+    """Build a session carrying a Microsoft Graph token, and the provider itself.
+
+    The provider is returned separately because the fan out builds its own
+    sessions, and a requests auth callable is not a token provider.
+    """
+    token = graph_token_provider(config, credential)
+    return build_session(config, token), token
 
 
 def payload(rows: Any, config: Config) -> Any:
@@ -123,12 +130,12 @@ def register_tools(
         with_details: bool = True,
     ) -> list[dict[str, Any]]:
         new_correlation_id()
-        session = graph_session(config, credential())
+        session, token = graph_session(config, credential())
         try:
             rows = discover_applications(
                 session,
                 config,
-                session.auth if with_details else None,
+                token if with_details else None,
                 filter_expression=filter_expression,
                 with_details=with_details,
             )
@@ -156,12 +163,12 @@ def register_tools(
         with_details: bool = True,
     ) -> list[dict[str, Any]]:
         new_correlation_id()
-        session = graph_session(config, credential())
+        session, token = graph_session(config, credential())
         try:
             rows = discover_service_principals(
                 session,
                 config,
-                session.auth if with_details else None,
+                token if with_details else None,
                 filter_expression=filter_expression,
                 with_details=with_details,
             )
@@ -186,7 +193,7 @@ def register_tools(
     )
     def audit_events(limit: int | None = None) -> list[dict[str, Any]]:
         new_correlation_id()
-        session = graph_session(config, credential())
+        session, _ = graph_session(config, credential())
         try:
             return list(payload(query_audit_graph(session, config, top=limit), config))
         finally:
@@ -223,7 +230,7 @@ def register_tools(
             if failures_only:
                 rows = tuple(row for row in rows if row.failed())
             return list(payload(rows, config))
-        session = graph_session(config, credential())
+        session, _ = graph_session(config, credential())
         try:
             return list(
                 payload(

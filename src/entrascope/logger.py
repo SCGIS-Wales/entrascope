@@ -200,7 +200,19 @@ def configure_logging(
     logger.addHandler(handler)
     logger.setLevel((level or settings.level).upper())
     logger.propagate = False
+    quieten(settings, verbose=(level or "").upper() == "DEBUG")
     return logger
+
+
+def quieten(settings: Logging, verbose: bool = False) -> None:
+    """Raise the level of third party loggers that duplicate what we report.
+
+    azure-identity logs a token failure in its own format, and we then report
+    the same failure with its remediation. Two reports of one problem is worse
+    than one. Passing verbose restores them.
+    """
+    for name, level in settings.quiet_loggers.items():
+        logging.getLogger(name).setLevel(logging.DEBUG if verbose else level.upper())
 
 
 def get_logger(name: str) -> logging.Logger:

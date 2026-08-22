@@ -9,6 +9,7 @@ This is also the only module permitted to write to a terminal.
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
@@ -107,7 +108,11 @@ def render_table(
             table.add_row(*[cell(payload.get(name)) for name in names])
         else:
             table.add_row(cell(payload))
-    console = Console(record=True, width=width or 200, no_color=True)
+    # The console writes into a buffer rather than to the terminal. Printing
+    # here as well as returning the text would render every table twice.
+    console = Console(
+        record=True, width=width or 200, no_color=True, file=io.StringIO()
+    )
     console.print(table)
     return console.export_text()
 

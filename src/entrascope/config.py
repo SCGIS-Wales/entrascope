@@ -95,6 +95,7 @@ class SignInKind(_Frozen):
     graph_filter: str
     diagnostic_category: str
     kql_template: str
+    graph_beta: bool = False
 
 
 class LogQuery(_Frozen):
@@ -153,6 +154,7 @@ class ConcurrencySettings(_Frozen):
 class PagingSettings(_Frozen):
     page_size: int
     max_pages: int
+    no_page_size: tuple[str, ...] = ()
 
 
 class Retry(_Frozen):
@@ -206,6 +208,7 @@ class Logging(_Frozen):
     level: str
     format: str
     destination: str
+    quiet_loggers: dict[str, str] = {}
     surfaces: dict[str, SurfaceLogging]
     context_fields: tuple[str, ...]
     redaction: Redaction
@@ -235,6 +238,56 @@ class Credentials(_Frozen):
     file: CredentialFileSettings
     environment: EnvironmentSettings
     sources: SourceSettings
+
+
+class TransportSettings(_Frozen):
+    host: str
+    port: int
+    path: str
+    base_url: str
+
+
+class CorsSettings(_Frozen):
+    allowed_origins: tuple[str, ...]
+    allowed_methods: tuple[str, ...]
+    allowed_headers: tuple[str, ...]
+    allow_credentials: bool
+
+
+class RateLimitSettings(_Frozen):
+    enabled: bool
+    requests_per_second: float
+    burst: int
+
+
+class AuthorisationSettings(_Frozen):
+    identifier_uri: str
+    identifier_uri_template: str
+    required_scopes: tuple[str, ...]
+    strict_audience: bool
+    resource_name: str
+    resource_documentation: str
+
+
+class ProtocolSettings(_Frozen):
+    expected_version: str
+
+
+class ServerEnvironment(_Frozen):
+    tenant_id: str
+    client_id: str
+    identifier_uri: str
+    base_url: str
+
+
+class Server(_Frozen):
+    transport: TransportSettings
+    health_path: str
+    cors: CorsSettings
+    rate_limit: RateLimitSettings
+    authorisation: AuthorisationSettings
+    protocol: ProtocolSettings
+    environment: ServerEnvironment
 
 
 class ErrorEntry(_Frozen):
@@ -301,6 +354,7 @@ class Config(_Frozen):
     fields: Fields
     logging: Logging
     credentials: Credentials
+    server: Server
     error_codes: ErrorCodes
     capabilities: Capabilities
 
@@ -409,6 +463,7 @@ def build_config(directory: Path) -> Config:
                 "fields": read_yaml(directory / "fields.yaml"),
                 "logging": read_yaml(directory / "logging.yaml"),
                 "credentials": read_yaml(directory / "credentials.yaml"),
+                "server": read_yaml(directory / "server.yaml"),
                 "error_codes": read_yaml(directory / "error-codes.yaml"),
                 "capabilities": read_yaml(directory / "capabilities.yaml"),
             }

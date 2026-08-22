@@ -39,18 +39,27 @@ sign_in_kinds:
   # answers the same question through Azure Monitor. Graph reports every sign
   # in kind from one endpoint, distinguished by signInEventTypes.
   interactive:
-    graph_filter: "signInEventTypes/any(t: t eq 'interactiveUser')"
+    # The version 1.0 signIns endpoint returns interactive sign ins and does
+    # not carry the signInEventTypes property, so no filter is sent.
+    graph_filter: ""
+    graph_beta: false
     diagnostic_category: SignInLogs
     kql_template: signins_failures
   non-interactive:
+    # signInEventTypes exists on the beta endpoint only.
+    graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'nonInteractiveUser')"
     diagnostic_category: NonInteractiveUserSignInLogs
     kql_template: signins_failures
   service-principal:
+    # signInEventTypes exists on the beta endpoint only.
+    graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'servicePrincipal')"
     diagnostic_category: ServicePrincipalSignInLogs
     kql_template: signins_failures
   managed-identity:
+    # signInEventTypes exists on the beta endpoint only.
+    graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'managedIdentity')"
     diagnostic_category: ManagedIdentitySignInLogs
     kql_template: signins_failures

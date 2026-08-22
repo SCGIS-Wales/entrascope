@@ -2,12 +2,13 @@
 
 ## Protocol revision
 
-The steering research set the build target at revision 2025-11-25 and noted a
-2026-07-28 revision scheduled for publication. entrascope does not assert which
-revision is live. Phase 8 reads the protocol version that the installed FastMCP
-actually negotiates, records it here, and asserts it in a test so that a
-dependency bump which changes the negotiated revision fails the build rather
-than changing behaviour silently.
+Verified against the installed libraries rather than assumed. FastMCP 3.4.7
+resolves `mcp` 1.29.0, whose `LATEST_PROTOCOL_VERSION` is **2025-11-25**, which
+is exactly the revision the research named as the build target. That value is
+in `config/server.yaml` as `protocol.expected_version`, the server refuses to
+start if the installed libraries negotiate anything else, and a test asserts
+it. A dependency bump that changes the revision therefore fails the build
+rather than changing behaviour silently.
 
 Transport for the remote surface is Streamable HTTP. The deprecated HTTP with
 server sent events transport is not implemented.
@@ -117,46 +118,46 @@ set for version 2.0 and one for the version 1.0 issuer variant.
 
 ## FastMCP wiring
 
+The earlier research prescribed setting the private attribute
+`verifier._audience`, citing two upstream issues. That is not needed and is not
+what entrascope does. FastMCP 3.4.7 takes the application id URI as a public
+parameter, `identifier_uri`, and then accepts **either** that or the bare client
+id as the audience.
+
+Accepting both is safe against another application's token, because both values
+identify this application. It is nonetheless broader than the rule above, which
+says the audience must equal the application id URI. So entrascope narrows it,
+using `verifier.audience`, a public attribute, and `strict_audience` in
+`config/server.yaml` can restore the broader behaviour for a pre-registered
+client that cannot be made to request the URI form.
+
 ```python
-# framework contract: FastMCP requires class based providers; keep all logic in
-# free functions and treat these objects as configuration only.
-from fastmcp import FastMCP
-from fastmcp.server.auth import RemoteAuthProvider
-from fastmcp.server.auth.providers.azure import AzureJWTVerifier
-from pydantic import AnyHttpUrl
-
-
-def build_auth(
-    tenant_id: str,
-    client_id: str,
-    identifier_uri: str,
-    required_scopes: list[str],
-    base_url: str,
-    issuer: str,
-) -> RemoteAuthProvider:
+def build_verifier(
+    config: Config, tenant_id: str, client_id: str, identifier_uri: str
+) -> AzureJWTVerifier:
+    # framework contract: FastMCP requires class based providers. They are
+    # configuration, and every decision here comes from config/server.yaml.
     verifier = AzureJWTVerifier(
         client_id=client_id,
         tenant_id=tenant_id,
-        required_scopes=required_scopes,
+        identifier_uri=identifier_uri,
+        required_scopes=list(config.server.authorisation.required_scopes),
     )
-    # framework contract: the Entra v2.0 audience is the application id URI and
-    # not the client id GUID. Phase 8 confirms whether the installed FastMCP
-    # exposes a public parameter for this before falling back to the private
-    # attribute reported in PrefectHQ/fastmcp issues 3002 and 3729.
-    verifier._audience = identifier_uri
-    return RemoteAuthProvider(
-        token_verifier=verifier,
-        authorization_servers=[AnyHttpUrl(issuer)],
-        base_url=base_url,
-    )
-
-
-def build_server(auth: RemoteAuthProvider) -> FastMCP:
-    return FastMCP(name="entrascope", auth=auth)
+    if config.server.authorisation.strict_audience:
+        verifier.audience = identifier_uri
+    return verifier
 ```
 
 The issuer and the application id URI come from configuration. Neither is a
 literal in code.
+
+## Where the metadata is served
+
+RFC 9728 scopes the protected resource metadata to the resource path, so a
+server mounted at `/mcp` publishes its document at
+`/.well-known/oauth-protected-resource/mcp`, and the `resource_metadata`
+parameter in the `WWW-Authenticate` header points there. A test asserts the URL
+the refusal advertises is the URL that answers.
 
 ## Deployment
 

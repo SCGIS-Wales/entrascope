@@ -97,6 +97,16 @@ versioning.
 - The local MCP server, over stdio, exposing nine read only tools built from
   the same functions the commands call. A tool result and the corresponding
   --output json payload are the same bytes, which a test enforces.
+- The remote MCP server over Streamable HTTP, an OAuth 2.1 protected resource
+  validating Entra issued tokens, with protected resource metadata per RFC
+  9728, a health endpoint, CORS closed until an origin is named, per client
+  rate limiting, and a multi stage container image running as a non root user.
+- The audience is narrowed to the application id URI, which the steering rule
+  requires and which a public FastMCP parameter and attribute provide, so no
+  private attribute is touched.
+- The negotiated protocol revision is pinned in configuration, checked at
+  startup and asserted in a test.
+- entrascope serve http runs the remote server.
 - entrascope serve stdio runs the local server. Standard output carries the
   protocol alone, with logging and the banner on standard error, which a
   subprocess test enforces.

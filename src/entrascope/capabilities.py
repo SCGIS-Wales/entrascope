@@ -182,7 +182,11 @@ def enabled_categories(payload: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def read_diagnostic_settings(session: Session, config: Config) -> tuple[str, ...]:
-    """Read the Entra diagnostic settings and return the enabled categories."""
+    """Read the Entra diagnostic settings and return the enabled categories.
+
+    The session must carry an Azure Resource Manager token. A Microsoft Graph
+    token is refused, because the audiences differ.
+    """
     body = get_json(session, diagnostic_settings_url(config), config, source="arm")
     return enabled_categories(body)
 

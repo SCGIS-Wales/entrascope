@@ -23,6 +23,7 @@ EXPECTED_FILES = (
     "fields.yaml",
     "logging.yaml",
     "credentials.yaml",
+    "server.yaml",
 )
 
 EXPECTED_KQL = (
@@ -158,7 +159,12 @@ def test_config_schema_rejects_bad_yaml(tmp_path: Path) -> None:
     """A malformed configuration directory fails at load time, and says why."""
     from entrascope.config import ConfigError, build_config, find_config_dir
 
-    everything = (*EXPECTED_FILES, "error-codes.yaml", "capabilities.yaml")
+    everything = (
+        *EXPECTED_FILES,
+        "error-codes.yaml",
+        "capabilities.yaml",
+        "server.yaml",
+    )
     for name in everything:
         (tmp_path / name).write_text((CONFIG_ROOT / name).read_text())
     (tmp_path / "endpoints.yaml").write_text("graph: {base_url: 1}\n")

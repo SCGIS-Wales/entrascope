@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import NamedTuple
 
+import pytest
 import yaml
 
 from entrascope.config import Config
@@ -135,3 +136,17 @@ def test_exit_code_follows_the_checks() -> None:
         exit_code_for_checks([CheckResult("a", True, ""), CheckResult("b", False, "")])
         == EXIT_CHECKS_FAILED
     )
+
+
+def test_rendering_a_table_writes_nothing_by_itself(
+    config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The renderer returns text and prints nothing.
+
+    Rendering and writing are separate, and a renderer that also printed would
+    show every table twice.
+    """
+    render([Row(name="one", count=2)], config, "table")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

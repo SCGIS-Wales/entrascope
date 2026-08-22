@@ -119,12 +119,22 @@ def test_sign_in_kinds_are_configured(config: Config) -> None:
 
 
 def test_sign_in_filter_distinguishes_the_kinds(config: Config) -> None:
-    """Each kind filters on its own sign in event type."""
+    """Each kind filters on its own sign in event type, where the endpoint has one."""
     assert "servicePrincipal" in sign_in_filter(config, "service-principal")
     assert "managedIdentity" in sign_in_filter(config, "managed-identity")
-    combined = sign_in_filter(config, "interactive", "aaaa")
-    assert "interactiveUser" in combined
-    assert "appId eq 'aaaa'" in combined
+    # The version 1.0 endpoint has no signInEventTypes property and returns
+    # interactive sign ins already, so that kind sends no event type clause.
+    assert sign_in_filter(config, "interactive") == ""
+    assert sign_in_filter(config, "interactive", "aaaa") == "appId eq 'aaaa'"
+
+
+def test_only_the_beta_endpoint_carries_the_event_type(config: Config) -> None:
+    """The kinds that filter on signInEventTypes are routed to the beta endpoint."""
+    from entrascope.logs import sign_in_entry
+
+    assert not sign_in_entry(config, "interactive").graph_beta
+    for kind in ("non-interactive", "service-principal", "managed-identity"):
+        assert sign_in_entry(config, kind).graph_beta
 
 
 def test_an_unknown_sign_in_kind_lists_the_known_ones(config: Config) -> None:

@@ -52,3 +52,10 @@ concurrency:
 paging:
   page_size: 999
   max_pages: 1000
+  # Endpoints that reject a custom page size with Request_UnsupportedQuery.
+  # Microsoft Graph accepts $top on most collections and refuses it on these.
+  no_page_size:
+    - subscribed_skus
+    - organization
+    - directory_roles
+    - me
