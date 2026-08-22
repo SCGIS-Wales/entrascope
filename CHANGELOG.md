@@ -91,6 +91,19 @@ versioning.
   expiring credential, logs audit, logs signins and logs graph-activity each
   choosing between the Graph route and the Azure Monitor route, logs kinds, and
   errors explain, errors list and errors search which need no credentials.
+- entrascope investigate, which gathers credentials, directory changes and
+  sign in failures, applies rules from configuration and ranks what it finds
+  worst first with the remediation for each. Tenant wide with no argument, or
+  narrowed to one application by id, object id or part of a display name.
+  Findings are errors, warnings or notes, and --severity filters them.
+- Microsoft first party enterprise applications are excluded by default,
+  because a tenant carries hundreds and they are Microsoft's to manage.
+- One application selector, --app, meaning the same thing on every command.
+- The command line answers with its help when given nothing, every group lists
+  its commands, every group carries worked examples, and a command missing a
+  required argument shows what it needs rather than an error.
+- discover apps and discover sps are now discover applications and discover
+  enterprise-apps, with the short forms retained as aliases.
 - Machine readable output is quiet. Progress lines are suppressed under
   --output json and --output yaml so the output can be piped directly.
 - Continuous integration actions moved to the majors that run on Node 24.

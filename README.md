@@ -63,30 +63,86 @@ For unattended use, place client credentials at
 `TenantID`. The file must be mode 0600 inside a directory of mode 0700, and
 entrascope refuses to run otherwise.
 
-## Commands
+## Using it
+
+Run `entrascope` with no arguments and it tells you what it can do. Every group
+and every command carries its own help and worked examples, so `--help` is
+always the next step.
+
+### Terminology, used the same way throughout
+
+| Term | Meaning |
+| --- | --- |
+| application registration | what you register in Entra, the definition |
+| enterprise application | the service principal, the instance in a tenant |
+| delegated permission | acts as a signed in person, a `scp` claim |
+| application permission | acts as itself, a `roles` claim |
+
+### Diagnosing a failure
+
+Start wide, then narrow. `investigate` gathers credentials, directory changes
+and sign in failures, applies a set of rules and ranks what it finds worst
+first, with the remediation for each.
 
 ```bash
-entrascope doctor                                  # why did that not work
-entrascope discover apps --expiring                # credentials about to expire
-entrascope discover apps --type single-page-application
-entrascope discover sps --type managed-identity
-entrascope logs audit                              # changes to applications
-entrascope logs signins --kind service-principal --failures-only
-entrascope logs graph-activity --workspace <workspace-id>
-entrascope errors explain AADSTS7000215
-entrascope errors search consent
+entrascope doctor                          # can entrascope see what it needs
+entrascope investigate                     # what is wrong in this tenant
+entrascope investigate --severity error    # only what is already broken
+entrascope investigate my-api              # narrow to one application
+entrascope investigate my-api --full       # and show the evidence behind it
 ```
 
-`--output json` and `--output yaml` are available on every command, and are
-quiet: progress lines are suppressed so the output can be piped straight into
-another tool. `errors explain` and `errors list` need no credentials at all,
-because the mapping is configuration.
+The argument to `investigate` is an application id, an object id or part of a
+display name, whichever the error message gave you. The same value works as
+`--app` on every other command. Findings are ranked **error** for something
+already broken, **warning** for something that will break, and **note** for the
+context that explains a result.
 
-Sign in and audit logs can be read two ways. `--route graph` uses the Microsoft
-Graph reporting API and works on any tenant with the right permission.
-`--route monitor` with `--workspace` uses Log Analytics, which needs a
-diagnostic setting and gives longer retention. Microsoft Graph activity exists
-only through Azure Monitor.
+### Looking at one thing at a time
+
+```bash
+entrascope discover applications --expiring          # credentials about to expire
+entrascope discover applications --type single-page-application
+entrascope discover enterprise-apps --type managed-identity
+entrascope discover applications --app my-api --output json
+
+entrascope logs audit --failures-only                # failed directory changes
+entrascope logs audit --app my-api
+entrascope logs signins --kind service-principal --failures-only
+entrascope logs signins --app my-api --hours 6
+entrascope logs graph-activity --workspace <workspace-id>
+entrascope logs kinds                                # which sign in kinds exist
+
+entrascope errors explain AADSTS7000215
+entrascope errors explain "AADSTS50011: The redirect URI does not match"
+entrascope errors search consent
+entrascope errors list
+```
+
+`discover apps` and `discover sps` still work as short forms.
+
+### Reading the same data two ways
+
+Audit events and sign ins can be answered by Microsoft Graph or by Azure
+Monitor, and both return the same fields.
+
+```bash
+entrascope logs audit --route graph                        # any tenant
+entrascope logs audit --route monitor --workspace <id>     # longer retention
+```
+
+The Graph route needs only the right permission. The Monitor route needs a
+diagnostic setting and the Log Analytics Reader role, and gives longer
+retention. Microsoft Graph activity exists only through Azure Monitor. Sign in
+logs of any kind need an Entra ID P1 or P2 licence; audit logs do not.
+
+### Output and identity
+
+`--output json` and `--output yaml` work on every command and are quiet, so the
+output can be piped straight into another tool. `--auth` chooses the identity:
+`file`, `env`, `azure-cli` or `default`. `errors explain`, `errors list` and
+`errors search` need no credentials at all, because the mapping is
+configuration.
 
 ## As an MCP server
 

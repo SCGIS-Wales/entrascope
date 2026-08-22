@@ -49,6 +49,20 @@ Standard library, then third party, then first party, each block alphabetised.
 ruff enforces this. No wildcard imports. No conditional imports except where a
 platform genuinely requires one.
 
+## Help text
+
+The command line is the documentation for most people, so it carries the
+weight. Running the tool with no arguments shows the help. Every group lists
+its commands and carries worked examples. A command missing a required argument
+shows what it needs rather than reporting an error. An option that means the
+same thing in two places is described with the same words in both, from a
+shared constant.
+
+A test asserts the help of every command is Oxford English and free of dash
+punctuation, that the application selector is described identically everywhere,
+and that the examples survive the formatter, which rewraps a paragraph unless
+it is marked.
+
 ## Tooling
 
 `ruff check` and `ruff format --check` for lint and formatting, line length 88.

@@ -10,7 +10,7 @@ Tools read. There is no tool that changes the directory.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from azure.core.credentials import TokenCredential
 from fastmcp import FastMCP
@@ -22,6 +22,7 @@ from entrascope.doctor import run_checks
 from entrascope.errors import explain, known_codes, search
 from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
+from entrascope.investigate import investigate as run_investigation
 from entrascope.logger import get_logger, new_correlation_id
 from entrascope.logs import (
     query_audit_graph,
@@ -30,7 +31,7 @@ from entrascope.logs import (
     query_sign_ins_monitor,
     sign_in_kinds,
 )
-from entrascope.models import AuthSource
+from entrascope.models import AuthSource, Severity
 from entrascope.monitor import build_logs_client
 from entrascope.render import payload_for
 
@@ -114,6 +115,37 @@ def register_tools(
     def doctor() -> list[dict[str, Any]]:
         new_correlation_id()
         return list(payload(run_checks(config), config))
+
+    @server.tool(
+        name="investigate",
+        description=(
+            "Diagnose authentication and authorisation failures, ranked worst "
+            "first. With no target this sweeps the whole tenant. Give an "
+            "application id, an object id or part of a display name to narrow "
+            "it to one application. Start here when something is wrong."
+        ),
+    )
+    def investigate_tool(
+        target: str = "",
+        severity: str | None = None,
+        limit: int = 100,
+        include_first_party: bool = False,
+    ) -> dict[str, Any]:
+        new_correlation_id()
+        session, token = graph_session(config, credential())
+        try:
+            result = run_investigation(
+                session,
+                config,
+                token,
+                target=target,
+                limit=limit,
+                minimum_severity=cast("Severity | None", severity),
+                include_first_party=include_first_party,
+            )
+        finally:
+            session.close()
+        return dict(payload(result, config))
 
     @server.tool(
         name="discover_applications",
@@ -316,6 +348,7 @@ def tool_names() -> tuple[str, ...]:
     """Return the names of every tool, in registration order."""
     return (
         "doctor",
+        "investigate",
         "discover_applications",
         "discover_service_principals",
         "audit_events",
