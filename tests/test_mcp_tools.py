@@ -296,10 +296,15 @@ def test_the_tool_surface_covers_every_command() -> None:
     The two surfaces run the same functions, so a command with no tool is a
     gap, not a design decision.
     """
-    from entrascope.mcp_tools import COMMAND_TOOLS, tool_names
+    from entrascope.mcp_tools import COMMAND_TOOLS, NOT_EXPOSED, tool_names
 
-    missing = [path for path in leaf_commands() if path not in COMMAND_TOOLS]
-    assert not missing, f"commands with no tool: {missing}"
+    missing = [
+        path
+        for path in leaf_commands()
+        if path not in COMMAND_TOOLS and path not in NOT_EXPOSED
+    ]
+    assert not missing, f"commands with no tool and no stated reason: {missing}"
+    assert all(reason for reason in NOT_EXPOSED.values())
     unknown = [name for name in COMMAND_TOOLS.values() if name not in tool_names()]
     assert not unknown, f"the map names tools that do not exist: {unknown}"
 
@@ -352,3 +357,21 @@ async def test_mcp_inspect_tool(server: Any) -> None:
     assert report["identity"]["display_name"] == "Confidential web application"
     assert "consent" in report["permissions"]
     assert report["urls"]["web_redirect_uris"]
+
+
+async def test_the_configuration_can_be_read_but_not_written(server: Any) -> None:
+    """An assistant should learn the vocabulary, not edit the machine."""
+    from entrascope.mcp_tools import NOT_EXPOSED
+
+    listing = await call(server, "configuration")
+    assert "endpoints.yaml" in listing["files"]
+    assert "signins_failures" in listing["kql_templates"]
+    one = await call(server, "configuration", {"name": "tables.yaml"})
+    assert "diagnostic_categories" in one["contents"]
+    assert "config export" in NOT_EXPOSED
+
+
+async def test_the_configuration_tool_refuses_a_path(server: Any) -> None:
+    """A name is a name, not a path to anywhere on the machine."""
+    with pytest.raises(Exception, match="No configuration file"):
+        await call(server, "configuration", {"name": "../../etc/passwd"})

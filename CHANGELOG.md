@@ -7,6 +7,15 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- entrascope config path, export and show. The configuration ships inside the
+  installed package, where it is awkward to edit and is replaced on upgrade, so
+  there is now a supported way to see which directory is in force and to take a
+  copy. A test asserts the wheel still carries it.
+- The configuration is readable as an MCP tool, so an assistant can learn the
+  vocabulary. Exporting is deliberately not exposed, and the reason is recorded
+  where the parity test can read it.
+
 ### Security
 - Values that reach a query are escaped. A single quote in an application
   filter could end the literal and rewrite the filter, and a double quote in a
@@ -23,6 +32,26 @@ versioning.
   clients bind their tokens to it.
 
 ### Fixed
+- A network failure reached the user as a stack trace from the transport. A
+  refused connection, a name that does not resolve, a proxy that will not talk,
+  a certificate that cannot be verified and a read that timed out are now the
+  one structured error, each named separately because each needs a different
+  remediation, and each with an entry in the error mapping.
+- A success carrying something that is not JSON, which is what a captive portal
+  answering in place of the service looks like, is reported as that rather than
+  as a decoding error.
+- A failure with no reply at all no longer claims the service returned status
+  zero.
+- Two workers missing the token cache at the same moment each asked the
+  authority for a token nobody needed.
+- Replacing the log handlers left their files open, leaking a descriptor on
+  every reconfiguration. A file destination now gets a handler that owns its
+  file, and a standard stream one that owns nothing, so closing does the right
+  thing in both cases.
+- The credential file mode is read from the open descriptor rather than from the
+  path, so what was checked and what was read cannot be two different files.
+- An investigation enumerated every application and service principal with no
+  ceiling. There is now a configured limit and a truncated answer says so.
 - A requests session was shared between tasks that could run at the same time.
   Dividing a list of sessions by the worker count hands the same one to items
   that run concurrently as soon as there are more items than workers. Each

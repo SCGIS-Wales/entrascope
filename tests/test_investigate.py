@@ -384,3 +384,29 @@ def test_a_target_that_matches_nothing_is_not_an_error(config: Config) -> None:
     result = investigate(build_session(config), config, target="no-such-app", limit=10)
     assert result.applications == ()
     assert result.findings == ()
+
+
+@responses.activate
+def test_a_truncated_investigation_says_so(config: Config) -> None:
+    """A large tenant holds more objects than an investigation should walk."""
+    register_graph()
+    tight = config.model_copy(
+        update={
+            "retry": config.retry.model_copy(
+                update={
+                    "paging": config.retry.paging.model_copy(update={"max_objects": 2})
+                }
+            )
+        }
+    )
+    result = investigate(build_session(tight), tight, limit=5)
+    assert len(result.applications) == 2
+    assert any("reached the ceiling" in note for note in result.notes)
+
+
+@responses.activate
+def test_an_untruncated_investigation_says_nothing_about_it(config: Config) -> None:
+    """A note that is always there is a note nobody reads."""
+    register_graph()
+    result = investigate(build_session(config), config, limit=5)
+    assert not any("ceiling" in note for note in result.notes)

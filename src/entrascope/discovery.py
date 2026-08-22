@@ -401,6 +401,7 @@ def discover_applications(
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
+    limit: int | None = None,
 ) -> tuple[ApplicationSummary, ...]:
     """Enumerate application registrations and project every one.
 
@@ -408,7 +409,11 @@ def discover_applications(
     they are fetched concurrently and only when details are wanted.
     """
     payloads = get_collection(
-        session, config, "applications", filter_expression=filter_expression
+        session,
+        config,
+        "applications",
+        filter_expression=filter_expression,
+        limit=limit,
     )
     object_ids = [text(item.get("id")) for item in payloads]
     owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
@@ -436,10 +441,15 @@ def discover_service_principals(
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
+    limit: int | None = None,
 ) -> tuple[ServicePrincipalSummary, ...]:
     """Enumerate enterprise applications and project every one."""
     payloads = get_collection(
-        session, config, "service_principals", filter_expression=filter_expression
+        session,
+        config,
+        "service_principals",
+        filter_expression=filter_expression,
+        limit=limit,
     )
     object_ids = [text(item.get("id")) for item in payloads]
     owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)

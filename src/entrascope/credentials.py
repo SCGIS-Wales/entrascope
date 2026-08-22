@@ -144,6 +144,25 @@ def check_permissions(
     return (check_directory_mode(settings, home), check_file_mode(settings, home))
 
 
+def read_checked(path: Path, settings: Credentials) -> str:
+    """Read the credential file, checking the file that was actually opened.
+
+    Checking the path and then opening it leaves a gap in which the path can be
+    replaced. The mode is taken from the open descriptor, so what was checked
+    and what was read are the same file.
+    """
+    wanted = required_mode(settings.file.required_file_mode)
+    with path.open("rb") as handle:
+        actual = stat.S_IMODE(os.fstat(handle.fileno()).st_mode)
+        if actual != wanted:
+            raise CredentialError(
+                f"{path} has mode {format_mode(actual)} and must have "
+                f"{format_mode(wanted)}. It is readable by others. "
+                f"Fix it with: chmod {format_mode(wanted)} {path}"
+            )
+        return handle.read().decode("utf-8")
+
+
 def read_credential_file(settings: Credentials, home: Path | None = None) -> Credential:
     """Read and validate the credential file.
 
@@ -156,7 +175,7 @@ def read_credential_file(settings: Credentials, home: Path | None = None) -> Cre
 
     path = resolve_file(settings, home)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_checked(path, settings))
     except (OSError, json.JSONDecodeError) as error:
         raise CredentialError(f"Cannot read {path}: {error}") from error
     if not isinstance(payload, Mapping):

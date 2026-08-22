@@ -278,3 +278,27 @@ def test_a_filter_value_is_bounded() -> None:
     from entrascope.graph import MAX_FILTER_VALUE, odata_literal
 
     assert len(odata_literal("a" * 5000)) == MAX_FILTER_VALUE
+
+
+def test_two_threads_missing_the_token_cache_fetch_once(config: Config) -> None:
+    """The provider is shared by every worker in a fan out.
+
+    Two of them missing the cache at the same moment would each ask the
+    authority for a token nobody needed.
+    """
+    import threading
+
+    credential = FakeCredential(expiry=10_000.0)
+    provide = token_provider(credential, "scope", clock=lambda: 0.0)
+    barrier = threading.Barrier(8, timeout=10)
+
+    def ask() -> str:
+        barrier.wait()
+        return provide()
+
+    threads = [threading.Thread(target=ask) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert credential.calls == 1

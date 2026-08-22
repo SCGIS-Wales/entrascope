@@ -18,7 +18,13 @@ from typing import Any, NoReturn, cast
 import click
 
 from entrascope import __version__
-from entrascope.config import Config, load_config
+from entrascope.config import (
+    SENTINEL_FILE,
+    Config,
+    candidate_directories,
+    load_config,
+    read_text_file,
+)
 from entrascope.credentials import resolve_auth
 from entrascope.discovery import (
     discover_applications,
@@ -892,6 +898,110 @@ def investigate(
         show(result.sign_ins, settings, "Sign ins", SIGN_IN_COLUMNS)
     if result.errors():
         raise SystemExit(EXIT_CHECKS_FAILED)
+
+
+CONFIG_EPILOG = """
+\b
+Examples:
+
+  entrascope config path                    where configuration is read from
+  entrascope config export ~/.entrascope    take a copy to edit
+  entrascope config show endpoints.yaml     read one file
+"""
+
+
+@cli.group(epilog=CONFIG_EPILOG, no_args_is_help=True)
+def config_group() -> None:
+    """Find, read and take a copy of the configuration.
+
+    Every endpoint, table name, retry value, error code and documentation link
+    lives in configuration rather than in code. An installed entrascope carries
+    its own copy inside the package, which is awkward to edit and is replaced
+    on upgrade, so take a copy and point ENTRASCOPE_CONFIG_DIR at it.
+    """
+
+
+config_group.command_class = GlobalOptionCommand
+
+
+@config_group.command("path")
+@click.pass_context
+@handled
+def config_path(context: click.Context) -> None:
+    """Say where configuration is being read from, and where else was looked."""
+    settings = settings_of(context)
+    active: Config = settings["config"]
+    rows = [
+        {
+            "directory": str(candidate),
+            "holds_configuration": (candidate / SENTINEL_FILE).is_file(),
+            "in_use": candidate == active.root,
+        }
+        for candidate in candidate_directories()
+    ]
+    show(
+        rows,
+        settings,
+        "Configuration",
+        ("directory", "holds_configuration", "in_use"),
+        "places",
+    )
+
+
+@config_group.command("export")
+@click.argument(
+    "directory", type=click.Path(file_okay=False, path_type=Path), required=True
+)
+@click.option("--force", is_flag=True, help="Overwrite files that are already there.")
+@click.pass_context
+@handled
+def config_export(context: click.Context, directory: Path, force: bool) -> None:
+    """Copy the configuration somewhere you can edit it.
+
+    Then point ENTRASCOPE_CONFIG_DIR at that directory, or pass --config-dir,
+    and your copy is used instead of the one inside the package.
+    """
+    settings = settings_of(context)
+    active: Config = settings["config"]
+    written = copy_configuration(active.root, directory, force=force)
+    emit(f"Copied {len(written)} files from {active.root} to {directory}.")
+    emit(f"Use it with:  export ENTRASCOPE_CONFIG_DIR={directory}")
+
+
+@config_group.command("show")
+@click.argument("name", required=True)
+@click.pass_context
+@handled
+def config_show(context: click.Context, name: str) -> None:
+    """Print one configuration file, whichever directory is in use."""
+    settings = settings_of(context)
+    active: Config = settings["config"]
+    path = (active.root / name).resolve()
+    if not path.is_relative_to(active.root.resolve()) or not path.is_file():
+        available = sorted(item.name for item in active.root.glob("*.yaml"))
+        raise ConfigError(
+            f"No configuration file named {name}. Available: {available}, and "
+            "the KQL templates under kql."
+        )
+    emit(read_text_file(path))
+
+
+def copy_configuration(source: Path, destination: Path, *, force: bool) -> list[Path]:
+    """Copy a configuration directory, refusing to overwrite without being told."""
+    written: list[Path] = []
+    for item in sorted(source.rglob("*")):
+        if item.is_dir():
+            continue
+        target = destination / item.relative_to(source)
+        if target.exists() and not force:
+            raise ConfigError(
+                f"{target} is already there. Pass --force to overwrite, or "
+                "choose an empty directory."
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(item.read_bytes())
+        written.append(target)
+    return written
 
 
 @cli.command("whoami", cls=GlobalOptionCommand)

@@ -261,3 +261,39 @@ def test_control_characters_never_reach_a_query() -> None:
     from entrascope.config import kql_literal
 
     assert kql_literal("a\nb\x00c") == "abc"
+
+
+def test_the_configuration_ships_inside_the_package() -> None:
+    """An installed entrascope must carry its own configuration.
+
+    The repository directory is not there after a pip install, so the packaged
+    copy is what an installed tool reads.
+    """
+    from entrascope.config import PACKAGED_CONFIG_DIRNAME, candidate_directories
+
+    candidates = [str(path) for path in candidate_directories()]
+    assert any(PACKAGED_CONFIG_DIRNAME in path for path in candidates)
+
+
+def test_the_wheel_is_told_to_carry_it() -> None:
+    """The mapping that puts it there is easy to lose in a packaging change."""
+    import tomllib
+
+    from tests.conftest import REPO_ROOT
+
+    packaging = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    wheel = packaging["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel["force-include"]["config"] == "entrascope/_config"
+    assert "src/entrascope/py.typed" in wheel["artifacts"]
+
+
+def test_every_configuration_file_is_carried() -> None:
+    """A file added to the repository but not shipped fails at run time."""
+    from tests.conftest import CONFIG_ROOT
+
+    expected = {path.name for path in CONFIG_ROOT.glob("*.yaml")}
+    assert expected == set(EXPECTED_FILES) | {
+        "error-codes.yaml",
+        "capabilities.yaml",
+        "server.yaml",
+    }

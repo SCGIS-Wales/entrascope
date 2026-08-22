@@ -290,3 +290,20 @@ def test_no_secret_reaches_a_log_record(
         resolve_auth(config, requested="file", home=tmp_path)
     payload: Any = caplog.text
     assert SENTINEL_SECRET not in payload
+
+
+def test_the_file_that_was_opened_is_the_file_that_was_checked(
+    tmp_path: Path, config: Config
+) -> None:
+    """Checking a path and then opening it leaves a gap.
+
+    The mode is taken from the open descriptor, so what was checked and what
+    was read cannot be two different files.
+    """
+    from entrascope.credentials import read_checked
+
+    path = write_credentials(tmp_path, config=config)
+    assert SENTINEL_SECRET in read_checked(path, config.credentials)
+    path.chmod(0o644)
+    with pytest.raises(CredentialError, match="chmod 0600"):
+        read_checked(path, config.credentials)

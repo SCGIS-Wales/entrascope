@@ -74,8 +74,14 @@ class ApiError(NamedTuple):
     source: str = ""
 
     def summary(self) -> str:
-        """Return a one line description of the failure."""
+        """Return a one line description of the failure.
+
+        A status of zero means there was no reply at all, so saying that the
+        service returned it would be nonsense.
+        """
         source = self.source or "api"
+        if self.status == 0:
+            return f"could not reach {source}. {self.code}: {self.message}"
         return f"{source} returned {self.status} {self.code}: {self.message}"
 
 
