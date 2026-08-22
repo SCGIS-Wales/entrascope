@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 from entrascope import __version__
 from entrascope.cli import cli
+from entrascope.config import Config
 from entrascope.render import EXIT_API, EXIT_CHECKS_FAILED, EXIT_CONFIG
 from tests.conftest import SENTINEL_SECRET, load_fixture
 

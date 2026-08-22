@@ -171,7 +171,7 @@ def test_the_upgrade_goes_through_this_interpreter() -> None:
     command = upgrade_command("virtualenv", "entrascope")
     assert command[0] == sys.executable
     assert command[1:4] == ["-m", "pip", "install"]
-    assert "pip" != command[0]
+    assert command[0] != "pip"
 
 
 def test_each_kind_of_install_gets_its_own_command() -> None:
