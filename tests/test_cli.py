@@ -980,3 +980,33 @@ def test_the_chooser_labels_every_command_with_its_purpose() -> None:
     assert isinstance(errors_group, click.Group)
     for command in errors_group.commands.values():
         assert summary(command)
+
+
+def test_a_broken_version_check_never_stops_a_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The command an engineer ran matters. Knowing about a release does not."""
+    from entrascope import cli as cli_module
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the check itself is broken")
+
+    monkeypatch.setattr(cli_module, "newer_release", explode)
+    result = run(["errors", "explain", "AADSTS50011"])
+    assert result.exit_code == 0
+    assert "redirect" in result.output.lower()
+
+
+def test_a_broken_version_check_does_not_stop_the_upgrade_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Least of all the command whose whole job is to fix it."""
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the feed itself is broken")
+
+    monkeypatch.setattr("entrascope.upgrade.fetch_release", explode)
+    monkeypatch.setattr("entrascope.upgrade.read_cache", explode)
+    result = run(["upgrade", "--check"])
+    assert result.exit_code == 0
+    assert "running version" in result.output

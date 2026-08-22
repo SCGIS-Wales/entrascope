@@ -41,7 +41,12 @@ from entrascope.inspect import Catalogue, read_catalogue, search_gallery
 from entrascope.inspect import inspect as run_inspect
 from entrascope.investigate import investigate as run_investigation
 from entrascope.investigate import matches, matches_principal
-from entrascope.logger import bind_context, configure_logging, new_correlation_id
+from entrascope.logger import (
+    bind_context,
+    configure_logging,
+    get_logger,
+    new_correlation_id,
+)
 from entrascope.logs import (
     query_audit_graph,
     query_audit_monitor,
@@ -60,6 +65,7 @@ from entrascope.models import (
 )
 from entrascope.monitor import build_logs_client
 from entrascope.picker import Choice, available, choose
+from entrascope.redaction import redact_with_config
 from entrascope.render import (
     EXIT_API,
     EXIT_CHECKS_FAILED,
@@ -88,6 +94,8 @@ from entrascope.upgrade import (
     tail,
     upgrade_notice,
 )
+
+log = get_logger(__name__)
 
 #: Key under which the shared settings are held on the click context.
 SETTINGS = "settings"
@@ -125,11 +133,16 @@ def announce_new_version(config: Config, output: str) -> None:
     Never for machine readable output, never without a terminal, never more
     than once a day, and never loudly enough to be mistaken for the answer.
     """
-    if output in ("json", "yaml", "plain") or not sys.stderr.isatty():
-        return
-    release = newer_release(config)
-    if release is not None:
-        emit_error(upgrade_notice(release))
+    try:
+        if output in ("json", "yaml", "plain") or not sys.stderr.isatty():
+            return
+        release = newer_release(config)
+        if release is not None:
+            emit_error(upgrade_notice(release))
+    except Exception:
+        # Belt as well as braces. The check has its own boundary, and this one
+        # is here so that no future change to it can stop a command running.
+        log.debug("the version notice was skipped", exc_info=True)
 
 
 def build_settings(
@@ -422,11 +435,15 @@ def summary(command: click.Command) -> str:
 
 def run_command(command: click.Command, name: str, ctx: click.Context) -> Any:
     """Run one command, asking for any argument it cannot do without."""
-    arguments: list[str] = []
+    answers: list[str] = []
     for parameter in command.params:
         if isinstance(parameter, click.Argument) and parameter.required:
             label = (parameter.name or "value").replace("_", " ")
-            arguments.append(click.prompt(label.capitalize(), type=str).strip())
+            answers.append(click.prompt(label.capitalize(), type=str).strip())
+    # Everything typed at a prompt is a value, never an option. Without the
+    # separator, an error message that happens to begin with a dash, or the
+    # word --help, would be parsed rather than answered.
+    arguments = ["--", *answers] if answers else []
     with command.make_context(name, arguments, parent=ctx) as inner:
         return command.invoke(inner)
 
@@ -1134,7 +1151,8 @@ def upgrade(
     )
     emit(f"Ran: {' '.join(command)}")
     if output_text.strip():
-        emit(tail(output_text, lines=6))
+        # An index URL can carry credentials, and the installer echoes it.
+        emit(str(redact_with_config(tail(output_text, lines=6), config)))
     emit(f"Now run entrascope --version to confirm. Notes: {release.url}")
 
 

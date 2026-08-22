@@ -273,3 +273,77 @@ def test_output_is_trimmed_to_the_end() -> None:
     """The last few lines of an installer are the ones that say what happened."""
     trimmed = tail("\n".join(str(number) for number in range(50)), lines=3)
     assert trimmed.splitlines() == ["  47", "  48", "  49"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "entrascope.upgrade.check_disabled",
+        "entrascope.upgrade.read_cache",
+        "entrascope.upgrade.fetch_release",
+    ],
+)
+def test_nothing_the_check_touches_can_fail_a_command(
+    config: Config, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """Every step is behind the same boundary.
+
+    A corrupt cache, a proxy answering with a sign in page, a clock that makes
+    a timestamp nonsense: each means the same thing, which is that we do not
+    know, and not knowing must never stop the command that was actually run.
+    """
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("something nobody thought of")
+
+    monkeypatch.setattr(target, explode)
+    assert newer_release(config) is None
+
+
+def test_a_cache_holding_the_wrong_shape_is_ignored(cached_in: Config) -> None:
+    """A file that is valid JSON and nonsense is still nonsense."""
+    path = cache_path(cached_in)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for contents in ('"a string"', "[1, 2, 3]", '{"fetched_at": "not a number"}'):
+        path.write_text(contents)
+        assert read_cache(cached_in) == (None, False)
+
+
+def test_a_release_tag_in_an_unexpected_shape_is_survivable(
+    cached_in: Config,
+) -> None:
+    """A tag nobody expected is not a reason to fail."""
+    write_cache(cached_in, Release(version="not a version at all", url=""))
+    assert newer_release(cached_in) is None
+
+
+@responses.activate
+def test_a_feed_answering_with_a_sign_in_page_is_ignored(cached_in: Config) -> None:
+    """A captive portal answers everything, including this."""
+    responses.add(
+        responses.GET,
+        FEED,
+        body="<html>sign in</html>",
+        status=200,
+        content_type="text/html",
+    )
+    assert fetch_release(cached_in) is None
+
+
+@responses.activate
+def test_a_feed_answering_with_an_error_is_ignored(cached_in: Config) -> None:
+    """Rate limited, moved, or down. None of it matters here."""
+    responses.add(responses.GET, FEED, json={"message": "rate limited"}, status=403)
+    assert fetch_release(cached_in) is None
+
+
+def test_an_unwritable_cache_does_not_stop_the_answer(
+    cached_in: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read only home directory is somebody's real situation."""
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise OSError("read only file system")
+
+    monkeypatch.setattr(Path, "write_text", refuse)
+    write_cache(cached_in, Release(version="v9.9.9", url=""))
