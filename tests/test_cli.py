@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -151,7 +152,7 @@ def test_cli_discover_apps(authenticated: None) -> None:
         json=load_fixture("applications"),
         status=200,
     )
-    result = run(["--auth", "file", "discover", "apps", "--no-details"])
+    result = run(["--auth", "file", "discover", "applications", "--no-details"])
     assert result.exit_code == 0, result.output
     assert "Confidential web application" in result.output
     assert "single-page-application" in result.output
@@ -190,7 +191,9 @@ def test_cli_discover_apps_shows_only_expiring(authenticated: None) -> None:
         json=load_fixture("applications"),
         status=200,
     )
-    result = run(["--auth", "file", "discover", "apps", "--no-details", "--expiring"])
+    result = run(
+        ["--auth", "file", "discover", "applications", "--no-details", "--expiring"]
+    )
     assert "Confidential web application" in result.output
     assert "Single page application" not in result.output
 
@@ -204,7 +207,7 @@ def test_cli_discover_service_principals(authenticated: None) -> None:
         json=load_fixture("service_principals"),
         status=200,
     )
-    result = run(["--auth", "file", "discover", "sps", "--no-details"])
+    result = run(["--auth", "file", "discover", "enterprise-apps", "--no-details"])
     assert result.exit_code == 0, result.output
     assert "managed-identity" in result.output
     assert "saml-gallery" in result.output
@@ -293,7 +296,15 @@ def test_cli_output_formats(authenticated: None) -> None:
         status=200,
     )
     result = run(
-        ["--auth", "file", "--output", "json", "discover", "apps", "--no-details"]
+        [
+            "--auth",
+            "file",
+            "--output",
+            "json",
+            "discover",
+            "applications",
+            "--no-details",
+        ]
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
@@ -310,7 +321,7 @@ def test_an_api_failure_is_a_message_not_a_stack_trace(authenticated: None) -> N
         json={"error": {"code": "Authorization_RequestDenied", "message": "no"}},
         status=403,
     )
-    result = run(["--auth", "file", "discover", "apps", "--no-details"])
+    result = run(["--auth", "file", "discover", "applications", "--no-details"])
     assert result.exit_code == EXIT_API
     assert "Authorization_RequestDenied" in result.output
 
@@ -320,8 +331,8 @@ def test_help_text_style() -> None:
     commands = [
         [],
         ["discover"],
-        ["discover", "apps"],
-        ["discover", "sps"],
+        ["discover", "applications"],
+        ["discover", "enterprise-apps"],
         ["logs"],
         ["logs", "audit"],
         ["logs", "signins"],
@@ -341,8 +352,11 @@ def test_help_text_style() -> None:
         lowered = prose.lower()
         for word in american:
             assert word not in lowered, f"{command} help uses {word}"
-        assert " - " not in prose, f"{command} help uses dash punctuation"
-        assert "--" not in prose.replace("--help", ""), f"{command} prose has a dash"
+        # A flag or an identifier may carry a hyphen, which is syntax. What is
+        # forbidden is a dash used as punctuation in a sentence.
+        without_flags = re.sub(r"(?<![\w-])--?[a-z][\w-]*", "", prose)
+        for dash in (" - ", " -- ", "\u2013", "\u2014"):
+            assert dash not in without_flags, f"{command} help uses dash punctuation"
 
 
 def test_machine_readable_output_is_quiet(authenticated: None) -> None:
@@ -353,3 +367,158 @@ def test_machine_readable_output_is_quiet(authenticated: None) -> None:
     assert log_level("yaml", False) == "WARNING"
     assert log_level("table", False) is None
     assert log_level("json", True) == "DEBUG"
+
+
+@responses.activate
+def test_cli_investigate_tenant_wide(authenticated: None) -> None:
+    """A tenant wide investigation ranks findings worst first."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "investigate", "--limit", "10"])
+    assert result.exit_code == EXIT_CHECKS_FAILED
+    assert "Findings for the whole tenant" in result.output
+    assert "error" in result.output
+
+
+@responses.activate
+def test_cli_investigate_one_application(authenticated: None) -> None:
+    """A target narrows the report to one application."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "investigate", "Confidential web", "--limit", "10"])
+    assert "Findings for Confidential web" in result.output
+    assert "Single page application" not in result.output
+    assert "expired" in result.output
+
+
+@responses.activate
+def test_cli_investigate_a_healthy_application_reports_nothing(
+    authenticated: None,
+) -> None:
+    """An application with nothing wrong produces no findings and exits zero."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "investigate", "Single page", "--limit", "10"])
+    assert result.exit_code == 0
+    assert "No findings for Single page" in result.output
+
+
+@responses.activate
+def test_cli_investigate_severity_filter(authenticated: None) -> None:
+    """Asking for errors shows only what is already broken."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(
+        ["--auth", "file", "investigate", "--severity", "error", "--limit", "10"]
+    )
+    assert "warning" not in result.output.split("Findings")[1]
+
+
+@responses.activate
+def test_cli_investigate_json_carries_everything(authenticated: None) -> None:
+    """The machine readable form carries the findings and their sources."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "--output", "json", "investigate", "--limit", "10"])
+    payload = json.loads(result.stdout)[0]
+    assert payload["scope"] == "tenant"
+    assert payload["findings"]
+    assert {"applications", "service_principals", "audit_events", "sign_ins"} <= set(
+        payload
+    )
+
+
+@responses.activate
+def test_cli_investigate_clean_target_exits_zero(authenticated: None) -> None:
+    """Nothing wrong means nothing to report, and a zero exit code."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "investigate", "no-such-application"])
+    assert result.exit_code == 0
+    assert "No findings" in result.output
+
+
+@responses.activate
+def test_cli_logs_audit_failures_only(authenticated: None) -> None:
+    """Failed directory operations can be isolated."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/directoryAudits",
+        json=load_fixture("audit_events"),
+        status=200,
+    )
+    result = run(["--auth", "file", "logs", "audit", "--failures-only"])
+    assert "Add app role assignment" in result.output
+    assert "Update application" not in result.output
+
+
+def test_a_bare_invocation_shows_the_help() -> None:
+    """Somebody typing the name alone must be told what they can do."""
+    result = run([])
+    assert "Commands:" in result.output
+    assert "investigate" in result.output
+    assert "Where to start:" in result.output
+
+
+def test_every_group_shows_its_commands_when_given_none() -> None:
+    """A group with no subcommand lists them rather than doing nothing."""
+    for group, expected in (
+        ("discover", "applications"),
+        ("logs", "signins"),
+        ("errors", "explain"),
+        ("serve", "stdio"),
+    ):
+        result = run([group])
+        assert "Commands:" in result.output, group
+        assert expected in result.output, group
+
+
+def test_a_required_argument_shows_the_help_rather_than_an_error() -> None:
+    """Somebody who forgot the argument is told what it is."""
+    result = run(["errors", "explain"])
+    assert "Usage:" in result.output
+    assert "CODE" in result.output
+
+
+def test_the_root_help_defines_the_terminology() -> None:
+    """One thing has one name, and the help says which."""
+    output = run(["--help"]).output
+    for term in ("application registration", "enterprise application"):
+        assert term in output
+
+
+def test_the_examples_are_not_rewrapped() -> None:
+    """An example an engineer can copy has to survive the formatter."""
+    output = run(["logs", "--help"]).output
+    assert "entrascope logs signins --kind service-principal --failures-only" in output
+
+
+def test_the_application_selector_is_described_the_same_way_everywhere() -> None:
+    """One idea, one description, so the option means the same thing each time."""
+    for command in (
+        ["discover", "applications"],
+        ["discover", "enterprise-apps"],
+        ["logs", "audit"],
+        ["logs", "signins"],
+        ["logs", "graph-activity"],
+    ):
+        output = " ".join(run([*command, "--help"]).output.split())
+        assert "--app" in output, command
+        assert "part of a display name" in output, command
+
+
+def test_the_short_aliases_still_resolve() -> None:
+    """Nobody has to relearn a name they were already typing."""
+    for alias, full in (("apps", "applications"), ("sps", "enterprise-apps")):
+        result = run(["discover", alias, "--help"])
+        assert result.exit_code == 0
+        assert f"discover {full}" in result.output
+    listing = run(["discover", "--help"]).output
+    assert " apps " not in listing
+    assert " sps " not in listing

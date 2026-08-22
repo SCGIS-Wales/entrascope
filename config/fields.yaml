@@ -36,6 +36,7 @@ service_principal:
   oauth2_permission_scopes: oauth2PermissionScopes
   tags: tags
   account_enabled: accountEnabled
+  app_owner_organization_id: appOwnerOrganizationId
 
 credential:
   key_id: keyId
@@ -72,6 +73,59 @@ audit:
 expiry:
   warning_days: 30
 
+findings:
+  # Rules the investigation applies. Thresholds and wording are configuration
+  # so that a site can tighten them without a code change.
+  audit_failure_results:
+    - failure
+    - timeout
+  insecure_redirect_scheme: "http://"
+  local_hosts:
+    - localhost
+    - 127.0.0.1
+  no_owner:
+    severity: warning
+    detail: >
+      The application has no owner, so nobody is named as responsible for it
+      and nobody but a directory administrator can change it.
+    remediation: >
+      Add an owner with az ad app owner add, so that the application has a
+      named custodian.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal
+  insecure_redirect:
+    severity: warning
+    detail: >
+      A redirect URI uses plain HTTP against a host that is not local, so an
+      authorisation code can be intercepted.
+    remediation: >
+      Change the redirect URI to https, or remove it if it is no longer used.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reply-url
+  assignment_required:
+    severity: note
+    detail: >
+      The enterprise application requires assignment, so consent alone does not
+      let a user sign in. A user or group must be assigned.
+    remediation: >
+      Assign the user or group, or set appRoleAssignmentRequired to false if
+      the application should be open to the tenant.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal
+  disabled_principal:
+    severity: error
+    detail: >
+      The enterprise application is disabled, so every sign in to it fails
+      whatever else is configured.
+    remediation: >
+      Enable the service principal, or remove the application if it is retired.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/disable-user-sign-in-portal
+  token_version_one:
+    severity: note
+    detail: >
+      The application issues version 1.0 tokens. A resource server that expects
+      the version 2.0 issuer and audience will reject them.
+    remediation: >
+      Set requestedAccessTokenVersion to 2 in the application manifest.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens
+
 classification:
   # Values Microsoft Graph reports, used to classify an application or an
   # enterprise application. Nothing here is hardcoded in src.
@@ -90,6 +144,12 @@ classification:
   integrated_app_tag: WindowsAzureActiveDirectoryIntegratedApp
   credential_types:
     certificate: AsymmetricX509Cert
+  # Service principals owned by these tenants are Microsoft first party
+  # applications. A tenant carries hundreds of them, almost all irrelevant to
+  # diagnosing your own applications, so they are excluded unless asked for.
+  first_party_owner_tenants:
+    - f8cdef31-a31e-4b4a-93e4-5f571e91255a
+    - 72f988bf-86f1-41af-91ab-2d7cd011db47
   audiences:
     single_tenant: AzureADMyOrg
     multi_tenant: AzureADMultipleOrgs

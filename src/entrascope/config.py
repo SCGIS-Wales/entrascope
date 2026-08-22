@@ -169,12 +169,31 @@ class ExpirySettings(_Frozen):
     warning_days: int
 
 
+class FindingRule(_Frozen):
+    severity: str
+    detail: str
+    remediation: str
+    docs_url: str
+
+
+class FindingRules(_Frozen):
+    audit_failure_results: tuple[str, ...]
+    insecure_redirect_scheme: str
+    local_hosts: tuple[str, ...]
+    no_owner: FindingRule
+    insecure_redirect: FindingRule
+    assignment_required: FindingRule
+    disabled_principal: FindingRule
+    token_version_one: FindingRule
+
+
 class Classification(_Frozen):
     service_principal_types: dict[str, str]
     single_sign_on_modes: dict[str, str]
     gallery_tags: tuple[str, ...]
     integrated_app_tag: str
     credential_types: dict[str, str]
+    first_party_owner_tenants: tuple[str, ...]
     audiences: dict[str, str]
 
 
@@ -185,6 +204,7 @@ class Fields(_Frozen):
     sign_in: dict[str, str]
     audit: dict[str, str]
     expiry: ExpirySettings
+    findings: FindingRules
     classification: Classification
 
 

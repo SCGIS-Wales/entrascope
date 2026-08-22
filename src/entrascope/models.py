@@ -222,6 +222,7 @@ class ServicePrincipalSummary(NamedTuple):
     saml: SamlConfiguration | None
     owners: tuple[str, ...]
     tags: tuple[str, ...]
+    owner_tenant_id: str = ""
 
     def expiring(self) -> tuple[CredentialSummary, ...]:
         """Return the credentials that are expiring or already expired."""
@@ -305,6 +306,43 @@ class NetworkTrust(NamedTuple):
         proxy = ", ".join(self.proxies) if self.proxies else "no proxy configured"
         trust = self.verify or self.verify_source
         return f"{proxy}; TLS verified against {trust}"
+
+
+#: How serious a finding is. An error broke something, a warning will break
+#: something, and a note is context that explains a result.
+Severity = Literal["error", "warning", "note"]
+
+SEVERITY_ORDER: tuple[Severity, ...] = ("error", "warning", "note")
+
+
+class Finding(NamedTuple):
+    """One thing worth an engineer's attention, with what to do about it."""
+
+    severity: Severity
+    area: str
+    subject: str
+    detail: str
+    remediation: str = ""
+    docs_url: str = ""
+    occurrences: int = 1
+    code: str = ""
+
+
+class Investigation(NamedTuple):
+    """Everything gathered about one application, or about the whole tenant."""
+
+    target: str
+    scope: Literal["application", "tenant"]
+    applications: tuple[ApplicationSummary, ...]
+    service_principals: tuple[ServicePrincipalSummary, ...]
+    audit_events: tuple[AuditEvent, ...]
+    sign_ins: tuple[SignInEvent, ...]
+    findings: tuple[Finding, ...]
+    notes: tuple[str, ...] = ()
+
+    def errors(self) -> tuple[Finding, ...]:
+        """Return only the findings that describe something already broken."""
+        return tuple(item for item in self.findings if item.severity == "error")
 
 
 class CheckResult(NamedTuple):

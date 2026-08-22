@@ -379,7 +379,19 @@ def project_service_principal(
         saml=project_saml(payload, config, credentials, tags),
         owners=owner_names(owners),
         tags=tags,
+        owner_tenant_id=text(pluck(payload, mapping["app_owner_organization_id"])),
     )
+
+
+def is_first_party(principal: ServicePrincipalSummary, config: Config) -> bool:
+    """Return whether an enterprise application belongs to Microsoft.
+
+    A tenant carries hundreds of first party service principals. They are
+    Microsoft's to manage, and reporting on them buries the findings that are
+    actually yours.
+    """
+    owners = config.fields.classification.first_party_owner_tenants
+    return principal.owner_tenant_id in owners
 
 
 def discover_applications(
