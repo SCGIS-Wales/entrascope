@@ -580,14 +580,15 @@ def show(
 
 #: How to get the server dependencies, and how to repair them.
 MCP_MISSING = (
-    "The Model Context Protocol servers need the mcp extra, which is not "
-    "installed.\n  pip install 'entrascope[mcp]'"
+    "fastmcp is not installed. It is a dependency of entrascope, so this "
+    "install is incomplete.\n"
+    "  pip install --force-reinstall --no-cache-dir entrascope"
 )
 MCP_BROKEN = (
     "fastmcp is installed but cannot be imported. This is usually fastmcp and "
     "fastmcp-slim having overlaid the same directory, which leaves it without "
     "its __init__ file.\n"
-    "  pip install --force-reinstall --no-cache-dir 'entrascope[mcp]'\n"
+    "  pip install --force-reinstall --no-cache-dir entrascope\n"
     "The underlying error was: {error}"
 )
 

@@ -224,3 +224,40 @@ def test_render_kql_reports_a_missing_parameter() -> None:
     with pytest.raises(ConfigError) as raised:
         render_kql("take {row_limit}", {})
     assert "row_limit" in str(raised.value)
+
+
+def test_a_quote_cannot_escape_a_kql_literal() -> None:
+    """The templates place values inside quotes, and KQL says more than a filter."""
+    from entrascope.config import kql_literal
+
+    assert kql_literal('x" or 1==1 or "') == 'x\\" or 1==1 or \\"'
+    assert kql_literal("back\\slash") == "back\\\\slash"
+
+
+def test_numbers_stay_numbers_in_a_query() -> None:
+    """A template expecting a row count must not be handed a fragment of query."""
+    from entrascope.config import kql_parameter
+
+    assert kql_parameter(50) == 50
+    assert kql_parameter(True) == 1
+    assert kql_parameter("50; drop") == "50; drop"
+
+
+def test_rendering_escapes_every_value() -> None:
+    """Escaping happens where the query is built, not at the call sites."""
+    from entrascope.config import render_kql
+
+    rendered = render_kql(
+        'take {row_limit} | where App == "{app}"',
+        {"row_limit": 5, "app": 'a" or Table | project x, "'},
+    )
+    assert rendered.count('"') == 2 + rendered.count('\\"')
+    assert "| project" in rendered
+    assert "or Table \\| project" not in rendered
+
+
+def test_control_characters_never_reach_a_query() -> None:
+    """A newline in a value would let it start a line of its own."""
+    from entrascope.config import kql_literal
+
+    assert kql_literal("a\nb\x00c") == "abc"

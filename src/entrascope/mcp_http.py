@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 import mcp.types
 from fastmcp import FastMCP
@@ -43,6 +44,9 @@ log = get_logger(__name__)
 
 #: The surface name, which selects the logging format and destination.
 SURFACE = "mcp_http"
+
+#: Addresses that need no certificate, because nothing leaves the machine.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 #: Header a proxy uses to pass a correlation id through.
 CORRELATION_HEADER = "x-correlation-id"
@@ -127,7 +131,28 @@ def base_url(config: Config, environ: Mapping[str, str] | None = None) -> str:
             f"Set {config.server.environment.base_url} or base_url in "
             "config/server.yaml, and use https in production."
         )
-    return configured.rstrip("/")
+    trimmed = configured.rstrip("/")
+    if not is_secure(trimmed):
+        raise ConfigError(
+            f"The canonical URI {trimmed} is not https. It is published in the "
+            "protected resource metadata, and clients bind their tokens to it, "
+            "so a plain address invites a token to be sent in clear.\n"
+            "  Terminate TLS at a reverse proxy and set the https address "
+            "here. A loopback address is accepted for local development."
+        )
+    return trimmed
+
+
+def is_secure(url: str) -> bool:
+    """Return whether a canonical URI is safe to publish.
+
+    https always, or a loopback address, which is how somebody runs this on
+    their own machine while writing a client.
+    """
+    if url.startswith("https://"):
+        return True
+    host = urlparse(url).hostname or ""
+    return host in LOOPBACK_HOSTS
 
 
 def build_verifier(

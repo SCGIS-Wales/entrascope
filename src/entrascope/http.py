@@ -12,7 +12,9 @@ over independent sessions.
 
 from __future__ import annotations
 
+import contextvars
 import os
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -347,16 +349,34 @@ def fan_out[Item, Result](
     if not items:
         return ()
     workers = max(1, min(config.retry.concurrency.max_workers, len(items)))
-    sessions = [build_session(config, token_provider) for _ in range(workers)]
-    # The pool is driven by hand rather than through its context manager,
-    # because that manager waits for every queued task on the way out. An
-    # engineer pressing control C wants the queue abandoned, not drained.
+    # A session belongs to one thread. Handing the same one to two tasks that
+    # can run at once is a race, and dividing a list of sessions by the worker
+    # count does exactly that as soon as there are more items than workers.
+    # Thread local storage gives each worker its own and no more than one.
+    local = threading.local()
+    made: list[requests.Session] = []
+    made_lock = threading.Lock()
+
+    def session_for_this_thread() -> requests.Session:
+        existing: requests.Session | None = getattr(local, "session", None)
+        if existing is not None:
+            return existing
+        session = build_session(config, token_provider)
+        local.session = session
+        with made_lock:
+            made.append(session)
+        return session
+
+    def run(item: Item, context: contextvars.Context) -> Result:
+        # The correlation id and the context fields live in context variables,
+        # which a worker thread does not inherit, so the caller's context is
+        # carried across deliberately. One copy per task, because a single
+        # context cannot be entered twice at once.
+        return context.run(work, session_for_this_thread(), item)
+
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        futures = [
-            pool.submit(work, sessions[index % workers], item)
-            for index, item in enumerate(items)
-        ]
+        futures = [pool.submit(run, item, contextvars.copy_context()) for item in items]
         return tuple(future.result() for future in futures)
     except KeyboardInterrupt:
         log.warning("interrupted, abandoning %s queued calls", len(items))
@@ -364,5 +384,6 @@ def fan_out[Item, Result](
         raise
     finally:
         pool.shutdown(wait=False)
-        for session in sessions:
-            session.close()
+        with made_lock:
+            for session in made:
+                session.close()

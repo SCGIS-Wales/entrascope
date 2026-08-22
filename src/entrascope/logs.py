@@ -20,7 +20,7 @@ from azure.monitor.query import LogsQueryClient
 
 from entrascope.config import Config, SignInKind
 from entrascope.discovery import pluck, text
-from entrascope.graph import get_collection
+from entrascope.graph import get_collection, odata_literal
 from entrascope.http import Session
 from entrascope.logger import get_logger
 from entrascope.models import (
@@ -272,7 +272,7 @@ def sign_in_filter(config: Config, kind: str, app_id: str | None = None) -> str:
     entry = sign_in_entry(config, kind)
     clauses = [entry.graph_filter]
     if app_id:
-        clauses.append(f"appId eq '{app_id}'")
+        clauses.append(f"appId eq '{odata_literal(app_id)}'")
     return " and ".join(clause for clause in clauses if clause)
 
 

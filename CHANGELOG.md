@@ -7,6 +7,43 @@ versioning.
 
 ## [Unreleased]
 
+### Security
+- Values that reach a query are escaped. A single quote in an application
+  filter could end the literal and rewrite the filter, and a double quote in a
+  Kusto parameter could rewrite the predicate, which matters more because Kusto
+  expresses a great deal more than filtering. Escaping happens where each query
+  is built rather than at the call sites, numbers are coerced, control
+  characters are removed and lengths are bounded.
+- Values that reach a terminal have their control characters removed. A display
+  name in a directory is somebody else's input and a terminal obeys escape
+  sequences. In the plain format newlines and tabs are replaced as well,
+  because there a line is a record and a tab is a column.
+- The remote server refuses to start unless its canonical URI is https, or a
+  loopback address. It is published in the protected resource metadata and
+  clients bind their tokens to it.
+
+### Fixed
+- A requests session was shared between tasks that could run at the same time.
+  Dividing a list of sessions by the worker count hands the same one to items
+  that run concurrently as soon as there are more items than workers. Each
+  worker now has its own, from thread local storage.
+- The correlation id and the context fields did not reach the worker threads,
+  because a thread does not inherit context variables. The caller's context is
+  now carried across, one copy per task.
+- fastmcp is a dependency again. The servers are one of the three surfaces this
+  tool exists to provide, and an install where one of them is missing is a
+  broken promise. The clear message for a broken install stays.
+- The package ships a py.typed marker, so anything importing it can use the
+  type hints rather than treating every symbol as Any.
+
+### Added
+- entrascope inspect maps an application onto the provisioning vocabulary:
+  the platforms in the words the provisioner uses, the exposed API, the on
+  behalf of configuration, the claims, the tags and the service management
+  reference, and an application type name with the evidence behind it. The
+  vocabulary is configuration and is reported as provisional until an
+  authoritative list replaces it.
+
 ### Changed
 - The Azure CLI session resolves automatically. Somebody who ran az login no
   longer has to name a source. The credential file still wins when present, so

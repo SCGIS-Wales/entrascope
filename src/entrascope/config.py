@@ -11,6 +11,7 @@ immediately with a readable message rather than at the point of use.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -379,6 +380,24 @@ class Capability(_Frozen):
     docs_url: str
 
 
+class AppTypeRule(_Frozen):
+    name: str
+    when: dict[str, Any]
+    description: str
+
+
+class AppTypeVocabulary(_Frozen):
+    status: str
+    derived_from: str
+
+
+class Provisioning(_Frozen):
+    platform_types: tuple[str, ...]
+    app_type_vocabulary: AppTypeVocabulary
+    app_types: tuple[AppTypeRule, ...]
+    outside_the_vocabulary: dict[str, str]
+
+
 class Licences(_Frozen):
     p2_service_plans: tuple[str, ...]
     p1_service_plans: tuple[str, ...]
@@ -390,6 +409,7 @@ class Capabilities(_Frozen):
     delegated_equivalents: tuple[str, ...]
     directory_roles: tuple[DirectoryRole, ...]
     capabilities: tuple[Capability, ...]
+    provisioning: Provisioning
     licences: Licences
 
 
@@ -486,14 +506,51 @@ def load_kql(name: str, config: Config) -> str:
     return read_text_file(path)
 
 
+#: Characters that end a KQL string literal or start an escape inside one.
+KQL_ESCAPES = {"\\": "\\\\", '"': '\\"', "'": "\\'"}
+
+#: Control characters have no place in a query parameter.
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+
+#: A parameter longer than this is a mistake or an attack, not a name.
+MAX_PARAMETER = 512
+
+
+def kql_literal(value: str) -> str:
+    """Return a value safe to place inside a quoted KQL string.
+
+    The templates place parameters inside double quotes. A quote or a backslash
+    would end or extend the literal, letting a value rewrite the predicate it
+    was meant to be matched by, and KQL can express a great deal more than a
+    filter. Control characters are removed and the length is bounded.
+    """
+    cleaned = CONTROL_CHARACTERS.sub("", value)[:MAX_PARAMETER]
+    return "".join(KQL_ESCAPES.get(character, character) for character in cleaned)
+
+
+def kql_parameter(value: object) -> object:
+    """Return one parameter ready for substitution.
+
+    A number is coerced, so a template expecting a row count cannot be handed a
+    fragment of query. Anything else is escaped as a string.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float):
+        return value
+    return kql_literal(str(value))
+
+
 def render_kql(template: str, parameters: dict[str, object]) -> str:
     """Substitute named parameters into a KQL template.
 
-    Queries are never assembled by concatenation. Every parameter the template
-    declares must be supplied.
+    Queries are never assembled by concatenation, and every value is escaped
+    here rather than at the call sites, because a call site is a place to
+    forget.
     """
+    escaped = {name: kql_parameter(value) for name, value in parameters.items()}
     try:
-        return template.format(**parameters)
+        return template.format(**escaped)
     except KeyError as error:
         raise ConfigError(
             f"KQL template needs a parameter that was not supplied: {error}."

@@ -282,3 +282,21 @@ def test_severity_and_outcome_are_coloured(config: Config) -> None:
     assert colour_for("FAIL", config)
     assert colour_for("success", config)
     assert colour_for("Update application", config) == ""
+
+
+def test_a_terminal_escape_in_directory_data_is_removed(config: Config) -> None:
+    """A display name is somebody else's input, and a terminal obeys escapes."""
+    from entrascope.render import cell, render_plain
+
+    assert cell("name\x1b[31mred\x1b[0m", config) == "name[31mred[0m"
+    line = render_plain([{"a": "x\x1b]0;title\x07y"}], config).splitlines()[1]
+    assert "\x1b" not in line
+    assert "\x07" not in line
+
+
+def test_a_newline_in_a_value_cannot_forge_a_row(config: Config) -> None:
+    """One line is one record in the plain format, whatever a value contains."""
+    from entrascope.render import render_plain
+
+    rendered = render_plain([{"a": "one\ntwo", "b": "three"}], config)
+    assert len(rendered.splitlines()) == 2

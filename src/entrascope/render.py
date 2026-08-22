@@ -200,8 +200,29 @@ def cell(value: Any, config: Config) -> str:
         rendered = ", ".join(cell(item, config) for item in value)
         return rendered or EMPTY_CELL
     if isinstance(value, str):
-        return shorten_guest(format_timestamp(value, config), config)
+        return strip_control(shorten_guest(format_timestamp(value, config), config))
     return str(value)
+
+
+#: Everything below a space, and the delete character. A display name in a
+#: directory is somebody else's input, and an escape sequence in one would be
+#: obeyed by the terminal that printed it.
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def strip_control(value: str) -> str:
+    """Remove control characters from a value before it reaches a terminal."""
+    return CONTROL_CHARACTERS.sub("", value)
+
+
+def flatten(value: str) -> str:
+    """Return a value fit for one field of one line.
+
+    In the plain format a line is a record, so a newline or a tab inside a
+    value would forge a row or a column. Prose keeps its newlines in a table,
+    where they are only a line break.
+    """
+    return strip_control(value.replace("\t", " ").replace("\r", " ").replace("\n", " "))
 
 
 def shorten_guest(value: str, config: Config) -> str:
@@ -413,7 +434,7 @@ def render_plain(
             values = [cell(payload.get(name), config) for name in names]
         else:
             values = [cell(payload, config)]
-        lines.append(PLAIN_SEPARATOR.join(value.replace("\t", " ") for value in values))
+        lines.append(PLAIN_SEPARATOR.join(flatten(value) for value in values))
     return "\n".join(lines)
 
 
