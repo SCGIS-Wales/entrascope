@@ -1,0 +1,133 @@
+# Capability to prerequisite to remediation. Machine readable, and the source
+# of the doctor report. entrascope.capabilities reads this file.
+
+graph_permissions:
+  - name: Application.Read.All
+    app_role_id: 9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30
+    consent: admin
+    required: true
+    purpose: Read application registrations and service principals.
+  - name: AuditLog.Read.All
+    app_role_id: b0afded3-3588-46d8-8b3d-9842eff778da
+    consent: admin
+    required: true
+    purpose: Read audit logs and sign in logs.
+  - name: Directory.Read.All
+    app_role_id: 7ab1d382-f21e-4acd-a863-ba3e13f7da61
+    consent: admin
+    required: true
+    purpose: Read directory objects, owners and group assignments.
+  - name: Policy.Read.All
+    app_role_id: 246dd0d5-5bd0-4def-940b-0421030a5b68
+    consent: admin
+    required: true
+    purpose: Read tenant consent and application management policies.
+  - name: AppRoleAssignment.ReadWrite.All
+    app_role_id: 06b708a9-e830-4db3-a914-8e69da51d44f
+    consent: admin
+    required: false
+    privileged: true
+    purpose: >
+      Grant application role assignments. Excluded by default because it lets
+      an application grant privileges to itself.
+
+directory_roles:
+  # Used when the active authentication source is delegated, for example the
+  # Azure CLI session, where directory roles apply instead of app roles.
+  - name: Global Reader
+    template_id: f2ef992c-3afb-46b9-b7cf-a126ee74c451
+    sufficient: true
+  - name: Security Reader
+    template_id: 5d6b6bb7-de71-4623-b4af-96380a352509
+    sufficient: partial
+  - name: Reports Reader
+    template_id: 4a5d8f65-41da-4de4-8968-e035b65339cf
+    sufficient: partial
+
+capabilities:
+  - id: app_discovery
+    requires:
+      graph_permission: Application.Read.All
+      licence: Free
+    remediation: >
+      Grant Application.Read.All to the application and record admin consent.
+    docs_url: https://learn.microsoft.com/en-us/graph/permissions-reference
+
+  - id: audit_logs_export
+    requires:
+      diagnostic_category: AuditLogs
+      licence: Free
+    remediation: >
+      Enable a diagnostic setting that exports AuditLogs. The category
+      ApplicationManagement covers application registration changes. Requires
+      the Security Administrator role.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: signin_logs_export
+    requires:
+      diagnostic_category: SignInLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports SignInLogs to a Log Analytics
+      workspace, event hub or storage account. Requires the Security
+      Administrator role and an Entra ID P1 or P2 licence.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: non_interactive_signin_export
+    requires:
+      diagnostic_category: NonInteractiveUserSignInLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports NonInteractiveUserSignInLogs.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: service_principal_signin_export
+    requires:
+      diagnostic_category: ServicePrincipalSignInLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports ServicePrincipalSignInLogs.
+      This is the category that shows client credentials flow failures.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: managed_identity_signin_export
+    requires:
+      diagnostic_category: ManagedIdentitySignInLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports ManagedIdentitySignInLogs.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: provisioning_logs_export
+    requires:
+      diagnostic_category: ProvisioningLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports ProvisioningLogs.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-diagnostic-settings-logs-options
+
+  - id: graph_activity_logs
+    requires:
+      diagnostic_category: MicrosoftGraphActivityLogs
+      licence: P1
+    remediation: >
+      Enable a diagnostic setting that exports MicrosoftGraphActivityLogs.
+      Requires an Entra ID P1 or P2 tenant licence.
+    docs_url: https://learn.microsoft.com/en-us/graph/microsoft-graph-activity-logs-overview
+
+  - id: log_analytics_query
+    requires:
+      azure_role: Log Analytics Reader
+    remediation: >
+      Assign Log Analytics Reader on the workspace or its resource group to
+      the identity entrascope authenticates as.
+    docs_url: https://learn.microsoft.com/en-us/azure/azure-monitor/logs/manage-access
+
+licences:
+  # Service plan identifiers that indicate the Entra ID tier, read from
+  # subscribedSkus. Reported as observed, never asserted as entitlement.
+  p2_service_plans:
+    - AAD_PREMIUM_P2
+  p1_service_plans:
+    - AAD_PREMIUM
+  free_label: Free

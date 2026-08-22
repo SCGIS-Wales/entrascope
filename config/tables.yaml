@@ -1,0 +1,35 @@
+# Log Analytics table names and the Entra diagnostic setting categories that
+# populate them. Nothing here may be hardcoded in src.
+
+diagnostic_categories:
+  - name: AuditLogs
+    table: AuditLogs
+    minimum_licence: Free
+    description: Directory changes, including application registration changes.
+  - name: SignInLogs
+    table: SigninLogs
+    minimum_licence: P1
+    description: Interactive user sign ins.
+  - name: NonInteractiveUserSignInLogs
+    table: AADNonInteractiveUserSignInLogs
+    minimum_licence: P1
+    description: Non interactive user sign ins, including refresh token use.
+  - name: ServicePrincipalSignInLogs
+    table: AADServicePrincipalSignInLogs
+    minimum_licence: P1
+    description: Application sign ins using the client credentials flow.
+  - name: ManagedIdentitySignInLogs
+    table: AADManagedIdentitySignInLogs
+    minimum_licence: P1
+    description: Managed identity token acquisitions.
+  - name: ProvisioningLogs
+    table: AADProvisioningLogs
+    minimum_licence: P1
+    description: Application provisioning activity.
+  - name: MicrosoftGraphActivityLogs
+    table: MicrosoftGraphActivityLogs
+    minimum_licence: P1
+    description: Every Microsoft Graph request made against the tenant.
+
+audit_categories:
+  application_management: ApplicationManagement

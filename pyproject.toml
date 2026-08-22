@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "entrascope"
+version = "0.1.0"
+description = "Observability over Microsoft Entra ID and Azure Monitor logs for diagnosing application authentication and authorisation failures."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Dejan Gregor" }]
+keywords = ["entra", "azure", "mcp", "observability", "oauth"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Security",
+]
+
+dependencies = [
+  "click>=8.4.0",
+  "requests>=2.32.0",
+  "urllib3>=2.0.0",
+  "azure-identity>=1.25.3",
+  "azure-monitor-query>=2.0.0",
+  "fastmcp>=3.4.7",
+  "pyjwt[crypto]>=2.13.0",
+  "pyyaml>=6.0.2",
+  "rich>=14.0.0",
+  "pydantic>=2.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-cov>=6.0.0",
+  "pytest-asyncio>=0.24.0",
+  "pytest-timeout>=2.3.0",
+  "responses>=0.26.0",
+  "types-requests>=2.32.0",
+  "types-pyyaml>=6.0.12",
+  "ruff>=0.9.0",
+  "mypy>=1.14.0",
+]
+
+[project.scripts]
+entrascope = "entrascope.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/SCGIS-Wales/entrascope"
+Repository = "https://github.com/SCGIS-Wales/entrascope"
+Issues = "https://github.com/SCGIS-Wales/entrascope/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/entrascope"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/entrascope", "config", "tests", "README.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF"]
+ignore = ["A005"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+disallow_any_unimported = true
+
+[[tool.mypy.overrides]]
+module = ["responses.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=entrascope --cov-report=term-missing --cov-report=xml"
+timeout = 120

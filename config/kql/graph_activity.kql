@@ -1,0 +1,22 @@
+// Microsoft Graph requests made against the tenant, with the failures first.
+// Requires an Entra ID P1 or P2 licence and the MicrosoftGraphActivityLogs
+// diagnostic category.
+// Parameters: lookback_hours, app_filter, row_limit
+let lookback = {lookback_hours}h;
+MicrosoftGraphActivityLogs
+| where TimeGenerated > ago(lookback)
+| where "{app_filter}" == "" or AppId == "{app_filter}"
+| project
+    TimeGenerated,
+    AppId,
+    ServicePrincipalId,
+    UserId,
+    RequestMethod,
+    ResponseStatusCode,
+    RequestUri,
+    Roles,
+    Scopes,
+    DurationMs,
+    RequestId
+| order by ResponseStatusCode desc, TimeGenerated desc
+| take {row_limit}

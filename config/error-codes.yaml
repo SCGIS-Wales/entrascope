@@ -1,0 +1,139 @@
+# Authentication and authorisation error codes mapped to remediation.
+# entrascope.errors reads this file and never hardcodes a code or a URL.
+
+defaults:
+  meaning: Unrecognised error code.
+  remediation: >
+    Look the code up in the Microsoft identity platform error code reference
+    and check the sign in log entry for the correlation id and the client
+    application.
+  docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+errors:
+  AADSTS7000215:
+    meaning: Invalid client secret provided.
+    likely_cause: >
+      The secret value is wrong, or the Secret ID was used instead of the
+      secret value.
+    remediation: >
+      Create a new client secret and use the secret value, not the Secret ID.
+      Update the credential file and confirm its mode is 0600.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS7000222:
+    meaning: The provided client secret keys are expired.
+    likely_cause: The secret passed its endDateTime.
+    remediation: >
+      Create a new client secret and rotate the credential file. Run
+      entrascope discover apps to list every credential approaching expiry.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS700016:
+    meaning: Application not found in the tenant.
+    likely_cause: >
+      The ClientID belongs to another tenant, or the application registration
+      was deleted.
+    remediation: >
+      Verify the ClientID and TenantID, and confirm the application
+      registration exists in this tenant.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS50011:
+    meaning: Redirect URI or reply URL mismatch.
+    likely_cause: >
+      The redirect URI sent by the client is not registered, or differs by
+      case, scheme or a trailing slash.
+    remediation: >
+      Add the exact redirect URI, byte for byte, to the application
+      registration. Comparison is case sensitive and trailing slash sensitive.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS650057:
+    meaning: >
+      Invalid resource. The client requested a resource that is not listed in
+      its API permissions.
+    likely_cause: The target resource is missing from the required resource access list.
+    remediation: >
+      Add the target resource to the required API permissions of the client
+      application and grant admin consent.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  AADSTS90094:
+    meaning: An administrator has set a policy preventing user consent.
+    likely_cause: The tenant restricts user consent to applications.
+    remediation: >
+      Request admin consent for the application, or adjust the user consent
+      policy for the tenant.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
+
+  AADSTS500011:
+    meaning: Resource principal not found in the tenant.
+    likely_cause: >
+      The service principal for the resource is not provisioned in the tenant,
+      consent was never granted, or the request went to the wrong tenant.
+    remediation: >
+      Ensure the resource service principal exists and is consented, and
+      confirm the tenant in the request.
+    docs_url: https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/app-integration/error-code-aadsts500011-resource-principal-not-found
+
+  AADSTS65001:
+    meaning: The user or administrator has not consented to use the application.
+    likely_cause: Consent was never granted for the requested permissions.
+    remediation: >
+      Grant admin consent, or send an interactive consent request to the user.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
+
+  Authorization_RequestDenied:
+    meaning: Insufficient privileges to complete the operation.
+    likely_cause: >
+      The calling identity lacks the required Microsoft Graph application
+      permission, or the required directory role.
+    remediation: >
+      Grant the required Graph application permission and admin consent, or
+      assign the needed directory role. Run entrascope doctor to see which
+      permission is missing.
+    docs_url: https://learn.microsoft.com/en-us/graph/permissions-reference
+
+  Application_ReadWrite_OwnedBy_Insufficient:
+    meaning: >
+      Application.ReadWrite.OwnedBy allows writes only to applications the
+      calling service principal owns.
+    likely_cause: >
+      The operation targets an application the caller does not own, or the
+      operation adds an owner, which OwnedBy never permits.
+    remediation: >
+      Add the caller as an owner of the target application, or grant
+      Application.ReadWrite.All. Adding another owner always requires
+      Application.ReadWrite.All.
+    docs_url: https://learn.microsoft.com/en-us/graph/permissions-reference
+
+  Users_Cannot_Register_Applications:
+    meaning: >
+      The tenant setting "Users can register applications" is set to No.
+    likely_cause: >
+      A non privileged user attempted to create an application registration in
+      a tenant that restricts registration.
+    remediation: >
+      Ask an administrator to create the registration, assign the Application
+      Developer role to the user, or change the tenant setting.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/delegate-app-roles
+
+  Restricted_Management_Administrative_Unit:
+    meaning: >
+      The target object belongs to a restricted management administrative unit.
+    likely_cause: >
+      Tenant level directory roles are blocked from modifying objects inside a
+      restricted management administrative unit.
+    remediation: >
+      Obtain a role assignment scoped to the administrative unit that contains
+      the object.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/admin-units-restricted-management
+
+  Missing_Admin_Consent:
+    meaning: An application permission was added but never consented.
+    likely_cause: >
+      az ad app permission add records the requirement, it does not grant it.
+    remediation: >
+      Run az ad app permission admin-consent for the application, or grant
+      consent in the portal under API permissions.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
