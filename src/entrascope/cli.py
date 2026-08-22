@@ -37,9 +37,8 @@ from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
 from entrascope.identity import graph_session_for
 from entrascope.identity import whoami as run_whoami
-from entrascope.inspect import candidates as inspect_candidates
+from entrascope.inspect import Catalogue, read_catalogue, search_gallery
 from entrascope.inspect import inspect as run_inspect
-from entrascope.inspect import search_gallery
 from entrascope.investigate import investigate as run_investigation
 from entrascope.investigate import matches, matches_principal
 from entrascope.logger import bind_context, configure_logging, new_correlation_id
@@ -60,14 +59,13 @@ from entrascope.models import (
     Severity,
 )
 from entrascope.monitor import build_logs_client
-from entrascope.picker import Choice, choose
+from entrascope.picker import Choice, available, choose
 from entrascope.render import (
     EXIT_API,
     EXIT_CHECKS_FAILED,
     EXIT_CONFIG,
     EXIT_CREDENTIALS,
     EXIT_INTERRUPTED,
-    EXIT_OK,
     OUTPUT_FORMATS,
     OutputFormat,
     count_summary,
@@ -83,6 +81,13 @@ from entrascope.render import (
     yaml_text,
 )
 from entrascope.render import show as show_rows
+from entrascope.upgrade import (
+    describe_installation,
+    newer_release,
+    run_upgrade,
+    tail,
+    upgrade_notice,
+)
 
 #: Key under which the shared settings are held on the click context.
 SETTINGS = "settings"
@@ -114,6 +119,19 @@ def with_timezone(config: Config, zone: str) -> Config:
     )
 
 
+def announce_new_version(config: Config, output: str) -> None:
+    """Say once, quietly, that a newer version exists.
+
+    Never for machine readable output, never without a terminal, never more
+    than once a day, and never loudly enough to be mistaken for the answer.
+    """
+    if output in ("json", "yaml", "plain") or not sys.stderr.isatty():
+        return
+    release = newer_release(config)
+    if release is not None:
+        emit_error(upgrade_notice(release))
+
+
 def build_settings(
     config_dir: Path | None,
     auth: str | None,
@@ -129,6 +147,7 @@ def build_settings(
     new_correlation_id()
     if auth:
         bind_context(auth_source=auth)
+    announce_new_version(config, output)
     return {"config": config, "auth": auth, "output": output}
 
 
@@ -350,12 +369,72 @@ def help_for(root: click.Group, ctx: click.Context, path: str) -> str:
     return command.get_help(child)
 
 
-# framework contract: click reports an unknown command through a Group method,
-# so improving that message means overriding it. The search is a free function.
-class RootGroup(click.Group):
-    """The top level group, which knows where its subcommands live."""
+# framework contract: click decides what a group does with no subcommand
+# through a Group method, so offering a choice means overriding it. The
+# choosing itself is entrascope.picker.
+class GuidedGroup(click.Group):
+    """A group that offers its commands rather than only listing them.
+
+    Printing the help and returning to the shell tells somebody what exists and
+    then makes them type it again. With a terminal to draw on, the commands are
+    offered instead, and the one chosen is run. Without one, in a pipe or a
+    script, the help is printed exactly as before.
+    """
 
     command_class = GlobalOptionCommand
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Run the subcommand, or offer the choice when there is none."""
+        result = super().invoke(ctx)
+        if ctx.invoked_subcommand is not None:
+            return result
+        emit(ctx.get_help())
+        return offer_commands(self, ctx)
+
+
+def offer_commands(group: click.Group, ctx: click.Context) -> Any:
+    """Offer a group's commands and run the one chosen.
+
+    A command that needs an argument asks for it, rather than being run and
+    then complaining that it is missing.
+    """
+    if not available():
+        return None
+    lines = [
+        Choice(key=name, label=f"{name:<18} {summary(command)}")
+        for name, command in sorted(group.commands.items())
+        if not command.hidden
+    ]
+    emit("")
+    picked = choose(lines, title="Commands")
+    if picked is None:
+        return None
+    command = group.get_command(ctx, picked)
+    if command is None:
+        return None
+    return run_command(command, picked, ctx)
+
+
+def summary(command: click.Command) -> str:
+    """Return the first line of a command's help."""
+    return (command.get_short_help_str(80) or "").strip()
+
+
+def run_command(command: click.Command, name: str, ctx: click.Context) -> Any:
+    """Run one command, asking for any argument it cannot do without."""
+    arguments: list[str] = []
+    for parameter in command.params:
+        if isinstance(parameter, click.Argument) and parameter.required:
+            label = (parameter.name or "value").replace("_", " ")
+            arguments.append(click.prompt(label.capitalize(), type=str).strip())
+    with command.make_context(name, arguments, parent=ctx) as inner:
+        return command.invoke(inner)
+
+
+# framework contract: click reports an unknown command through a Group method,
+# so improving that message means overriding it. The search is a free function.
+class RootGroup(GuidedGroup):
+    """The top level group, which knows where its subcommands live."""
 
     def resolve_command(
         self, ctx: click.Context, args: list[str]
@@ -380,10 +459,8 @@ class RootGroup(click.Group):
 
 # framework contract: click resolves a command name through a Group method, so
 # accepting an alias means overriding it. No logic beyond the lookup.
-class AliasGroup(click.Group):
+class AliasGroup(GuidedGroup):
     """A command group that also answers to a short form of a command name."""
-
-    command_class = GlobalOptionCommand
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         """Return the command, resolving a short form to its full name."""
@@ -750,7 +827,6 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
     cls=RootGroup,
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog=ROOT_EPILOG,
-    no_args_is_help=True,
     invoke_without_command=True,
 )
 @click.version_option(__version__, prog_name="entrascope")
@@ -791,11 +867,6 @@ def cli(
     """
     context.ensure_object(dict)
     context.obj[SETTINGS] = build_settings(config_dir, auth, output, verbose)
-    if context.invoked_subcommand is None:
-        # Options but no command. Show what the commands are rather than
-        # reporting that one is missing.
-        emit(context.get_help())
-        raise SystemExit(EXIT_OK)
 
 
 @cli.command(cls=GlobalOptionCommand)
@@ -910,7 +981,7 @@ Examples:
 """
 
 
-@cli.group(epilog=CONFIG_EPILOG, no_args_is_help=True)
+@cli.group(cls=GuidedGroup, epilog=CONFIG_EPILOG, invoke_without_command=True)
 def config_group() -> None:
     """Find, read and take a copy of the configuration.
 
@@ -1004,6 +1075,69 @@ def copy_configuration(source: Path, destination: Path, *, force: bool) -> list[
     return written
 
 
+@cli.command("upgrade", cls=GlobalOptionCommand)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Say whether a newer version exists and how this copy would be "
+    "upgraded, without changing anything.",
+)
+@click.option(
+    "--break-system-packages",
+    is_flag=True,
+    help="Upgrade into a Python that is managed by something other than pip. "
+    "This can break the tooling that owns it, so it is never done without "
+    "being asked for.",
+)
+@click.option("--dry-run", is_flag=True, help="Show the command without running it.")
+@click.pass_context
+@handled
+def upgrade(
+    context: click.Context,
+    check_only: bool,
+    break_system_packages: bool,
+    dry_run: bool,
+) -> None:
+    """Upgrade entrascope, the way this copy was installed.
+
+    How a package is upgraded depends on how it was installed, and getting that
+    wrong on a system Python is worse than not offering it. This works out
+    which it is and uses the right command, through this interpreter rather
+    than whichever pip happens to be on the path.
+    """
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    output: OutputFormat = settings.get("output", "table")
+    report = describe_installation(config)
+    release = newer_release(config, force=True)
+    report["latest_version"] = release.version if release else report["running_version"]
+    report["upgrade_available"] = bool(release)
+    report["release_notes"] = release.url if release else None
+
+    if check_only or dry_run:
+        # One record reads as a list of fields, not as a table one column wide
+        # for each thing it has to say.
+        if output in ("json", "yaml", "plain"):
+            show_yaml(report, config, output)
+        else:
+            emit(render_record(report, config, title="entrascope"))
+        return
+
+    if not release:
+        emit(f"entrascope {report['running_version']} is the newest version.")
+        return
+
+    emit(f"Upgrading from {report['running_version']} to {release.version}.")
+    command, output_text = run_upgrade(
+        config, break_system_packages=break_system_packages
+    )
+    emit(f"Ran: {' '.join(command)}")
+    if output_text.strip():
+        emit(tail(output_text, lines=6))
+    emit(f"Now run entrascope --version to confirm. Notes: {release.url}")
+
+
 @cli.command("whoami", cls=GlobalOptionCommand)
 @click.option(
     "--no-policies",
@@ -1075,45 +1209,80 @@ def inspect_command(
     """
     settings = settings_of(context)
     config, session, token = authenticated_session(settings)
+    output: OutputFormat = settings.get("output", "table")
     try:
-        if not target:
-            target = choose_application(
-                session, config, token, include_first_party=include_first_party
+        if target:
+            report = run_inspect(
+                session, config, token, target=target, kinds=list(kinds)
             )
-        report = run_inspect(session, config, token, target=target, kinds=list(kinds))
+            write_report(report, config, output)
+            return
+        # No target. Read the directory once and stay in the chooser, because
+        # looking at one application is almost never the whole question.
+        catalogue = read_catalogue(
+            session,
+            config,
+            token,
+            include_first_party=include_first_party,
+            with_details=True,
+        )
+        browse(catalogue, session, config, token, list(kinds), output)
     finally:
         session.close()
-    output: OutputFormat = settings.get("output", "table")
+
+
+def write_report(
+    report: Mapping[str, Any], config: Config, output: OutputFormat
+) -> None:
+    """Write one inspection in the requested form."""
     if output == "plain":
         emit(yaml_text(report, config))
         return
     show_yaml(report, config, output)
 
 
-def choose_application(
+def browse(
+    catalogue: Catalogue,
     session: Session,
     config: Config,
     token: Callable[[], str],
-    *,
-    include_first_party: bool,
-) -> str:
-    """Offer the applications to choose from, or explain how to name one."""
-    rows = inspect_candidates(
-        session, config, token, include_first_party=include_first_party
-    )
+    kinds: list[str],
+    output: OutputFormat,
+) -> None:
+    """Offer the list, show what is chosen, and come back to the list.
+
+    Reading one application and being dropped back at the shell is rarely what
+    somebody wanted. The chooser returns until it is closed.
+    """
+    rows = catalogue.choices()
     if not rows:
         raise ConfigError("There are no applications this identity can see.")
-    picked = choose(
-        [Choice(key=key, label=label) for key, label in rows],
-        title="Applications, sorted by name",
-    )
-    if picked:
-        return picked
-    raise ConfigError(
+    lines = [Choice(key=key, label=label) for key, label in rows]
+    opened = 0
+    while True:
+        picked = choose(lines, title="Applications, sorted by name")
+        if picked is None:
+            if opened == 0:
+                raise ConfigError(no_choice_made(len(rows)))
+            return
+        report = run_inspect(
+            session, config, token, target=picked, kinds=kinds, catalogue=catalogue
+        )
+        write_report(report, config, output)
+        opened += 1
+        if not available():
+            return
+        emit("")
+        if not click.confirm("Back to the list?", default=True):
+            return
+
+
+def no_choice_made(total: int) -> str:
+    """Explain how to name an application when the chooser was not used."""
+    return (
         "Nothing chosen. Name an application instead: part of a display name, "
-        "an application id or an object id. There are "
-        f"{len(rows)} to choose from, and entrascope discover applications "
-        "lists them."
+        f"an application id or an object id. There are {total} to choose from, "
+        "and entrascope discover applications lists them."
     )
 
 
@@ -1136,7 +1305,7 @@ def doctor(context: click.Context) -> None:
     raise SystemExit(exit_code_for_checks(results))
 
 
-@cli.group(cls=AliasGroup, epilog=DISCOVER_EPILOG, no_args_is_help=True)
+@cli.group(cls=AliasGroup, epilog=DISCOVER_EPILOG, invoke_without_command=True)
 def discover() -> None:
     """List application registrations and enterprise applications.
 
@@ -1309,7 +1478,7 @@ def discover_gallery(context: click.Context, term: str, limit: int | None) -> No
     )
 
 
-@cli.group(epilog=LOGS_EPILOG, no_args_is_help=True)
+@cli.group(cls=GuidedGroup, epilog=LOGS_EPILOG, invoke_without_command=True)
 def logs() -> None:
     """Read Entra and Azure Monitor logs.
 
@@ -1549,7 +1718,7 @@ def logs_kinds(context: click.Context, kind: str) -> None:
     )
 
 
-@cli.group(epilog=ERRORS_EPILOG, no_args_is_help=True)
+@cli.group(cls=GuidedGroup, epilog=ERRORS_EPILOG, invoke_without_command=True)
 def errors() -> None:
     """Explain authentication and authorisation error codes."""
 
@@ -1599,7 +1768,7 @@ def errors_search(context: click.Context, term: str) -> None:
     show(rows, settings, f"Codes matching {term}", ("code", "meaning"))
 
 
-@cli.group(epilog=SERVE_EPILOG, no_args_is_help=True)
+@cli.group(cls=GuidedGroup, epilog=SERVE_EPILOG, invoke_without_command=True)
 def serve() -> None:
     """Run entrascope as a Model Context Protocol server."""
 

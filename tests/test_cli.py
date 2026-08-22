@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 import responses
 import yaml
@@ -14,6 +15,7 @@ from click.testing import CliRunner
 
 from entrascope import __version__
 from entrascope.cli import cli
+from entrascope.config import Config
 from entrascope.render import EXIT_API, EXIT_CHECKS_FAILED, EXIT_CONFIG
 from tests.conftest import SENTINEL_SECRET, load_fixture
 
@@ -834,3 +836,147 @@ def test_config_show_refuses_a_path_outside_the_directory() -> None:
         result = run(["config", "show", name])
         assert result.exit_code == EXIT_CONFIG
         assert "No configuration file named" in result.output
+
+
+def test_upgrade_check_reports_without_changing_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asking is not doing."""
+    from entrascope import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "newer_release", lambda config, force=False: None)
+    result = run(["upgrade", "--check"])
+    assert result.exit_code == 0
+    assert "running version" in result.output
+    assert "upgrade command" in result.output
+
+
+def test_upgrade_says_when_there_is_nothing_to_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The commonest case should be one line."""
+    from entrascope import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "newer_release", lambda config, force=False: None)
+    result = run(["upgrade"])
+    assert "is the newest version" in result.output
+
+
+def test_upgrade_runs_the_command_and_says_what_it_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upgrade nobody can see is an upgrade nobody can debug."""
+    from entrascope import cli as cli_module
+    from entrascope.upgrade import Release
+
+    monkeypatch.setattr(
+        cli_module,
+        "newer_release",
+        lambda config, force=False: Release(version="v9.9.9", url="https://n.invalid"),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_upgrade",
+        lambda config, break_system_packages=False: (["pip", "install"], "done"),
+    )
+    result = run(["upgrade"])
+    assert "Upgrading from" in result.output
+    assert "Ran: pip install" in result.output
+    assert "https://n.invalid" in result.output
+
+
+def test_the_version_notice_stays_out_of_machine_output(config: Config) -> None:
+    """A warning inside a JSON payload breaks whatever was parsing it."""
+    from entrascope.cli import announce_new_version
+
+    for output in ("json", "yaml", "plain"):
+        announce_new_version(config, output)  # must not raise and must not fetch
+
+
+def test_the_version_notice_is_skipped_without_a_terminal(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nobody is reading it, and it would land in whatever captured the output."""
+    from entrascope import cli as cli_module
+
+    called: list[int] = []
+    monkeypatch.setattr(
+        cli_module, "newer_release", lambda cfg: called.append(1) or None
+    )
+    cli_module.announce_new_version(config, "table")
+    assert not called
+
+
+def test_upgrade_is_not_offered_as_a_tool() -> None:
+    """Installing software is a decision for the person at the keyboard."""
+    from entrascope.mcp_tools import NOT_EXPOSED
+
+    assert "upgrade" in NOT_EXPOSED
+    assert "person at the keyboard" in NOT_EXPOSED["upgrade"]
+
+
+def test_a_group_with_no_subcommand_still_prints_its_help_when_piped() -> None:
+    """A script or a pipe gets exactly what it always got."""
+    for group in ("errors", "logs", "discover", "config", "serve"):
+        output = run([group]).output
+        assert "Commands:" in output, group
+        assert "Usage:" in output, group
+
+
+def test_the_command_chooser_is_skipped_without_a_terminal() -> None:
+    """There is nothing to draw on, so the help is the whole answer."""
+    result = run(["errors"])
+    assert result.exit_code == 0
+    assert "Commands:" in result.output
+
+
+def test_a_chosen_command_is_asked_for_the_argument_it_needs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running it and then complaining that an argument is missing is rude.
+
+    The chooser asks for whatever the command cannot do without, then runs it.
+    """
+    from entrascope import cli as cli_module
+    from entrascope.cli import SETTINGS, build_settings
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        cli_module.click,
+        "prompt",
+        lambda label, **kwargs: asked.append(label) or "AADSTS50011",
+    )
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    explain_command = errors_group.commands["explain"]
+
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        cli_module.run_command(explain_command, "explain", parent)
+    assert asked == ["Code"]
+
+
+def test_a_command_needing_nothing_is_run_straight_away() -> None:
+    """Only a required argument is worth interrupting somebody for."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import SETTINGS, build_settings
+
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        cli_module.run_command(errors_group.commands["list"], "list", parent)
+
+
+def test_the_chooser_labels_every_command_with_its_purpose() -> None:
+    """A list of bare names is a list nobody can choose from."""
+    from entrascope.cli import summary
+
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    for command in errors_group.commands.values():
+        assert summary(command)

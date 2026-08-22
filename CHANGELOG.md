@@ -7,6 +7,27 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- entrascope upgrade, which works out how this copy was installed and uses the
+  right command through the running interpreter rather than whichever pip is on
+  the path. On a Python that something else manages it refuses and shows the
+  safe routes, with --break-system-packages there for somebody who decides
+  otherwise. --check reports without changing anything.
+- A version check against the published releases, at most once a day, cached,
+  with a short timeout, skipped for machine readable output and when there is
+  no terminal, and silent on any failure. ENTRASCOPE_NO_UPDATE_CHECK switches
+  it off.
+- A command group given no subcommand now offers its commands rather than only
+  listing them, and asks for whatever the chosen one cannot do without. Piped
+  or in a script it prints the help and exits exactly as before.
+- inspect returns to the list after showing an application.
+
+### Fixed
+- inspect walked the whole directory twice, once to build the chooser and once
+  to inspect what was chosen. It reads once now.
+- The log said what it had discovered but never which application it was
+  inspecting.
+
 ### Changed
 - An application that exposes an API and registers no redirect URI is
   classified as api-or-resource rather than as a public client. It signs nobody
