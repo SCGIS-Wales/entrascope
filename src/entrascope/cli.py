@@ -562,6 +562,28 @@ def errors_search(context: click.Context, term: str) -> None:
     show(rows, settings, f"Codes matching {term}", ("code", "meaning"))
 
 
+@cli.group()
+def serve() -> None:
+    """Run entrascope as a Model Context Protocol server."""
+
+
+@serve.command("stdio")
+@click.pass_context
+@handled
+def serve_stdio(context: click.Context) -> None:
+    """Serve the tools over stdio, for an assistant running on this machine.
+
+    stdio has no OAuth, so credentials come from the environment or the
+    credential file exactly as they do for every other command. Standard output
+    carries the protocol, so logging goes to standard error as JSON lines.
+    """
+    from entrascope.mcp_stdio import build_server, run
+
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    run(build_server(config, settings.get("auth")))
+
+
 def main() -> None:
     """Console script entry point."""
     cli(obj={})

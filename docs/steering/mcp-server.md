@@ -28,6 +28,32 @@ tool output and input validation on every tool.
 **C. The remote HTTP server.** An OAuth 2.1 protected resource that validates
 Entra issued JSON web tokens.
 
+## The tool surface
+
+Nine tools, all read only, registered by one free function that both servers
+call so the two surfaces cannot diverge:
+
+| Tool | Purpose |
+| --- | --- |
+| `doctor` | every preflight check, with remediation |
+| `discover_applications` | application registrations, filterable by type and by expiring credential |
+| `discover_service_principals` | enterprise applications, managed identities and SAML applications |
+| `audit_events` | directory changes to applications |
+| `sign_ins` | sign ins of one kind, through Graph or through a workspace |
+| `graph_activity` | Microsoft Graph requests, through a workspace only |
+| `explain_error` | one error code or a message carrying one, no credentials needed |
+| `list_error_codes` | every code, optionally searched |
+| `sign_in_kinds` | the kinds `sign_ins` accepts |
+
+Every tool returns the payload `render.py` produces, which is the same payload
+the command line emits under `--output json`. A test asserts the two are
+identical, because an assistant and an engineer must not be looking at
+different answers to one question.
+
+Tool descriptions that name a diagnostic category or an audit category read it
+from configuration, so renaming one in `tables.yaml` updates what the assistant
+is told.
+
 ## What surface C must do
 
 - Serve OAuth 2.0 protected resource metadata per RFC 9728 at

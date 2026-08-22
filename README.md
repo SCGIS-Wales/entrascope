@@ -88,6 +88,23 @@ Graph reporting API and works on any tenant with the right permission.
 diagnostic setting and gives longer retention. Microsoft Graph activity exists
 only through Azure Monitor.
 
+## As an MCP server
+
+```bash
+entrascope serve stdio
+```
+
+Register it with an assistant that speaks the Model Context Protocol. stdio has
+no OAuth, so credentials come from the environment or the credential file
+exactly as they do for every other command, and the server runs with your
+privileges. Every tool reads. None of them changes the directory.
+
+The tool surface mirrors the commands: `doctor`, `discover_applications`,
+`discover_service_principals`, `audit_events`, `sign_ins`, `graph_activity`,
+`explain_error`, `list_error_codes` and `sign_in_kinds`. A tool result and the
+corresponding `--output json` payload are the same bytes, which a test
+enforces.
+
 ## Corporate networks
 
 entrascope honours a forward web proxy from `HTTPS_PROXY`, `HTTP_PROXY`,

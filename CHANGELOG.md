@@ -94,6 +94,12 @@ versioning.
 - Machine readable output is quiet. Progress lines are suppressed under
   --output json and --output yaml so the output can be piped directly.
 - Continuous integration actions moved to the majors that run on Node 24.
+- The local MCP server, over stdio, exposing nine read only tools built from
+  the same functions the commands call. A tool result and the corresponding
+  --output json payload are the same bytes, which a test enforces.
+- entrascope serve stdio runs the local server. Standard output carries the
+  protocol alone, with logging and the banner on standard error, which a
+  subprocess test enforces.
 - Error interpretation from configuration: exact and case insensitive lookup, a
   code extracted from a longer message, the specific AADSTS code preferred over
   a generic one such as invalid_client, and a configured default for anything

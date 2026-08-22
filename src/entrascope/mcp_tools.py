@@ -1,1 +1,326 @@
-"""Placeholder for the mcp_tools module. Implemented in a later phase."""
+"""The MCP tool surface, shared by the local and remote servers.
+
+Every tool calls the same free functions the command line calls and returns the
+payload :mod:`entrascope.render` produces, so an MCP result and a CLI
+``--output json`` payload are the same bytes. A test asserts it.
+
+Tools read. There is no tool that changes the directory.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Any
+
+from azure.core.credentials import TokenCredential
+from fastmcp import FastMCP
+
+from entrascope.config import Config
+from entrascope.credentials import resolve_auth
+from entrascope.discovery import discover_applications, discover_service_principals
+from entrascope.doctor import run_checks
+from entrascope.errors import explain, known_codes, search
+from entrascope.graph import graph_token_provider
+from entrascope.http import Session, build_session
+from entrascope.logger import get_logger, new_correlation_id
+from entrascope.logs import (
+    query_audit_graph,
+    query_graph_activity,
+    query_sign_ins_graph,
+    query_sign_ins_monitor,
+    sign_in_kinds,
+)
+from entrascope.models import AuthSource
+from entrascope.monitor import build_logs_client
+from entrascope.render import payload_for
+
+log = get_logger(__name__)
+
+#: Signature of the function each server hands us to obtain an identity.
+CredentialFactory = Callable[[], TokenCredential]
+
+#: Name every server registers under.
+SERVER_NAME = "entrascope"
+
+#: Shown to a client so it knows what this server is for.
+INSTRUCTIONS = """
+entrascope gives observability over Microsoft Entra ID and Azure Monitor so
+that an application authentication or authorisation failure can be diagnosed.
+
+Start with the doctor tool when something is not working. It reports the
+network path, the identity in use, what the token actually grants, the licence
+tier and which diagnostic categories are exporting logs, each failure with its
+remediation.
+
+Entra directory operations do not appear in the Azure subscription activity
+log. They are recorded in the Entra audit logs, which the audit_events tool
+reads.
+
+Every tool reads. None of them changes the directory.
+""".strip()
+
+
+def credential_factory(
+    config: Config, requested: AuthSource | None = None
+) -> CredentialFactory:
+    """Return a function that resolves an identity, doing so at most once."""
+    cache: dict[str, TokenCredential] = {}
+
+    def provide() -> TokenCredential:
+        if "credential" not in cache:
+            _, credential = resolve_auth(config, requested)
+            cache["credential"] = credential
+        return cache["credential"]
+
+    return provide
+
+
+def graph_session(config: Config, credential: TokenCredential) -> Session:
+    """Build a session carrying a Microsoft Graph token."""
+    return build_session(config, graph_token_provider(config, credential))
+
+
+def payload(rows: Any, config: Config) -> Any:
+    """Return the structured content for a tool result."""
+    return payload_for(rows, config)
+
+
+def register_tools(
+    server: FastMCP,
+    config: Config,
+    credential: CredentialFactory,
+) -> FastMCP:
+    """Register every tool on a server.
+
+    The server object comes from FastMCP and the tools are closures over the
+    configuration and the identity, so no state is held at module level.
+    """
+
+    @server.tool(
+        name="doctor",
+        description=(
+            "Check everything entrascope needs and explain whatever is missing: "
+            "the network path, the credential storage, the identity in use, what "
+            "the token grants, the licence tier and every diagnostic category."
+        ),
+    )
+    def doctor() -> list[dict[str, Any]]:
+        new_correlation_id()
+        return list(payload(run_checks(config), config))
+
+    @server.tool(
+        name="discover_applications",
+        description=(
+            "List application registrations with sign in audience, redirect URIs, "
+            "requested permissions, owners, credentials and their expiry, and "
+            "federated identity credentials."
+        ),
+    )
+    def discover_applications_tool(
+        filter_expression: str | None = None,
+        application_type: str | None = None,
+        expiring_only: bool = False,
+        with_details: bool = True,
+    ) -> list[dict[str, Any]]:
+        new_correlation_id()
+        session = graph_session(config, credential())
+        try:
+            rows = discover_applications(
+                session,
+                config,
+                session.auth if with_details else None,
+                filter_expression=filter_expression,
+                with_details=with_details,
+            )
+        finally:
+            session.close()
+        if application_type:
+            rows = tuple(
+                row for row in rows if row.application_type == application_type
+            )
+        if expiring_only:
+            rows = tuple(row for row in rows if row.expiring())
+        return list(payload(rows, config))
+
+    @server.tool(
+        name="discover_service_principals",
+        description=(
+            "List enterprise applications, including managed identities and SAML "
+            "applications, with their assignment requirement and granted "
+            "permissions."
+        ),
+    )
+    def discover_service_principals_tool(
+        filter_expression: str | None = None,
+        application_type: str | None = None,
+        with_details: bool = True,
+    ) -> list[dict[str, Any]]:
+        new_correlation_id()
+        session = graph_session(config, credential())
+        try:
+            rows = discover_service_principals(
+                session,
+                config,
+                session.auth if with_details else None,
+                filter_expression=filter_expression,
+                with_details=with_details,
+            )
+        finally:
+            session.close()
+        if application_type:
+            rows = tuple(
+                row for row in rows if row.application_type == application_type
+            )
+        return list(payload(rows, config))
+
+    audit_category = config.tables.audit_categories["application_management"]
+    activity = config.tables.log_queries["graph-activity"]
+
+    @server.tool(
+        name="audit_events",
+        description=(
+            "Read Entra directory changes to applications, the "
+            f"{audit_category} category. These do not appear in the Azure "
+            "subscription activity log."
+        ),
+    )
+    def audit_events(limit: int | None = None) -> list[dict[str, Any]]:
+        new_correlation_id()
+        session = graph_session(config, credential())
+        try:
+            return list(payload(query_audit_graph(session, config, top=limit), config))
+        finally:
+            session.close()
+
+    @server.tool(
+        name="sign_ins",
+        description=(
+            "Read sign ins of one kind. Use service-principal to see client "
+            "credentials failures, which is what most application authentication "
+            "problems look like."
+        ),
+    )
+    def sign_ins(
+        kind: str = "interactive",
+        app_id: str | None = None,
+        failures_only: bool = False,
+        limit: int | None = None,
+        workspace_id: str | None = None,
+        lookback_hours: int | None = None,
+    ) -> list[dict[str, Any]]:
+        new_correlation_id()
+        if workspace_id:
+            client = build_logs_client(credential(), config)
+            rows = query_sign_ins_monitor(
+                client,
+                config,
+                workspace_id,
+                kind=kind,
+                app_id=app_id or "",
+                lookback_hours=lookback_hours,
+                row_limit=limit,
+            )
+            if failures_only:
+                rows = tuple(row for row in rows if row.failed())
+            return list(payload(rows, config))
+        session = graph_session(config, credential())
+        try:
+            return list(
+                payload(
+                    query_sign_ins_graph(
+                        session,
+                        config,
+                        kind=kind,
+                        app_id=app_id,
+                        failures_only=failures_only,
+                        top=limit,
+                    ),
+                    config,
+                )
+            )
+        finally:
+            session.close()
+
+    @server.tool(
+        name="graph_activity",
+        description=(
+            "Read Microsoft Graph requests made against the tenant. Available "
+            f"only through Azure Monitor, and needs the "
+            f"{activity.diagnostic_category} diagnostic category and an Entra ID "
+            "P1 or P2 licence."
+        ),
+    )
+    def graph_activity(
+        workspace_id: str,
+        app_id: str = "",
+        lookback_hours: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        new_correlation_id()
+        client = build_logs_client(credential(), config)
+        rows = query_graph_activity(
+            client,
+            config,
+            workspace_id,
+            app_id=app_id,
+            lookback_hours=lookback_hours,
+            row_limit=limit,
+        )
+        return list(payload(rows, config))
+
+    @server.tool(
+        name="explain_error",
+        description=(
+            "Explain an AADSTS or Microsoft Graph error code, or a message "
+            "carrying one, with its likely cause, remediation and documentation. "
+            "Needs no credentials."
+        ),
+    )
+    def explain_error(code: str) -> dict[str, Any]:
+        result = payload(explain(code, config), config)
+        return dict(result)
+
+    @server.tool(
+        name="list_error_codes",
+        description=(
+            "List every error code entrascope can explain, optionally filtered by "
+            "a search term matching the code or its meaning."
+        ),
+    )
+    def list_error_codes(term: str | None = None) -> list[dict[str, Any]]:
+        rows = (
+            list(search(term, config))
+            if term
+            else [explain(code, config) for code in known_codes(config)]
+        )
+        return list(payload(rows, config))
+
+    @server.tool(
+        name="sign_in_kinds",
+        description="List the sign in kinds the sign_ins tool accepts.",
+    )
+    def sign_in_kinds_tool() -> list[str]:
+        return list(sign_in_kinds(config))
+
+    return server
+
+
+def tool_names() -> tuple[str, ...]:
+    """Return the names of every tool, in registration order."""
+    return (
+        "doctor",
+        "discover_applications",
+        "discover_service_principals",
+        "audit_events",
+        "sign_ins",
+        "graph_activity",
+        "explain_error",
+        "list_error_codes",
+        "sign_in_kinds",
+    )
+
+
+def validate_kind(kind: str, config: Config) -> Sequence[str]:
+    """Return the known sign in kinds, for a caller validating its input."""
+    _ = kind
+    return sign_in_kinds(config)
