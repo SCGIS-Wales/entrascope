@@ -57,3 +57,13 @@ redaction:
       regex: "(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*"
     - name: jwt
       regex: "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"
+
+update_check:
+  # A version check must never slow a command down or stop it working. It is
+  # cached, it has a short timeout, it is skipped when the output is going to a
+  # machine, and any failure is silent.
+  enabled: true
+  interval_hours: 24
+  timeout_seconds: 2
+  cache_file: ~/.cache/entrascope/latest-release.json
+  disable_variable: ENTRASCOPE_NO_UPDATE_CHECK

@@ -41,6 +41,32 @@ engineers troubleshoot authentication and authorisation failures.
 pip install entrascope
 ```
 
+On a Python that Homebrew or your distribution manages, `pip` will refuse, and
+it is right to. Use one of these instead:
+
+```bash
+pipx install entrascope          # or
+uv tool install entrascope       # or
+python3 -m venv ~/.venvs/entrascope && ~/.venvs/entrascope/bin/pip install entrascope
+```
+
+### Staying current
+
+entrascope checks for a newer version at most once a day, never blocking a
+command, and says one line on standard error when there is one. Set
+`ENTRASCOPE_NO_UPDATE_CHECK=1` to switch it off.
+
+```bash
+entrascope upgrade --check    # what is running, what is newest, what would upgrade it
+entrascope upgrade            # upgrade the way this copy was installed
+```
+
+It works out whether it is in a virtual environment, under pipx, under uv, or
+in a Python something else manages, and uses the right command through the
+running interpreter rather than whichever `pip` is on the path. On a managed
+Python it refuses and shows the safe routes, with
+`--break-system-packages` there if you decide otherwise.
+
 From a clone, for development:
 
 ```bash
@@ -106,6 +132,12 @@ configuration.
 
 With no argument and a terminal to draw on, it offers the list. Move with the
 arrow keys or with j and k, search with `/` as in vi, enter to open, q to stop.
+After showing an application it returns to the list, because looking at one is
+rarely the whole question.
+
+Any command group given no subcommand does the same: it prints its help and
+then offers its commands, asking for whatever the chosen one cannot do without.
+Piped or in a script, it prints the help and exits exactly as before.
 
 ### Diagnosing a failure
 

@@ -12,7 +12,7 @@ first question is always what this is, and the last is usually where to click.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 from entrascope.config import Config
 from entrascope.discovery import (
@@ -39,6 +39,58 @@ log = get_logger(__name__)
 CONSENT_ALL = "AllPrincipals"
 
 
+class Catalogue(NamedTuple):
+    """Everything inspectable, read once.
+
+    Discovery is the expensive part, and offering a chooser and then inspecting
+    what was chosen used to walk the directory twice.
+    """
+
+    applications: tuple[ApplicationSummary, ...]
+    principals: tuple[ServicePrincipalSummary, ...]
+
+    def choices(self) -> tuple[tuple[str, str], ...]:
+        """Return identifier and label for each, sorted by name."""
+        seen = {item.app_id for item in self.applications}
+        rows = [
+            (item.app_id or item.object_id, f"{item.display_name}  ({item.app_id})")
+            for item in self.applications
+        ]
+        rows.extend(
+            (
+                item.app_id or item.object_id,
+                f"{item.display_name}  ({item.app_id})  [enterprise]",
+            )
+            for item in self.principals
+            if item.app_id not in seen
+        )
+        return tuple(sorted(rows, key=lambda pair: pair[1].lower()))
+
+
+def read_catalogue(
+    session: Session,
+    config: Config,
+    token: Callable[[], str] | None = None,
+    *,
+    include_first_party: bool = False,
+    with_details: bool = False,
+) -> Catalogue:
+    """Read every application and enterprise application, once."""
+    from entrascope.discovery import is_first_party
+
+    applications = discover_applications(
+        session, config, token, with_details=with_details
+    )
+    principals = discover_service_principals(
+        session, config, token, with_details=with_details
+    )
+    if not include_first_party:
+        principals = tuple(
+            item for item in principals if not is_first_party(item, config)
+        )
+    return Catalogue(applications=applications, principals=principals)
+
+
 def candidates(
     session: Session,
     config: Config,
@@ -46,12 +98,7 @@ def candidates(
     *,
     include_first_party: bool = False,
 ) -> tuple[tuple[str, str], ...]:
-    """Return every application that can be inspected, as identifier and label.
-
-    Both kinds are offered, because an engineer with a failure does not
-    necessarily know whether the problem is in the registration or in the
-    enterprise application.
-    """
+    """Return every application that can be inspected, as identifier and label."""
     from entrascope.discovery import is_first_party
 
     applications = discover_applications(session, config, token, with_details=False)
@@ -304,18 +351,17 @@ def inspect(
     *,
     target: str,
     kinds: Sequence[str] = (),
+    catalogue: Catalogue | None = None,
 ) -> dict[str, Any]:
     """Gather everything about one application, for reading.
 
     Both objects are fetched, because a failure can come from either, and an
-    engineer told only about one will look in the wrong place.
+    engineer told only about one will look in the wrong place. A catalogue that
+    has already been read is used rather than reading the directory again.
     """
-    applications = matching(
-        discover_applications(session, config, token), target, kinds
-    )
-    principals = matching(
-        discover_service_principals(session, config, token), target, kinds
-    )
+    known = catalogue or read_catalogue(session, config, token, with_details=True)
+    applications = matching(known.applications, target, kinds)
+    principals = matching(known.principals, target, kinds)
     if not applications and not principals:
         raise ApiCallError(_not_found(target))
 
@@ -323,14 +369,15 @@ def inspect(
     principal = principals[0] if principals else None
     if application and not principal:
         principal = next(
-            (
-                item
-                for item in discover_service_principals(session, config, token)
-                if item.app_id == application.app_id
-            ),
+            (item for item in known.principals if item.app_id == application.app_id),
             None,
         )
 
+    log.info(
+        "inspecting %s",
+        application.display_name if application else target,
+        extra={"application_id": application.app_id if application else ""},
+    )
     payload = raw_application(session, config, application)
     portal = config.endpoints.portal
     return {

@@ -489,6 +489,10 @@ COMMAND_TOOLS: dict[str, str] = {
 #: nothing it could learn by doing so that the configuration tool cannot tell
 #: it by reading.
 NOT_EXPOSED: dict[str, str] = {
+    "upgrade": (
+        "Installs software on the machine. Upgrading is a decision for the "
+        "person at the keyboard, not for an assistant."
+    ),
     "config export": (
         "Writes files to the machine. An assistant reads the configuration "
         "with the configuration tool instead."

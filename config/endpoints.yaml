@@ -75,5 +75,12 @@ portal:
   audit_logs: https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Audit
   sign_in_logs: https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/SignIns
 
+releases:
+  # Where to look for a newer version. Checked at most once a day, never
+  # blocking a command, and silently skipped when there is no network.
+  latest_url: https://api.github.com/repos/SCGIS-Wales/entrascope/releases/latest
+  page_url: https://github.com/SCGIS-Wales/entrascope/releases
+  package_name: entrascope
+
 protected_resource_metadata:
   well_known_path: /.well-known/oauth-protected-resource

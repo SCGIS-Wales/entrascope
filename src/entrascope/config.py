@@ -86,6 +86,12 @@ class Portal(_Frozen):
     sign_in_logs: str
 
 
+class Releases(_Frozen):
+    latest_url: str
+    page_url: str
+    package_name: str
+
+
 class ProtectedResourceMetadata(_Frozen):
     well_known_path: str
 
@@ -95,6 +101,7 @@ class Endpoints(_Frozen):
     azure: AzureEndpoints
     authority: Authority
     portal: Portal
+    releases: Releases
     protected_resource_metadata: ProtectedResourceMetadata
 
 
@@ -254,6 +261,14 @@ class SurfaceLogging(_Frozen):
     destination: str | None = None
 
 
+class UpdateCheck(_Frozen):
+    enabled: bool
+    interval_hours: int
+    timeout_seconds: float
+    cache_file: str
+    disable_variable: str
+
+
 class Logging(_Frozen):
     level: str
     format: str
@@ -262,6 +277,7 @@ class Logging(_Frozen):
     surfaces: dict[str, SurfaceLogging]
     context_fields: tuple[str, ...]
     redaction: Redaction
+    update_check: UpdateCheck
 
 
 class CredentialFileSettings(_Frozen):
