@@ -120,3 +120,41 @@ def test_search_finds_by_code_and_by_meaning(config: Config) -> None:
     assert any(item.code == "AADSTS50011" for item in search("50011", config))
     assert any("secret" in item.meaning.lower() for item in search("secret", config))
     assert search("no such thing at all", config) == ()
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "AADSTS5002710",
+        "AADSTS700024",
+        "Microsoft.Online.Workflows.ValidationException",
+        "Microsoft.Online.Workflows.EntitlementValidationException",
+    ],
+)
+def test_codes_seen_against_a_real_tenant_are_explained(
+    code: str, config: Config
+) -> None:
+    """Every code an end to end run actually produced has an explanation.
+
+    These were observed driving the flows against a tenant, not guessed at.
+    """
+    explanation = explain(code, config)
+    assert explanation.known
+    assert explanation.remediation
+    assert explanation.docs_url.startswith("https://learn.microsoft.com/")
+
+
+def test_the_client_assertion_codes_point_at_the_certificate(config: Config) -> None:
+    """A malformed assertion and an expired one need different remediation."""
+    assert "thumbprint" in explain("AADSTS5002710", config).remediation
+    assert "clock" in explain("AADSTS700024", config).remediation
+
+
+def test_the_two_workflow_exceptions_are_told_apart(config: Config) -> None:
+    """One is a licence, the other is the wrong object. They read differently."""
+    licence = explain(
+        "Microsoft.Online.Workflows.EntitlementValidationException", config
+    )
+    invalid = explain("Microsoft.Online.Workflows.ValidationException", config)
+    assert "licence" in licence.remediation.lower()
+    assert "registration" in invalid.remediation

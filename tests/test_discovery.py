@@ -208,7 +208,7 @@ def test_requested_access_token_version_is_kept(
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("Confidential web application", "confidential-client"),
+        ("Confidential web application", "enterprise-application"),
         ("Gallery SAML application", "saml-gallery"),
         ("Bespoke SAML application", "saml-non-gallery"),
         ("aks-cluster-agentpool", "managed-identity"),
@@ -351,9 +351,94 @@ def test_discover_service_principals(config: Config) -> None:
     )
     assert len(summaries) == 5
     assert {summary.application_type for summary in summaries} == {
-        "confidential-client",
+        "enterprise-application",
         "saml-gallery",
         "saml-non-gallery",
         "managed-identity",
         "legacy",
     }
+
+
+def test_an_application_that_exposes_an_api_is_not_a_client(config: Config) -> None:
+    """A resource signs nobody in.
+
+    Calling it a public client, which is what the fallback used to do, sends
+    the reader looking for a sign in that never happens.
+    """
+    payload = {
+        "id": "1",
+        "appId": "a",
+        "displayName": "An API",
+        "identifierUris": ["api://a"],
+        "api": {"oauth2PermissionScopes": [{"id": "s", "value": "access_as_user"}]},
+        "appRoles": [{"id": "r", "value": "Reports.Read"}],
+    }
+    summary = project_application(payload, config, now=NOW)
+    assert summary.application_type == "api-or-resource"
+    assert summary.exposes_api is True
+
+
+def test_a_resource_that_is_also_a_client_is_classified_as_the_client(
+    config: Config,
+) -> None:
+    """An application that exposes an API and signs users in is both.
+
+    The client side is what a sign in failure is about, so that is what the
+    type names.
+    """
+    payload = {
+        "id": "1",
+        "appId": "a",
+        "displayName": "Both",
+        "identifierUris": ["api://a"],
+        "web": {"redirectUris": ["https://both.example.invalid/cb"]},
+    }
+    assert project_application(payload, config, now=NOW).application_type == (
+        "web-client"
+    )
+
+
+def test_a_web_application_with_no_credential_is_not_confidential(
+    config: Config,
+) -> None:
+    """Confidential means it holds a secret. This one does not."""
+    payload = {
+        "id": "1",
+        "appId": "a",
+        "displayName": "No secret",
+        "web": {"redirectUris": ["https://web.example.invalid/cb"]},
+    }
+    assert project_application(payload, config, now=NOW).application_type == (
+        "web-client"
+    )
+
+
+def test_a_web_application_with_a_credential_is_confidential(
+    config: Config, applications: list[dict[str, Any]]
+) -> None:
+    """And this one does."""
+    assert project_application(applications[0], config, now=NOW).application_type == (
+        "confidential-client"
+    )
+
+
+def test_a_service_principal_does_not_guess_the_client_type(config: Config) -> None:
+    """The registration decides that, and the service principal does not carry it."""
+    payload = {
+        "id": "1",
+        "appId": "a",
+        "displayName": "An app",
+        "servicePrincipalType": "Application",
+    }
+    summary = project_service_principal(payload, config, now=NOW)
+    assert summary.application_type == "enterprise-application"
+
+
+def test_exposing_an_api_is_recognised_from_any_of_its_signs(config: Config) -> None:
+    """An identifier URI, a role or a scope each mean somebody can call it."""
+    from entrascope.discovery import exposes_an_api
+
+    assert exposes_an_api({"identifierUris": ["api://a"]}, config)
+    assert exposes_an_api({"appRoles": [{"id": "r"}]}, config)
+    assert exposes_an_api({"api": {"oauth2PermissionScopes": [{"id": "s"}]}}, config)
+    assert not exposes_an_api({"displayName": "nothing"}, config)

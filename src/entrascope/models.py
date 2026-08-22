@@ -110,6 +110,9 @@ class QueryResult(NamedTuple):
 #: How an application or enterprise application is classified.
 ApplicationType = Literal[
     "confidential-client",
+    "web-client",
+    "api-or-resource",
+    "enterprise-application",
     "public-client",
     "single-page-application",
     "native-or-mobile",
@@ -202,6 +205,7 @@ class ApplicationSummary(NamedTuple):
     owners: tuple[str, ...]
     requested_access_token_version: int | None
     created: str
+    exposes_api: bool = False
 
     def expiring(self) -> tuple[CredentialSummary, ...]:
         """Return the credentials that are expiring or already expired."""

@@ -423,6 +423,39 @@ errors:
       sides.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/troubleshoot-saml-based-single-sign-on
 
+  AADSTS5002710:
+    meaning: The client assertion could not be read.
+    likely_cause: >
+      The assertion is not a well formed JSON web token. A missing or wrong
+      header, an unsigned token, or a value sent in the wrong parameter.
+    remediation: >
+      Send a token signed with the certificate registered on the application,
+      with an x5t header carrying that certificate thumbprint, an audience of
+      the token endpoint and an issuer and subject of the client id.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+
+  AADSTS700024:
+    meaning: The client assertion is not within its validity window.
+    likely_cause: >
+      The nbf or exp claim is wrong, often because the clock on the machine
+      that signed it is out.
+    remediation: >
+      Set nbf to now and exp within ten minutes of it, and check the clock.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials
+
+  Microsoft.Online.Workflows.ValidationException:
+    meaning: The directory refused the change because it is not valid.
+    likely_cause: >
+      A property was set on a service principal that must match its
+      application, or a value broke a rule the directory enforces. Reply URLs
+      and identifier URIs belong on the application, and the service principal
+      follows.
+    remediation: >
+      Make the change on the application registration rather than on the
+      enterprise application. Run entrascope inspect on it to see which
+      properties each object holds.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/app-objects-and-service-principals
+
   Microsoft.Online.Workflows.EntitlementValidationException:
     meaning: >
       The directory refused the change because the tenant is not entitled to

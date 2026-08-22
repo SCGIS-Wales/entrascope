@@ -31,6 +31,25 @@ projects the attributes that explain a failure:
 
 ## Application types to cover
 
+Two rules the classification follows, both learned by creating one application
+of each kind in a real tenant and reading them back.
+
+An application that exposes an API and registers no redirect URI is a resource,
+not a client. Calling it a public client, which the fallback used to do, sends
+the reader looking for a sign in that never happens.
+
+A confidential client is one that holds a credential. A web application without
+one is a client all the same, but calling it confidential says it holds a
+secret it does not have.
+
+A service principal is the instance, not the definition. Whether the
+application behind it is confidential, public or a single page application is
+decided by its registration, which the service principal does not carry, so
+anything beyond the kinds a service principal genuinely determines, which are
+managed identity, legacy and the SAML modes, is named for what it is.
+
+
+
 Confidential clients using OAuth 2.0 and OpenID Connect. Public clients. Native,
 mobile and desktop applications. Single page applications. SAML enterprise
 applications, both gallery and non gallery. Managed identities, system and user

@@ -7,6 +7,27 @@ versioning.
 
 ## [Unreleased]
 
+### Changed
+- An application that exposes an API and registers no redirect URI is
+  classified as api-or-resource rather than as a public client. It signs nobody
+  in, and calling it a client sent the reader looking for a sign in that never
+  happens.
+- A web application holding no credential is classified as web-client rather
+  than confidential-client. Confidential means it holds a secret.
+- An enterprise application whose kind a service principal does not determine
+  is classified as enterprise-application rather than confidential-client. The
+  registration decides the client type and the service principal does not carry
+  it.
+- Discovery reports whether an application exposes an API.
+
+### Fixed
+- The fact that an application exposes an API was computed and then not carried
+  into the projection, so it was reported as false on the very applications
+  that were classified by it.
+- AADSTS5002710 and AADSTS700024, the client assertion failures, and
+  Microsoft.Online.Workflows.ValidationException are explained. All three were
+  observed driving real flows against a tenant.
+
 ### Added
 - entrascope config path, export and show. The configuration ships inside the
   installed package, where it is awkward to edit and is replaced on upgrade, so
