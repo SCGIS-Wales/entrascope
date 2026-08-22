@@ -1,0 +1,51 @@
+# Every endpoint entrascope talks to. Nothing here may be hardcoded in src.
+# Templates use Python str.format placeholders.
+
+graph:
+  base_url: https://graph.microsoft.com
+  version: v1.0
+  beta_version: beta
+  scope: https://graph.microsoft.com/.default
+  resource_app_id: 00000003-0000-0000-c000-000000000000
+  paths:
+    applications: /applications
+    application_by_id: /applications/{object_id}
+    application_owners: /applications/{object_id}/owners
+    federated_identity_credentials: /applications/{object_id}/federatedIdentityCredentials
+    service_principals: /servicePrincipals
+    service_principal_by_id: /servicePrincipals/{object_id}
+    service_principal_owners: /servicePrincipals/{object_id}/owners
+    app_role_assignments: /servicePrincipals/{object_id}/appRoleAssignedTo
+    oauth2_permission_grants: /oauth2PermissionGrants
+    directory_audits: /auditLogs/directoryAudits
+    sign_ins: /auditLogs/signIns
+    provisioning: /auditLogs/provisioning
+    subscribed_skus: /subscribedSkus
+    directory_roles: /directoryRoles
+    me: /me
+    organization: /organization
+
+azure:
+  arm_base_url: https://management.azure.com
+  arm_api_version: "2021-05-01-preview"
+  arm_scope: https://management.azure.com/.default
+  log_analytics_scope: https://api.loganalytics.io/.default
+  paths:
+    diagnostic_settings: /providers/microsoft.aadiam/diagnosticSettings
+
+authority:
+  base_url: https://login.microsoftonline.com
+  # Token version 2 is required so that the issuer and audience match what the
+  # remote server validates. See docs/steering/mcp-server.md.
+  v2:
+    issuer_template: https://login.microsoftonline.com/{tenant_id}/v2.0
+    token_endpoint_template: https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token
+    authorize_endpoint_template: https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize
+    jwks_uri_template: https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys
+    oidc_discovery_template: https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration
+  v1:
+    issuer_template: https://sts.windows.net/{tenant_id}/
+    token_endpoint_template: https://login.microsoftonline.com/{tenant_id}/oauth2/token
+
+protected_resource_metadata:
+  well_known_path: /.well-known/oauth-protected-resource

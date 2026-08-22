@@ -1,0 +1,44 @@
+# The common logger. Read by entrascope.logger and nothing else.
+
+level: INFO
+format: human            # human or json
+destination: stderr      # stderr, stdout or a file path
+
+surfaces:
+  cli:
+    format: human
+  mcp_stdio:
+    format: json
+    destination: stderr
+  mcp_http:
+    format: json
+    destination: stdout
+
+context_fields:
+  - correlation_id
+  - auth_source
+  - tenant_id
+
+redaction:
+  placeholder: "[redacted]"
+  # Keys whose value is replaced wherever they appear in a logged structure.
+  keys:
+    - Secret
+    - client_secret
+    - clientSecret
+    - password
+    - access_token
+    - refresh_token
+    - id_token
+    - assertion
+    - client_assertion
+    - authorization
+    - Authorization
+    - api_key
+    - ARM_CLIENT_SECRET
+  # Values matching these patterns are replaced wherever they appear.
+  patterns:
+    - name: bearer_token
+      regex: "(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*"
+    - name: jwt
+      regex: "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"

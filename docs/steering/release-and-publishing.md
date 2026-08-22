@@ -1,0 +1,79 @@
+# Release and publishing
+
+## Branch and merge protocol
+
+One phase is one pull request. Branch from an up to date `main` as
+`phase/NN-slug`, commit in conventional form, run the full local gate before
+pushing, open the pull request, wait for every check to pass, then squash merge
+and delete the branch. Nothing is committed to `main` directly. No pull request
+merges on red, and `[skip ci]` never appears on a hand written commit.
+
+## The pipeline
+
+One workflow, `ci.yml`, named CI/CD Pipeline, carrying both integration and
+release, with read only permissions at the top level and write granted per job.
+A separate `codeql.yml` runs weekly. `dependabot.yml` groups the dependency
+families that move together.
+
+Jobs, in the phase each arrives:
+
+| Job | Purpose | Phase |
+| --- | --- | --- |
+| lint | ruff check and ruff format check | 0 |
+| typecheck | mypy strict | 0 |
+| guards | the five structural guards, as their own check | 0 |
+| test | pytest with coverage on Python 3.14 | 0 |
+| security | pip-audit and a CycloneDX SBOM artifact | 0 |
+| build | python -m build and twine check | 0 |
+| install-test | install the wheel in a clean environment and run the console script | 5 |
+| mcp-smoke | start the stdio server and list the tools | 7 |
+| docker | buildx and push to the GitHub container registry | 8 |
+| auto-tag | semver patch bump, commit, tag, push | 9 |
+| publish-testpypi | Trusted Publishing dry run | 9 |
+| publish-pypi | Trusted Publishing with a retry | 9 |
+
+Everything up to and including build is a required check on a pull request.
+
+## Versioning and tagging
+
+Semantic versioning with tags of the form `vMAJOR.MINOR.PATCH`. On a push to
+`main` the auto-tag job reads the latest tag, computes the next patch version,
+rewrites the version in `pyproject.toml` and `src/entrascope/__init__.py`,
+commits with `[skip ci]`, tags, pushes, and exports the version as a job output
+so the publish jobs in the same run consume it. No second workflow run is
+triggered by the tag push.
+
+The release jobs are gated on the repository variable `ENABLE_RELEASE`, which
+stays unset until the project is ready to publish. Ten phase merges must not
+produce ten releases.
+
+## Trusted Publishing
+
+PyPI Trusted Publishing over OpenID Connect. No API tokens anywhere. The
+publish jobs carry `id-token: write` and no username or password. Attestations
+and Sigstore signing happen by default.
+
+Before the first tag:
+
+1. On pypi.org, under Your account then Publishing, add a pending publisher.
+   Project name `entrascope`, owner `SCGIS-Wales`, repository `entrascope`,
+   workflow `ci.yml`, environment `pypi`.
+2. Repeat on test.pypi.org with environment `testpypi`.
+3. In GitHub, create both environments with protection rules, required
+   reviewers on `pypi` and a tag restriction.
+
+On first successful publish the pending publisher becomes a normal publisher.
+
+## The publish retry
+
+Publishing occasionally fails on a transient upstream error, most often a 5xx
+from the Sigstore Rekor transparency log while generating attestations. The
+publish job therefore makes up to three attempts with 30 and 60 second backoff.
+Every attempt uses the official action with `skip-existing`, so files uploaded
+by a partial attempt are skipped rather than causing a hard failure. The first
+two attempts are `continue-on-error`, the third is not, so a persistent failure
+still fails the job.
+
+## Changelog
+
+Keep a Changelog format with an Unreleased section promoted on each tag.

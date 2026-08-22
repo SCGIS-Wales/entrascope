@@ -1,0 +1,73 @@
+# Projections from Microsoft Graph payloads onto entrascope data transfer
+# objects. The left hand side is the DTO field, the right hand side is the
+# Graph property path.
+
+application:
+  object_id: id
+  app_id: appId
+  display_name: displayName
+  sign_in_audience: signInAudience
+  identifier_uris: identifierUris
+  created: createdDateTime
+  notes: notes
+  web_redirect_uris: web.redirectUris
+  spa_redirect_uris: spa.redirectUris
+  public_client_redirect_uris: publicClient.redirectUris
+  requested_permissions: requiredResourceAccess
+  password_credentials: passwordCredentials
+  key_credentials: keyCredentials
+  app_roles: appRoles
+  oauth2_permission_scopes: api.oauth2PermissionScopes
+  requested_access_token_version: api.requestedAccessTokenVersion
+
+service_principal:
+  object_id: id
+  app_id: appId
+  display_name: displayName
+  service_principal_type: servicePrincipalType
+  sign_in_audience: signInAudience
+  app_role_assignment_required: appRoleAssignmentRequired
+  reply_urls: replyUrls
+  identifier_uris: servicePrincipalNames
+  preferred_single_sign_on_mode: preferredSingleSignOnMode
+  password_credentials: passwordCredentials
+  key_credentials: keyCredentials
+  app_roles: appRoles
+  oauth2_permission_scopes: oauth2PermissionScopes
+  tags: tags
+  account_enabled: accountEnabled
+
+credential:
+  key_id: keyId
+  display_name: displayName
+  start: startDateTime
+  end: endDateTime
+  usage: usage
+  type: type
+
+sign_in:
+  id: id
+  created: createdDateTime
+  user_principal_name: userPrincipalName
+  app_id: appId
+  app_display_name: appDisplayName
+  resource_display_name: resourceDisplayName
+  client_app_used: clientAppUsed
+  ip_address: ipAddress
+  error_code: status.errorCode
+  failure_reason: status.failureReason
+  additional_details: status.additionalDetails
+  conditional_access_status: conditionalAccessStatus
+
+audit:
+  id: id
+  activity: activityDisplayName
+  category: category
+  result: result
+  reason: resultReason
+  activity_date_time: activityDateTime
+  initiated_by: initiatedBy
+  target_resources: targetResources
+
+expiry:
+  warning_days: 30
