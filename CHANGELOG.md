@@ -62,3 +62,13 @@ versioning.
   legacy applications, driven by values in configuration rather than literals.
 - Synthetic Graph fixtures, with a test asserting that no identifier in them
   could be a real tenant identifier, because the repository is public.
+- Log interrogation of directory audits, the four sign in kinds, provisioning
+  and Microsoft Graph activity, through both the Graph reporting API and Azure
+  Monitor, with both routes projecting the same objects. Sign in event type
+  filters, diagnostic categories and KQL template names are all configuration.
+- Microsoft Graph activity is marked as having no Graph route, and asking for
+  it that way returns the reason and the diagnostic category it needs.
+- Error interpretation from configuration: exact and case insensitive lookup, a
+  code extracted from a longer message, the specific AADSTS code preferred over
+  a generic one such as invalid_client, and a configured default for anything
+  unrecognised so that an unknown code still yields a link and a next step.

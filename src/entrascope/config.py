@@ -90,9 +90,30 @@ class DiagnosticCategory(_Frozen):
     description: str
 
 
+class SignInKind(_Frozen):
+    graph_filter: str
+    diagnostic_category: str
+    kql_template: str
+
+
+class LogQuery(_Frozen):
+    graph_filter_template: str
+    diagnostic_category: str
+    kql_template: str
+    graph_supported: bool = True
+
+
+class LogDefaults(_Frozen):
+    lookback_hours: int
+    row_limit: int
+
+
 class Tables(_Frozen):
     diagnostic_categories: tuple[DiagnosticCategory, ...]
     audit_categories: dict[str, str]
+    sign_in_kinds: dict[str, SignInKind]
+    log_queries: dict[str, LogQuery]
+    defaults: LogDefaults
 
 
 class HttpSettings(_Frozen):

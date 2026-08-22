@@ -1,0 +1,34 @@
+{
+  "value": [
+    {
+      "id": "signin-1",
+      "createdDateTime": "2026-08-22T08:15:00Z",
+      "userPrincipalName": "engineer@example.invalid",
+      "appId": "aaaaaaaa-1111-1111-1111-111111111111",
+      "appDisplayName": "Confidential web application",
+      "resourceDisplayName": "Microsoft Graph",
+      "clientAppUsed": "Browser",
+      "ipAddress": "203.0.113.10",
+      "correlationId": "dddddddd-aaaa-1111-1111-111111111111",
+      "conditionalAccessStatus": "success",
+      "status": {"errorCode": 0, "failureReason": "Other.", "additionalDetails": ""}
+    },
+    {
+      "id": "signin-2",
+      "createdDateTime": "2026-08-22T08:20:00Z",
+      "userPrincipalName": "engineer@example.invalid",
+      "appId": "aaaaaaaa-1111-1111-1111-111111111111",
+      "appDisplayName": "Confidential web application",
+      "resourceDisplayName": "Microsoft Graph",
+      "clientAppUsed": "Mobile Apps and Desktop clients",
+      "ipAddress": "203.0.113.11",
+      "correlationId": "dddddddd-bbbb-1111-1111-111111111111",
+      "conditionalAccessStatus": "failure",
+      "status": {
+        "errorCode": 50011,
+        "failureReason": "The redirect URI specified in the request does not match.",
+        "additionalDetails": ""
+      }
+    }
+  ]
+}
