@@ -12,10 +12,12 @@ over independent sessions.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, TypeVar
 
 import requests
@@ -24,9 +26,9 @@ from requests.models import PreparedRequest
 from urllib3.util.retry import Retry
 
 from entrascope import __version__
-from entrascope.config import Config
+from entrascope.config import Config, NetworkSettings
 from entrascope.logger import get_logger
-from entrascope.models import ApiCallError, ApiError
+from entrascope.models import ApiCallError, ApiError, NetworkTrust
 
 log = get_logger(__name__)
 
@@ -39,6 +41,91 @@ Result = TypeVar("Result")
 #: Headers that name the server side identifier of a failed request.
 CORRELATION_HEADERS = ("client-request-id", "request-id", "x-ms-correlation-request-id")
 REQUEST_ID_HEADERS = ("x-ms-request-id", "request-id")
+
+
+def environment(environ: Mapping[str, str] | None = None) -> Mapping[str, str]:
+    """Return the environment to read, which the tests replace."""
+    return os.environ if environ is None else environ
+
+
+def resolve_proxies(
+    settings: NetworkSettings, environ: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Return the forward proxies named in the environment.
+
+    requests honours the conventional variables on its own when the session
+    trusts the environment. They are resolved explicitly as well so that the
+    doctor command can report exactly what is in force, which is what an
+    engineer behind a corporate proxy needs to see.
+    """
+    source = environment(environ)
+    proxies: dict[str, str] = {}
+    for name in settings.proxy_variables:
+        value = source.get(name, "").strip()
+        if not value:
+            continue
+        scheme = name.split("_")[0].lower()
+        key = "all" if scheme == "all" else scheme
+        proxies.setdefault(key, value)
+    for name in settings.no_proxy_variables:
+        value = source.get(name, "").strip()
+        if value:
+            proxies.setdefault("no_proxy", value)
+            break
+    return proxies
+
+
+def resolve_ca_trust(
+    settings: NetworkSettings, environ: Mapping[str, str] | None = None
+) -> tuple[str | bool, str]:
+    """Return what to verify TLS against, and where that came from.
+
+    A bundle file wins over a directory. requests recognises two of these
+    variables on its own but not the OpenSSL ones, so all of them are resolved
+    here and applied explicitly. Verification is never silently disabled: when
+    nothing is configured the certifi bundle that requests ships is used.
+    """
+    if not settings.verify_tls:
+        return False, "TLS verification is disabled in configuration"
+    source = environment(environ)
+    for name in settings.ca_bundle_variables:
+        value = source.get(name, "").strip()
+        if value and Path(value).is_file():
+            return value, name
+    for name in settings.ca_directory_variables:
+        value = source.get(name, "").strip()
+        if value and Path(value).is_dir():
+            return value, name
+    return True, "the default certificate bundle"
+
+
+def network_trust(
+    config: Config, environ: Mapping[str, str] | None = None
+) -> NetworkTrust:
+    """Describe the proxy and certificate trust in force, for the doctor report."""
+    settings = config.retry.network
+    verify, origin = resolve_ca_trust(settings, environ)
+    proxies = resolve_proxies(settings, environ)
+    return NetworkTrust(
+        trust_environment=settings.trust_environment,
+        verify=verify if isinstance(verify, str) else "",
+        verify_enabled=verify is not False,
+        verify_source=origin,
+        proxies=tuple(sorted(f"{key}={value}" for key, value in proxies.items())),
+    )
+
+
+def verify_setting(
+    config: Config, environ: Mapping[str, str] | None = None
+) -> str | bool:
+    """Return the TLS verification setting for any client, ours or the SDK's.
+
+    azure-identity and azure-monitor-query sit on azure-core, whose default
+    transport is requests, so they take the same value under the name
+    connection_verify.
+    """
+    verify, _ = resolve_ca_trust(config.retry.network, environ)
+    return verify
 
 
 def build_retry(config: Config) -> Retry:
@@ -92,8 +179,15 @@ def bearer_auth(
 def build_session(
     config: Config,
     token_provider: Callable[[], str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> requests.Session:
-    """Build a session carrying the retry policy, pool sizes and user agent."""
+    """Build a session carrying the retry policy, pool sizes and user agent.
+
+    The session honours forward web proxies from the environment and verifies
+    TLS against a certificate authority bundle or directory named there, so
+    that entrascope works unchanged behind a corporate proxy performing TLS
+    inspection.
+    """
     # framework contract: requests expresses configuration as Session and
     # HTTPAdapter objects. They are treated as configuration and carry no logic.
     session = requests.Session()
@@ -107,6 +201,11 @@ def build_session(
     session.headers.update(
         {"User-Agent": user_agent(config), "Accept": "application/json"}
     )
+    network = config.retry.network
+    session.trust_env = network.trust_environment
+    verify, _ = resolve_ca_trust(network, environ)
+    session.verify = verify
+    session.proxies.update(resolve_proxies(network, environ))
     if token_provider is not None:
         session.auth = bearer_auth(token_provider)
     return session

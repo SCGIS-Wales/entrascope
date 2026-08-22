@@ -63,6 +63,15 @@ For unattended use, place client credentials at
 `TenantID`. The file must be mode 0600 inside a directory of mode 0700, and
 entrascope refuses to run otherwise.
 
+## Corporate networks
+
+entrascope honours a forward web proxy from `HTTPS_PROXY`, `HTTP_PROXY`,
+`ALL_PROXY` and `NO_PROXY`, and verifies TLS against a private certificate
+authority named in `ENTRASCOPE_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+`SSL_CERT_FILE`, `CURL_CA_BUNDLE` or the `SSL_CERT_DIR` directory. The same
+trust reaches the token endpoint and Azure Monitor. Run `entrascope doctor` to
+see exactly which proxy and which certificate authority are in force.
+
 ## Documentation
 
 Steering documents live in [docs/steering](docs/steering):

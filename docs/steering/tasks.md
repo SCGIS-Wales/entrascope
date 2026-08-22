@@ -231,6 +231,21 @@ listed again against the phase it blocks.
 I will supply the exact commands and, where a portal step is unavoidable, the
 exact navigation and the Microsoft Learn URL.
 
+### 0.9a Forward proxies and certificate trust
+
+Added during phase 5, at Dejan's request, and implemented there rather than
+reopening phase 2.
+
+EARS: WHEN a forward web proxy is named in the environment, the system SHALL
+route every outbound call through it. WHEN a certificate authority bundle or
+directory is named in the environment, the system SHALL verify TLS against it,
+and SHALL NOT disable verification because a named path does not exist.
+
+The variable names are configuration in the `network` section of
+`config/retry.yaml`. The resolved setting reaches azure-identity and
+azure-monitor-query as well, and `doctor` reports what is in force. Detail in
+`docs/steering/credentials-and-security.md`.
+
 ### 0.10 Branch, pull request and merge protocol
 
 One phase is one pull request. Ten phases, ten pull requests, each one green

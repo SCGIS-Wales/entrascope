@@ -68,6 +68,25 @@ versioning.
   filters, diagnostic categories and KQL template names are all configuration.
 - Microsoft Graph activity is marked as having no Graph route, and asking for
   it that way returns the reason and the diagnostic category it needs.
+- Forward web proxy support from the conventional environment variables, and
+  TLS verification against a certificate authority bundle or directory named in
+  ENTRASCOPE_CA_BUNDLE, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, CURL_CA_BUNDLE or
+  SSL_CERT_DIR. The same trust reaches azure-identity and azure-monitor-query.
+  Verification is never disabled by a path that does not exist.
+- One renderer shared by every surface, with table, JSON and YAML output, one
+  exit code map, and redaction applied to everything that leaves the process.
+- Capability detection: permissions read from the live token rather than a
+  table, licence tier read from the subscribed service plans, and the enabled
+  diagnostic categories read from the Entra diagnostic settings.
+- The doctor command, reporting the network path, the credential file, the
+  identity in use, what the token actually grants, the licence tier, every
+  diagnostic category and every configured capability, each failure carrying
+  its remediation and a documentation link. Authorisation is checked
+  differently for a delegated session, where directory roles apply rather than
+  application permissions.
+- Command line foundation: the --auth, --output, --config-dir and --verbose
+  options, a correlation id per invocation, and deliberate errors rendered as a
+  message and an exit code rather than a stack trace.
 - Error interpretation from configuration: exact and case insensitive lookup, a
   code extracted from a longer message, the specific AADSTS code preferred over
   a generic one such as invalid_client, and a configured default for anything
