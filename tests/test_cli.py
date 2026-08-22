@@ -640,3 +640,153 @@ def test_an_interrupt_leaves_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
     interrupted()
     assert left["code"] == 130
+
+
+@responses.activate
+def test_cli_inspect(authenticated: None) -> None:
+    """Inspecting one application prints the whole report as YAML."""
+    from tests.test_inspect import register as register_inspect
+
+    register_inspect()
+    result = run(["--auth", "file", "inspect", "Confidential web"])
+    assert result.exit_code == 0, result.output
+    parsed = yaml.safe_load(result.stdout)
+    assert parsed["identity"]["display_name"] == "Confidential web application"
+    assert "consent" in parsed["permissions"]
+
+
+@responses.activate
+def test_cli_inspect_as_json(authenticated: None) -> None:
+    """The same report, for a machine."""
+    from tests.test_inspect import register as register_inspect
+
+    register_inspect()
+    result = run(["--auth", "file", "--output", "json", "inspect", "Confidential web"])
+    assert json.loads(result.stdout)["identity"]["application_type"] == (
+        "confidential-client"
+    )
+
+
+@responses.activate
+def test_cli_inspect_without_a_target_and_without_a_terminal(
+    authenticated: None,
+) -> None:
+    """With nothing to draw on it explains how to name one instead."""
+    from tests.test_inspect import register as register_inspect
+
+    register_inspect()
+    result = run(["--auth", "file", "inspect"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "part of a display name" in result.output
+
+
+@responses.activate
+def test_cli_whoami(authenticated: None) -> None:
+    """The identity report names the tenant and what the token carries."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/organization",
+        json={"value": [{"id": "tenant-1", "displayName": "A Tenant"}]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals\(appId="),
+        json={"value": []},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{ROOT}/identity/conditionalAccess/policies",
+        json={"value": []},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://management.azure.com/tenants",
+        json={"value": []},
+        status=200,
+    )
+    result = run(["--auth", "file", "whoami"])
+    assert result.exit_code == 0, result.output
+    parsed = yaml.safe_load(result.stdout)
+    assert parsed["tenant"]["display_name"] == "A Tenant"
+    assert parsed["authentication"]["source"] == "file"
+
+
+@responses.activate
+def test_cli_gallery(authenticated: None) -> None:
+    """The gallery answers whether an application is available ready made."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applicationTemplates",
+        json={
+            "value": [
+                {
+                    "displayName": "Amazon Web Services",
+                    "publisher": "Amazon",
+                    "supportedSingleSignOnModes": ["saml"],
+                }
+            ]
+        },
+        status=200,
+    )
+    result = run(["--auth", "file", "discover", "gallery", "amazon"])
+    assert "Amazon Web Services" in result.output
+    assert "saml" in result.output
+
+
+def test_the_monitor_route_explains_itself_without_a_workspace() -> None:
+    """Being told to pass a flag is no use to somebody who has no workspace."""
+    result = run(["logs", "graph-activity"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "only through Azure Monitor" in result.output
+    assert "logs audit" in result.output
+    assert "diagnostic setting" in result.output
+
+
+def test_the_monitor_route_uses_a_configured_workspace() -> None:
+    """Setting it once should stop the asking."""
+    from entrascope.cli import require_workspace
+    from entrascope.config import load_config
+
+    config = load_config()
+    with_workspace = config.model_copy(
+        update={"tables": config.tables.model_copy(update={"workspace_id": "w-1"})}
+    )
+    assert require_workspace(None, with_workspace) == "w-1"
+    assert require_workspace("explicit", with_workspace) == "explicit"
+
+
+def test_the_servers_explain_a_missing_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half installed dependency should be a sentence, not a stack trace."""
+    from entrascope import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "find_spec", lambda name: None)
+    monkeypatch.setattr(
+        cli_module,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(ImportError("no fastmcp")),
+    )
+    result = run(["serve", "stdio"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "entrascope[mcp]" in result.output
+
+
+def test_the_servers_explain_a_broken_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Installed but unimportable is a different problem with a different fix."""
+    from entrascope import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "find_spec", lambda name: object())
+    monkeypatch.setattr(
+        cli_module,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(ImportError("cannot import name FastMCP")),
+    )
+    result = run(["serve", "http"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "force-reinstall" in result.output

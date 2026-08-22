@@ -249,7 +249,7 @@ def build_server(
     limiter = rate_limit_middleware(settings)
     if limiter is not None:
         server.add_middleware(limiter)
-    register_tools(server, settings, credential_factory(settings, requested))
+    register_tools(server, settings, credential_factory(settings, requested), requested)
     register_health(server, settings)
     log.info(
         "remote server ready",

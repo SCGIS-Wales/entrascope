@@ -23,7 +23,16 @@ graph:
     subscribed_skus: /subscribedSkus
     directory_roles: /directoryRoles
     me: /me
+    me_member_of: /me/memberOf
     organization: /organization
+    service_principal_by_app_id: /servicePrincipals(appId='{app_id}')
+    service_principal_member_of: /servicePrincipals/{object_id}/memberOf
+    granted_app_roles: /servicePrincipals/{object_id}/appRoleAssignments
+    conditional_access_policies: /identity/conditionalAccess/policies
+    administrative_units: /directory/administrativeUnits
+    # The gallery. These are the applications that can be added to a tenant,
+    # which is what somebody means by searching for an application by name.
+    application_templates: /applicationTemplates
 
 azure:
   arm_base_url: https://management.azure.com
@@ -32,8 +41,12 @@ azure:
   diagnostic_settings_api_version: "2017-04-01-preview"
   arm_scope: https://management.azure.com/.default
   log_analytics_scope: https://api.loganalytics.io/.default
+  tenants_api_version: "2020-01-01"
   paths:
     diagnostic_settings: /providers/microsoft.aadiam/diagnosticSettings
+    # Tenants this identity can reach. Azure Resource Manager knows, and
+    # Microsoft Graph does not.
+    tenants: /tenants
 
 authority:
   base_url: https://login.microsoftonline.com
@@ -48,6 +61,19 @@ authority:
   v1:
     issuer_template: https://sts.windows.net/{tenant_id}/
     token_endpoint_template: https://login.microsoftonline.com/{tenant_id}/oauth2/token
+
+portal:
+  # Deep links into the Azure portal, so a name in a listing can be opened.
+  # A terminal that understands hyperlinks makes them clickable; one that does
+  # not shows the name unchanged, and --output plain carries the URL.
+  base_url: https://portal.azure.com
+  application: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/{app_id}
+  application_by_object: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/objectId/{object_id}
+  enterprise_application: https://portal.azure.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/{object_id}
+  user: https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/Overview/userId/{object_id}
+  group: https://portal.azure.com/#view/Microsoft_AAD_IAM/GroupDetailsMenuBlade/~/Overview/groupId/{object_id}
+  audit_logs: https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Audit
+  sign_in_logs: https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/SignIns
 
 protected_resource_metadata:
   well_known_path: /.well-known/oauth-protected-resource

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -266,3 +267,88 @@ def test_stdio_keeps_standard_output_for_the_protocol() -> None:
     )
     assert completed.stdout == b""
     assert b"local server ready" in completed.stderr
+
+
+def leaf_commands() -> list[str]:
+    """Return every command path below the root, other than the servers."""
+    import click
+
+    from entrascope.cli import cli as root
+
+    paths: list[str] = []
+    context = click.Context(root)
+    for name, command in sorted(root.commands.items()):
+        if name == "serve":
+            continue
+        if isinstance(command, click.Group):
+            paths.extend(
+                f"{name} {child}" for child in sorted(command.commands) if child
+            )
+        else:
+            paths.append(name)
+    _ = context
+    return paths
+
+
+def test_the_tool_surface_covers_every_command() -> None:
+    """An assistant must be able to do what an engineer can do.
+
+    The two surfaces run the same functions, so a command with no tool is a
+    gap, not a design decision.
+    """
+    from entrascope.mcp_tools import COMMAND_TOOLS, tool_names
+
+    missing = [path for path in leaf_commands() if path not in COMMAND_TOOLS]
+    assert not missing, f"commands with no tool: {missing}"
+    unknown = [name for name in COMMAND_TOOLS.values() if name not in tool_names()]
+    assert not unknown, f"the map names tools that do not exist: {unknown}"
+
+
+async def test_every_mapped_tool_is_registered(server: Any) -> None:
+    """The map is checked against the running server, not only the source."""
+    from entrascope.mcp_tools import COMMAND_TOOLS
+
+    async with Client(server) as client:
+        registered = {tool.name for tool in await client.list_tools()}
+    assert set(COMMAND_TOOLS.values()) <= registered
+
+
+async def test_the_tools_take_the_arguments_the_commands_take(server: Any) -> None:
+    """A tool that cannot be told what the command can be told is not parity."""
+    expected = {
+        "investigate": {"target", "severity", "limit"},
+        "inspect": {"target", "application_type"},
+        "discover_applications": {"application_type", "expiring_only"},
+        "sign_ins": {"kind", "app_id", "failures_only", "limit"},
+        "gallery_applications": {"term", "limit"},
+        "whoami": {"with_policies"},
+    }
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+    for name, arguments in expected.items():
+        properties = set(tools[name].inputSchema.get("properties", {}))
+        assert arguments <= properties, f"{name} is missing {arguments - properties}"
+
+
+@responses.activate
+async def test_mcp_inspect_tool(server: Any) -> None:
+    """The inspect tool returns the same report the command renders."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications/11111111-1111-1111-1111-111111111111",
+        json=load_fixture("applications")["value"][0],
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals\(appId="),
+        json={"value": []},
+        status=200,
+    )
+    report = await call(server, "inspect", {"target": "Confidential web"})
+    assert report["identity"]["display_name"] == "Confidential web application"
+    assert "consent" in report["permissions"]
+    assert report["urls"]["web_redirect_uris"]

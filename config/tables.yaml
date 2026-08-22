@@ -80,6 +80,9 @@ log_queries:
     diagnostic_category: ProvisioningLogs
     kql_template: ""
 
+# Set this once and the monitor route stops asking for --workspace.
+workspace_id: ""
+
 defaults:
   lookback_hours: 24
   # Deliberately small. A log listing is for reading, and a wall of rows is

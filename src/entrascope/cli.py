@@ -10,6 +10,8 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from functools import wraps
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -27,6 +29,11 @@ from entrascope.doctor import run_checks
 from entrascope.errors import explain, explain_api_error, known_codes, search
 from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
+from entrascope.identity import graph_session_for
+from entrascope.identity import whoami as run_whoami
+from entrascope.inspect import candidates as inspect_candidates
+from entrascope.inspect import inspect as run_inspect
+from entrascope.inspect import search_gallery
 from entrascope.investigate import investigate as run_investigation
 from entrascope.investigate import matches, matches_principal
 from entrascope.logger import bind_context, configure_logging, new_correlation_id
@@ -47,6 +54,7 @@ from entrascope.models import (
     Severity,
 )
 from entrascope.monitor import build_logs_client
+from entrascope.picker import Choice, choose
 from entrascope.render import (
     EXIT_API,
     EXIT_CHECKS_FAILED,
@@ -60,8 +68,13 @@ from entrascope.render import (
     emit,
     emit_error,
     exit_code_for_checks,
+    portal_link,
     render,
+    render_record,
     show_checks,
+    show_yaml,
+    to_payload,
+    yaml_text,
 )
 from entrascope.render import show as show_rows
 
@@ -159,6 +172,15 @@ AUDIT_COLUMNS = (
 #: every one of them shows nothing at all. The identifiers and the rest of the
 #: record are in --output plain, json and yaml.
 AUDIT_TABLE_COLUMNS = ("timestamp", "activity", "result", "initiated_by", "target")
+#: Added to the table when something failed, because the reason is the point.
+AUDIT_FAILURE_COLUMNS = (
+    "timestamp",
+    "activity",
+    "result",
+    "reason",
+    "initiated_by",
+    "target",
+)
 APPLICATION_TABLE_COLUMNS = (
     "display_name",
     "application_type",
@@ -383,6 +405,10 @@ TIMEZONE_HELP = (
     "the zone is named on every timestamp."
 )
 TIMEZONES = ("utc", "local")
+PICK_HELP = (
+    "Number the lines and ask which one to open, then show that record whole "
+    "with its explanation and a link into the portal."
+)
 
 #: One idea, described one way, wherever it appears.
 APP_SELECTOR_HELP = (
@@ -497,14 +523,29 @@ def logs_client(settings: Mapping[str, Any]) -> tuple[Config, Any]:
     return config, build_logs_client(credential, config)
 
 
-def require_workspace(workspace: str | None) -> str:
-    """Return the workspace identifier, or explain that one is needed."""
-    if workspace:
-        return workspace
+def require_workspace(workspace: str | None, config: Config, source: str = "") -> str:
+    """Return the workspace identifier, or explain what to do without one."""
+    resolved = workspace or config.tables.workspace_id
+    if resolved:
+        return resolved
+    alternative = (
+        "This source exists only through Azure Monitor, so without a workspace "
+        "there is nothing to read. Use entrascope logs audit, which reads "
+        "through Microsoft Graph and needs no workspace, or entrascope "
+        "investigate, which uses whatever is available."
+        if source == "graph-activity"
+        else "Or use --route graph, which reads the same events through "
+        "Microsoft Graph and needs no workspace."
+    )
     raise ConfigError(
-        "The Azure Monitor route needs a Log Analytics workspace. Pass "
-        "--workspace with the workspace id, or use --route graph where the "
-        "source supports it."
+        "The Azure Monitor route needs a Log Analytics workspace, and none is "
+        "configured.\n"
+        "  Pass --workspace with the workspace id, or set workspace_id in "
+        "config/tables.yaml to stop being asked.\n"
+        "  Exporting logs to a workspace also needs a diagnostic setting, the "
+        "Security Administrator role, and Entra ID P1 or P2 for the sign in "
+        "categories. Run entrascope doctor to see which are in place.\n"
+        f"  {alternative}"
     )
 
 
@@ -535,6 +576,35 @@ def show(
         columns=table_columns if narrow else columns,
         summary=summary,
     )
+
+
+#: How to get the server dependencies, and how to repair them.
+MCP_MISSING = (
+    "The Model Context Protocol servers need the mcp extra, which is not "
+    "installed.\n  pip install 'entrascope[mcp]'"
+)
+MCP_BROKEN = (
+    "fastmcp is installed but cannot be imported. This is usually fastmcp and "
+    "fastmcp-slim having overlaid the same directory, which leaves it without "
+    "its __init__ file.\n"
+    "  pip install --force-reinstall --no-cache-dir 'entrascope[mcp]'\n"
+    "The underlying error was: {error}"
+)
+
+
+def import_server(module: str) -> Any:
+    """Import one of the server modules, explaining a failure in a sentence.
+
+    A missing or half installed dependency is a common way to meet this tool,
+    and a stack trace out of an import tells the reader nothing they can act
+    on.
+    """
+    try:
+        return import_module(f"entrascope.{module}")
+    except ImportError as error:
+        if find_spec("fastmcp") is None:
+            raise ConfigError(MCP_MISSING) from error
+        raise ConfigError(MCP_BROKEN.format(error=error)) from error
 
 
 def leave_now() -> NoReturn:
@@ -572,6 +642,74 @@ def explanation_for(error: ApiCallError) -> str:
     lines.append(f"Remediation: {explanation.remediation}")
     lines.append(f"See: {explanation.docs_url}")
     return "\n".join(line.strip() for line in lines)
+
+
+def pick_one(
+    rows: Sequence[Any], settings: Mapping[str, Any], columns: Sequence[str]
+) -> None:
+    """Number the rows, ask for one, and show it whole.
+
+    A listing answers what happened. Picking a line answers what happened to
+    that one thing, which is the next question every time.
+    """
+    config: Config = settings["config"]
+    if not rows:
+        return
+    numbered = [
+        {"#": str(index + 1), **to_payload(row)} for index, row in enumerate(rows)
+    ]
+    show_rows(
+        numbered,
+        config,
+        "table",
+        title="Pick a line",
+        columns=("#", *columns),
+        summary="",
+    )
+    choice = click.prompt(
+        "Line to open, or nothing to stop",
+        default="",
+        show_default=False,
+        type=str,
+    ).strip()
+    if not choice:
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(rows):
+        emit_error(f"There is no line {choice}.")
+        raise SystemExit(EXIT_CONFIG)
+    chosen = rows[int(choice) - 1]
+    emit("")
+    emit(render_record(chosen, config, title="The whole record"))
+    emit(explain_record(chosen, config))
+
+
+def explain_record(row: Any, config: Config) -> str:
+    """Explain whatever a record says went wrong, and where to look next."""
+    payload = to_payload(row)
+    if not isinstance(payload, Mapping):
+        return ""
+    code = str(payload.get("reason") or payload.get("failure_reason") or "")
+    error_code = payload.get("error_code")
+    if isinstance(error_code, int) and error_code:
+        code = f"AADSTS{error_code}"
+    lines: list[str] = []
+    if code:
+        explanation = explain(code, config)
+        if explanation.known:
+            lines.extend(
+                [
+                    "",
+                    f"{explanation.code}: {explanation.meaning}",
+                    f"Remediation: {explanation.remediation}",
+                    f"See: {explanation.docs_url}",
+                ]
+            )
+    link = portal_link(payload, "target", config) or portal_link(
+        payload, "display_name", config
+    )
+    if link:
+        lines.extend(["", f"In the portal: {link}"])
+    return "\n".join(lines)
 
 
 def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]:
@@ -755,6 +893,119 @@ def investigate(
         raise SystemExit(EXIT_CHECKS_FAILED)
 
 
+@cli.command("whoami", cls=GlobalOptionCommand)
+@click.option(
+    "--no-policies",
+    is_flag=True,
+    help="Skip the conditional access policies, which need Policy.Read.All.",
+)
+@click.pass_context
+@handled
+def whoami_command(context: click.Context, no_policies: bool) -> None:
+    """Show which tenant and identity entrascope is querying as, and its limits.
+
+    Reports the tenant by name and identifier, the tenants this identity can
+    reach, the identity itself, the application permissions and delegated
+    scopes the token actually carries, the directory roles held, the
+    administrative units that bound them, and the conditional access policies
+    in force.
+
+    Start here when a result is not what you expected. The identity a tool
+    authenticates as is rarely the one anybody had in mind.
+    """
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    auth_context, credential = resolve_auth(config, settings.get("auth"))
+    session = graph_session_for(config, credential)
+    try:
+        report = run_whoami(
+            session,
+            config,
+            credential,
+            auth_context,
+            with_policies=not no_policies,
+        )
+    finally:
+        session.close()
+    output: OutputFormat = settings.get("output", "table")
+    if output == "plain":
+        emit(yaml_text(report, config))
+        return
+    show_yaml(report, config, output)
+
+
+@cli.command("inspect", cls=GlobalOptionCommand)
+@click.argument("target", required=False, default="")
+@click.option("--type", "kinds", multiple=True, help=TYPE_HELP)
+@click.option("--include-first-party", is_flag=True, help=FIRST_PARTY_HELP)
+@click.pass_context
+@handled
+def inspect_command(
+    context: click.Context,
+    target: str,
+    kinds: tuple[str, ...],
+    include_first_party: bool,
+) -> None:
+    """Show everything about one application, as YAML.
+
+    Both objects are shown together, the registration and the enterprise
+    application, because a failure can come from either: the scopes it exposes,
+    the roles it defines, what it asked for against what was actually
+    consented, every URL it is registered with, its credentials and their
+    expiry, and its single sign on configuration.
+
+    Give part of a display name, an application id or an object id. With no
+    argument and a terminal to draw on, it offers the list to choose from.
+
+        entrascope inspect                          choose from the list
+        entrascope inspect saml2                    by name
+        entrascope inspect d6bdb5c4-1722-4c63-930f-fa264d4778bc
+        entrascope inspect --type managed-identity  narrowed by type
+    """
+    settings = settings_of(context)
+    config, session, token = authenticated_session(settings)
+    try:
+        if not target:
+            target = choose_application(
+                session, config, token, include_first_party=include_first_party
+            )
+        report = run_inspect(session, config, token, target=target, kinds=list(kinds))
+    finally:
+        session.close()
+    output: OutputFormat = settings.get("output", "table")
+    if output == "plain":
+        emit(yaml_text(report, config))
+        return
+    show_yaml(report, config, output)
+
+
+def choose_application(
+    session: Session,
+    config: Config,
+    token: Callable[[], str],
+    *,
+    include_first_party: bool,
+) -> str:
+    """Offer the applications to choose from, or explain how to name one."""
+    rows = inspect_candidates(
+        session, config, token, include_first_party=include_first_party
+    )
+    if not rows:
+        raise ConfigError("There are no applications this identity can see.")
+    picked = choose(
+        [Choice(key=key, label=label) for key, label in rows],
+        title="Applications, sorted by name",
+    )
+    if picked:
+        return picked
+    raise ConfigError(
+        "Nothing chosen. Name an application instead: part of a display name, "
+        "an application id or an object id. There are "
+        f"{len(rows)} to choose from, and entrascope discover applications "
+        "lists them."
+    )
+
+
 @cli.command(cls=GlobalOptionCommand)
 @click.pass_context
 @handled
@@ -904,6 +1155,49 @@ def discover_service_principals_command(
     )
 
 
+@discover.command("gallery")
+@click.argument("term", required=False, default="")
+@click.option("--limit", type=int, default=None, help=LIMIT_HELP)
+@click.pass_context
+@handled
+def discover_gallery(context: click.Context, term: str, limit: int | None) -> None:
+    """Search the gallery of applications that can be added to the tenant.
+
+    This is the list the portal searches when you add an enterprise
+    application, so it answers whether something is available ready made, and
+    which single sign on modes it supports.
+
+        entrascope discover gallery saml
+        entrascope discover gallery "amazon web services"
+    """
+    settings = settings_of(context)
+    config, session, _ = authenticated_session(settings)
+    try:
+        rows, note = search_gallery(session, config, term, limit or 50)
+    finally:
+        session.close()
+    if note:
+        emit_error(note)
+    projected = [
+        {
+            "display_name": row.get("displayName"),
+            "publisher": row.get("publisher"),
+            "categories": row.get("categories"),
+            "single_sign_on_modes": row.get("supportedSingleSignOnModes"),
+            "id": row.get("id"),
+        }
+        for row in rows
+    ]
+    show(
+        projected,
+        settings,
+        f"Gallery applications matching {term}" if term else "Gallery applications",
+        ("display_name", "publisher", "single_sign_on_modes", "categories", "id"),
+        "gallery applications",
+        ("display_name", "publisher", "single_sign_on_modes"),
+    )
+
+
 @cli.group(epilog=LOGS_EPILOG, no_args_is_help=True)
 def logs() -> None:
     """Read Entra and Azure Monitor logs.
@@ -931,6 +1225,7 @@ logs.command_class = GlobalOptionCommand
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
 @click.option("--failures-only", is_flag=True, help="Show only operations that failed.")
+@click.option("--pick", is_flag=True, help=PICK_HELP)
 @click.pass_context
 @handled
 def logs_audit(
@@ -941,6 +1236,7 @@ def logs_audit(
     limit: int | None,
     app_selector: str,
     failures_only: bool,
+    pick: bool,
 ) -> None:
     """Read directory changes to applications, the ApplicationManagement category."""
     settings = settings_of(context)
@@ -949,7 +1245,7 @@ def logs_audit(
         rows = query_audit_monitor(
             client,
             config,
-            require_workspace(workspace),
+            require_workspace(workspace, config),
             target=app_selector,
             lookback_hours=hours,
             row_limit=limit,
@@ -964,17 +1260,29 @@ def logs_audit(
             rows = tuple(
                 row for row in rows if app_selector.lower() in row.target.lower()
             )
+    failures = set(settings["config"].fields.findings.audit_failure_results)
     if failures_only:
-        failures = set(settings["config"].fields.findings.audit_failure_results)
         rows = tuple(row for row in rows if row.result.lower() in failures)
+    # The reason is only worth a column when something failed, and then it is
+    # the whole point of looking.
+    anything_failed = any(row.result.lower() in failures for row in rows)
+    table_columns = AUDIT_FAILURE_COLUMNS if anything_failed else AUDIT_TABLE_COLUMNS
+    if pick:
+        pick_one(rows, settings, table_columns)
+        return
     show(
         rows,
         settings,
         "Application management audit events",
         AUDIT_COLUMNS,
         "audit events",
-        AUDIT_TABLE_COLUMNS,
+        table_columns,
     )
+    if anything_failed and not failures_only:
+        emit_error(
+            "Something failed above. Narrow with --failures-only, open one "
+            "line with --pick, or run entrascope investigate for the cause."
+        )
 
 
 @logs.command("signins")
@@ -989,6 +1297,7 @@ def logs_audit(
 @click.option("--workspace", default=None, help=WORKSPACE_HELP)
 @click.option("--app", "app_id", default="", help=APP_SELECTOR_HELP)
 @click.option("--failures-only", is_flag=True, help="Show only sign ins that failed.")
+@click.option("--pick", is_flag=True, help=PICK_HELP)
 @click.option("--hours", type=int, default=None, help=HOURS_HELP)
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.pass_context
@@ -1000,6 +1309,7 @@ def logs_signins(
     workspace: str | None,
     app_id: str,
     failures_only: bool,
+    pick: bool,
     hours: int | None,
     limit: int | None,
 ) -> None:
@@ -1014,7 +1324,7 @@ def logs_signins(
         rows = query_sign_ins_monitor(
             client,
             config,
-            require_workspace(workspace),
+            require_workspace(workspace, config),
             kind=kind,
             app_id=app_id,
             lookback_hours=hours,
@@ -1035,6 +1345,9 @@ def logs_signins(
             )
         finally:
             session.close()
+    if pick:
+        pick_one(rows, settings, SIGN_IN_TABLE_COLUMNS)
+        return
     show(
         rows,
         settings,
@@ -1069,7 +1382,7 @@ def logs_graph_activity(
     rows = query_graph_activity(
         client,
         config,
-        require_workspace(workspace),
+        require_workspace(workspace, config, "graph-activity"),
         app_id=app_id,
         lookback_hours=hours,
         row_limit=limit,
@@ -1195,11 +1508,10 @@ def serve_stdio(context: click.Context) -> None:
     credential file exactly as they do for every other command. Standard output
     carries the protocol, so logging goes to standard error as JSON lines.
     """
-    from entrascope.mcp_stdio import build_server, run
-
+    server_module = import_server("mcp_stdio")
     settings = settings_of(context)
     config: Config = settings["config"]
-    run(build_server(config, settings.get("auth")))
+    server_module.run(server_module.build_server(config, settings.get("auth")))
 
 
 @serve.command("http")
@@ -1217,8 +1529,7 @@ def serve_http(context: click.Context, host: str | None, port: int | None) -> No
     Terminate TLS at a reverse proxy and set the canonical URI, which appears
     in the protected resource metadata and which clients bind their tokens to.
     """
-    from entrascope.mcp_http import run
-
+    server_module = import_server("mcp_http")
     settings = settings_of(context)
     config: Config = settings["config"]
     if host or port:
@@ -1232,7 +1543,7 @@ def serve_http(context: click.Context, host: str | None, port: int | None) -> No
         config = config.model_copy(
             update={"server": config.server.model_copy(update={"transport": transport})}
         )
-    run(config)
+    server_module.run(config)
 
 
 def main() -> None:
