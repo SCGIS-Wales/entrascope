@@ -24,7 +24,7 @@ from entrascope import __version__
 from entrascope.config import Config
 from entrascope.http import build_session, get_json
 from entrascope.logger import get_logger
-from entrascope.models import ApiCallError, EntrascopeError
+from entrascope.models import EntrascopeError
 
 log = get_logger(__name__)
 
@@ -71,7 +71,12 @@ def read_cache(config: Config) -> tuple[Release | None, bool]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError, ValueError:
         return None, False
-    fetched = float(payload.get("fetched_at", 0))
+    if not isinstance(payload, dict):
+        return None, False
+    try:
+        fetched = float(payload.get("fetched_at", 0))
+    except TypeError, ValueError:
+        return None, False
     fresh = (time.time() - fetched) < settings.interval_hours * 3600
     version = str(payload.get("version", ""))
     if not version:
@@ -118,8 +123,8 @@ def fetch_release(config: Config) -> Release | None:
     session = build_session(quick)
     try:
         body = get_json(session, releases.latest_url, quick, source="releases")
-    except (ApiCallError, OSError) as error:
-        log.debug("could not read the release feed: %s", error)
+    except Exception as error:
+        log.debug("could not read the release feed: %r", error)
         return None
     finally:
         session.close()
@@ -141,7 +146,27 @@ def check_disabled(config: Config, environ: dict[str, str] | None = None) -> boo
 def newer_release(
     config: Config, *, force: bool = False, environ: dict[str, str] | None = None
 ) -> Release | None:
-    """Return a newer release if there is one, using the cache unless forced."""
+    """Return a newer release if there is one, using the cache unless forced.
+
+    Nothing this function can meet is worth failing a command over. A corrupt
+    cache, a proxy answering with a sign in page, a clock that makes a
+    timestamp nonsense, a release tag in a shape nobody expected: each of them
+    means the same thing, which is that we do not know, and not knowing is a
+    great deal less important than the command the engineer actually ran. So
+    the whole of it sits behind one boundary rather than a list of the failures
+    somebody thought of.
+    """
+    try:
+        return _newer_release(config, force=force, environ=environ)
+    except Exception as error:
+        log.debug("the version check failed and was ignored: %r", error)
+        return None
+
+
+def _newer_release(
+    config: Config, *, force: bool, environ: dict[str, str] | None
+) -> Release | None:
+    """Work out whether a newer release exists. Never called directly."""
     if check_disabled(config, environ) and not force:
         return None
     cached, fresh = read_cache(config)

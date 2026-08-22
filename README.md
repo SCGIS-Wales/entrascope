@@ -14,6 +14,18 @@ engineers troubleshoot authentication and authorisation failures.
 
 ## What it does
 
+- **Diagnosis.** `investigate` gathers credentials, directory changes and sign
+  in failures, applies a set of rules and ranks what it finds worst first, with
+  the remediation for each. Tenant wide, or narrowed to one application.
+- **Inspection.** `inspect` shows one application in full: the registration and
+  the enterprise application together, what it exposes, what it asked for
+  against what was consented, every URL, and its credentials.
+- **Identity.** `whoami` says which tenant and identity you are querying as,
+  what the token actually grants, the directory roles held and the conditional
+  access policies in force.
+- **Readiness.** `doctor` reports the network path, the credential file, the
+  licence tier and every diagnostic category, each failure with its
+  remediation.
 - **Discovery.** Enumerate application registrations and enterprise
   applications of every type, and project sign in audience, redirect URIs,
   requested and granted permissions, owners, credentials and their expiry,
@@ -22,10 +34,8 @@ engineers troubleshoot authentication and authorisation failures.
 - **Log interrogation.** Read Entra audit logs, interactive and non interactive
   user sign ins, service principal and managed identity sign ins, Microsoft
   Graph activity and provisioning logs.
-- **Capability detection.** Report when the logging you need is not enabled,
-  which licence tier it requires and how to switch it on.
 - **Error explanation.** Map AADSTS and Microsoft Graph error codes to meaning,
-  likely cause and remediation.
+  likely cause and remediation, with no credentials needed.
 
 ## Three surfaces, one core
 
@@ -75,11 +85,12 @@ python3.14 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 ## Authentication
 
-The quickest route needs nothing but an Azure CLI session:
+The quickest route needs nothing but an Azure CLI session. No flag, because
+that session is tried automatically when there is no credential file:
 
 ```bash
 az login
-entrascope doctor --auth azure-cli
+entrascope doctor
 ```
 
 For unattended use, place client credentials at
@@ -89,9 +100,10 @@ entrascope refuses to run otherwise.
 
 ## Using it
 
-Run `entrascope` with no arguments and it tells you what it can do. Every group
-and every command carries its own help and worked examples, so `--help` is
-always the next step.
+Run `entrascope` with no arguments and it tells you what it can do, then offers
+the commands to choose from. Every group does the same, and every command
+carries its own help and worked examples. Piped or in a script, all of them
+print their help and exit, so nothing that automates this changes.
 
 ### Terminology, used the same way throughout
 
@@ -184,6 +196,26 @@ entrascope errors list
 ```
 
 `discover apps` and `discover sps` still work as short forms.
+
+### The types an application is classified as
+
+`--type` takes one of these. The registration decides the first six; the last
+four are what a service principal itself determines.
+
+| Type | What it means |
+| --- | --- |
+| `confidential-client` | holds a secret or a certificate |
+| `web-client` | a web redirect URI and no credential |
+| `single-page-application` | authorization code with a proof key, no secret |
+| `native-or-mobile` | a public client redirect URI and no credential |
+| `public-client` | nothing registered that says how it authenticates |
+| `api-or-resource` | exposes an API and signs nobody in |
+| `workload-identity-federation` | a federated credential rather than a secret |
+| `saml-gallery` | SAML single sign on, from the gallery |
+| `saml-non-gallery` | SAML single sign on, configured by hand |
+| `managed-identity` | created by Azure alongside a resource |
+| `enterprise-application` | a service principal whose client type is decided by its registration |
+| `legacy` | predates the current application model |
 
 ### Reading the same data two ways
 

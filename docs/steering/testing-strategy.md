@@ -59,6 +59,15 @@ the error mapping changes, and whatever it finds becomes an offline test. The
 codes it observed are now covered by name in `test_errors.py`, and the
 classification rules it corrected by fixtures in `test_discovery.py`.
 
+## The README
+
+Documentation drifts the moment a command is renamed, and nobody notices until
+somebody types what it said. Every entrascope command inside a fenced block in
+the README is resolved against the real command line, with its real options,
+and the application types, the output formats, the authentication sources and
+the top level commands are each checked against the code that defines them.
+Links to files in the repository are checked to exist.
+
 ## Speed
 
 The whole suite runs offline and finishes in seconds. A test that needs a

@@ -7,6 +7,28 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- The version check cannot fail a command. Every step of it now sits behind one
+  boundary rather than a list of the failures somebody thought of, and the
+  caller has a second one, so no future change to the check can stop a command
+  running. A cache holding valid JSON of the wrong shape, a timestamp that is
+  not a number and a release tag in an unexpected shape are each ignored.
+- A value typed at a prompt is a value. Without a separator, an error message
+  beginning with a dash, or the word --help, was parsed as an option instead of
+  answered.
+- Whatever the installer prints during an upgrade goes through redaction, since
+  an index URL can carry credentials and the installer echoes it.
+
+### Changed
+- The README is checked by the test suite. Every command inside a fenced block
+  is resolved against the real command line with its real options, and the
+  application types, output formats, authentication sources and top level
+  commands are checked against the code that defines them.
+- The README no longer tells somebody to pass --auth azure-cli for the quick
+  route, which has not been needed since the Azure CLI session began resolving
+  automatically, and it now documents the application types and the commands
+  added since it was written.
+
 ### Added
 - entrascope upgrade, which works out how this copy was installed and uses the
   right command through the running interpreter rather than whichever pip is on
