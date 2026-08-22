@@ -268,6 +268,24 @@ def to_api_error(response: requests.Response, source: str) -> ApiError:
     )
 
 
+#: What went wrong at the transport, named so that the remediation can differ.
+TRANSPORT_FAILURES: tuple[tuple[type[Exception], str], ...] = (
+    (requests.exceptions.SSLError, "TlsFailure"),
+    (requests.exceptions.ProxyError, "ProxyFailure"),
+    (requests.exceptions.ConnectTimeout, "ConnectTimeout"),
+    (requests.exceptions.ReadTimeout, "ReadTimeout"),
+    (requests.exceptions.ConnectionError, "ConnectionFailed"),
+)
+
+
+def transport_failure(error: Exception) -> str:
+    """Name a transport failure, so that it can be explained like any other."""
+    for kind, name in TRANSPORT_FAILURES:
+        if isinstance(error, kind):
+            return name
+    return "TransportFailure"
+
+
 def request(
     session: requests.Session,
     method: str,
@@ -285,13 +303,27 @@ def request(
     structured error the whole tool uses.
     """
     started = time.monotonic()
-    response = session.request(
-        method,
-        url,
-        params=dict(params) if params else None,
-        json=json_body,
-        timeout=timeouts(config),
-    )
+    try:
+        response = session.request(
+            method,
+            url,
+            params=dict(params) if params else None,
+            json=json_body,
+            timeout=timeouts(config),
+        )
+    except requests.RequestException as error:
+        # A refused connection, a name that does not resolve, a proxy that will
+        # not talk to us, or a read that timed out. None of these is a reply,
+        # so there is no status to report, and a stack trace out of the
+        # transport tells the reader nothing they can act on.
+        raise ApiCallError(
+            ApiError(
+                status=0,
+                code=transport_failure(error),
+                message=str(error),
+                source=source,
+            )
+        ) from error
     elapsed_ms = round((time.monotonic() - started) * 1000)
     log.debug(
         "%s %s returned %s",
@@ -301,14 +333,14 @@ def request(
         extra={"elapsed_ms": elapsed_ms, "api": source},
     )
     if not response.ok:
-        error = to_api_error(response, source)
+        failure = to_api_error(response, source)
         log.warning(
             "%s call failed: %s",
             source,
-            error.summary(),
-            extra={"elapsed_ms": elapsed_ms, "api": source, "status": error.status},
+            failure.summary(),
+            extra={"elapsed_ms": elapsed_ms, "api": source, "status": failure.status},
         )
-        raise ApiCallError(error)
+        raise ApiCallError(failure)
     return response
 
 
@@ -322,7 +354,24 @@ def get_json(
 ) -> dict[str, Any]:
     """Perform one GET and return the decoded body."""
     response = request(session, "GET", url, config, params=params, source=source)
-    body = response.json()
+    try:
+        body = response.json()
+    except ValueError as error:
+        # A success status with something that is not JSON in it. A proxy sign
+        # in page is the usual cause, and reporting it as such is more use than
+        # a decoding error.
+        raise ApiCallError(
+            ApiError(
+                status=response.status_code,
+                code="UndecodableBody",
+                message=(
+                    "The response was not JSON. A proxy or a captive portal "
+                    f"answering in place of the service is the usual cause. "
+                    f"The first of it was: {response.text[:200]!r}"
+                ),
+                source=source,
+            )
+        ) from error
     if not isinstance(body, dict):
         raise ApiCallError(
             ApiError(

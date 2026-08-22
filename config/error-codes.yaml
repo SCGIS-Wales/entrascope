@@ -440,6 +440,69 @@ errors:
   # Microsoft Graph
   # ----------------------------------------------------------------------
 
+  # ----------------------------------------------------------------------
+  # The network, before any service was reached
+  # ----------------------------------------------------------------------
+
+  ConnectionFailed:
+    meaning: The service could not be reached at all.
+    likely_cause: >
+      No route, a name that does not resolve, or a firewall or proxy refusing
+      the connection.
+    remediation: >
+      Check the network path with entrascope doctor, which reports the proxy
+      and the certificate authority in force. Behind a corporate proxy set
+      HTTPS_PROXY, and NO_PROXY for the addresses that bypass it.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  TlsFailure:
+    meaning: The TLS handshake failed.
+    likely_cause: >
+      A proxy inspecting TLS presents its own certificate, and the certificate
+      authority that signed it is not trusted here.
+    remediation: >
+      Point ENTRASCOPE_CA_BUNDLE, REQUESTS_CA_BUNDLE or SSL_CERT_FILE at the
+      certificate authority bundle your organisation uses. Run entrascope
+      doctor to see which one is in force.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  ProxyFailure:
+    meaning: The proxy refused or could not complete the connection.
+    likely_cause: >
+      The proxy address is wrong, it requires authentication, or it does not
+      allow the destination.
+    remediation: >
+      Check HTTPS_PROXY and NO_PROXY. Run entrascope doctor, which reports the
+      proxy it is using.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  ConnectTimeout:
+    meaning: The connection was not established within the timeout.
+    likely_cause: A firewall dropping the packets, or a slow or absent route.
+    remediation: >
+      Confirm the address is reachable from here. The timeout is
+      connect_timeout_seconds in config/retry.yaml.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  ReadTimeout:
+    meaning: The service accepted the connection and then did not answer in time.
+    likely_cause: >
+      A slow query, most often a wide log query, or a service under load.
+    remediation: >
+      Narrow the query with --hours or --limit, or raise
+      read_timeout_seconds in config/retry.yaml.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
+  UndecodableBody:
+    meaning: The reply was not JSON.
+    likely_cause: >
+      A proxy or a captive portal answering in place of the service, usually
+      with a sign in page.
+    remediation: >
+      Check the proxy configuration. entrascope doctor reports the proxy in
+      force.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+
   Request_ResourceNotFound:
     meaning: The object named in the request does not exist.
     likely_cause: >

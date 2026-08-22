@@ -88,6 +88,22 @@ that indicate the Entra ID tier.
 One file per query template, parameterised with named placeholders. Queries are
 never assembled by concatenation in code.
 
+## Where it comes from at run time
+
+Searched in this order, and the first that holds `endpoints.yaml` wins:
+
+1. A directory named with `--config-dir`. This one is required rather than
+   preferred, so a typo fails instead of quietly using another.
+2. `ENTRASCOPE_CONFIG_DIR`.
+3. `entrascope/_config` inside the installed package, which the wheel carries
+   by mapping the repository `config` directory into it.
+4. The repository `config` directory, which is what a development checkout uses.
+
+Because an installed copy sits inside the package and is replaced on upgrade,
+`entrascope config export` takes a copy to edit and `entrascope config path`
+says which directory is in force. A test asserts the wheel still carries the
+configuration, because that mapping is easy to lose in a packaging change.
+
 ## Rules
 
 - A new endpoint means a new entry in `endpoints.yaml`, not a literal.

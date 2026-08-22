@@ -19,7 +19,7 @@ import sys
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 from entrascope.config import Config, Logging
 from entrascope.redaction import redact
@@ -165,17 +165,6 @@ def surface_settings(settings: Logging, surface: str) -> tuple[str, str]:
     return style, destination
 
 
-def open_destination(destination: str) -> TextIO:
-    """Return the stream a destination names."""
-    if destination == "stdout":
-        return sys.stdout
-    if destination == "stderr":
-        return sys.stderr
-    path = Path(destination).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path.open("a", encoding="utf-8")
-
-
 def configure_logging(
     config: Config,
     surface: str = "cli",
@@ -191,7 +180,11 @@ def configure_logging(
     logger = logging.getLogger(ROOT_NAME)
     for existing in list(logger.handlers):
         logger.removeHandler(existing)
-    handler = logging.StreamHandler(open_destination(destination))
+        # Removing a handler does not close what it was writing to. A file
+        # handler closes its own file here; a stream handler leaves the
+        # standard streams alone.
+        existing.close()
+    handler = build_handler(destination)
     handler.setFormatter(_Formatter(style))
     # The filter is attached to the handler rather than to the logger. A filter
     # on a logger is not applied to records propagated from its children, and
@@ -213,6 +206,26 @@ def quieten(settings: Logging, verbose: bool = False) -> None:
     """
     for name, level in settings.quiet_loggers.items():
         logging.getLogger(name).setLevel(logging.DEBUG if verbose else level.upper())
+
+
+def build_handler(destination: str) -> logging.Handler:
+    """Build the handler for a destination.
+
+    A file gets a handler that owns it, so that closing the handler closes the
+    file. A standard stream gets one that owns nothing, so that closing the
+    handler leaves the stream alone. Handing a file object to a stream handler
+    gives neither, and leaks the file on every reconfiguration.
+    """
+    if destination in ("stdout", "stderr"):
+        # framework contract: the logging module expresses a destination as a
+        # handler object.
+        return logging.StreamHandler(
+            sys.stdout if destination == "stdout" else sys.stderr
+        )
+    path = Path(destination).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # framework contract: a file handler owns and closes its file.
+    return logging.FileHandler(path, encoding="utf-8")
 
 
 def get_logger(name: str) -> logging.Logger:

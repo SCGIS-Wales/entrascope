@@ -54,6 +54,10 @@ paging:
   max_pages: 1000
   # Endpoints that reject a custom page size with Request_UnsupportedQuery.
   # Microsoft Graph accepts $top on most collections and refuses it on these.
+  # The most objects any one enumeration will read. A large tenant holds tens
+  # of thousands of service principals, and an investigation that walks them
+  # all is neither quick nor useful. A truncated answer always says so.
+  max_objects: 2000
   no_page_size:
     - subscribed_skus
     - organization

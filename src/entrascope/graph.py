@@ -8,6 +8,7 @@ rules and would hide the endpoints the guard test checks for.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from itertools import islice
@@ -101,10 +102,21 @@ def token_provider(
     cannot straddle an expiry.
     """
     cache: dict[str, tuple[str, float]] = {}
+    # The provider is shared by every worker in a fan out, and two of them
+    # missing the cache at the same moment would each ask the authority for a
+    # token nobody needed.
+    lock = threading.Lock()
 
     def provide() -> str:
         cached = cache.get(scope)
         now = clock()
+        if cached is not None and cached[1] - TOKEN_REFRESH_MARGIN_SECONDS > now:
+            return cached[0]
+        with lock:
+            return acquire(now)
+
+    def acquire(now: float) -> str:
+        cached = cache.get(scope)
         if cached is not None and cached[1] - TOKEN_REFRESH_MARGIN_SECONDS > now:
             return cached[0]
         try:

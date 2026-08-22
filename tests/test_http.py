@@ -424,3 +424,58 @@ def test_the_correlation_id_reaches_the_workers(config: Config) -> None:
         return get_correlation_id()
 
     assert set(fan_out([1, 2, 3], work, config)) == {correlation}
+
+
+@responses.activate
+def test_a_refused_connection_is_the_structured_error(config: Config) -> None:
+    """No reply is not a reply, and a transport trace tells nobody anything."""
+    responses.add(
+        responses.GET, GRAPH, body=requests.exceptions.ConnectionError("refused")
+    )
+    with pytest.raises(ApiCallError) as raised:
+        get_json(build_session(config), GRAPH, config)
+    assert raised.value.error.code == "ConnectionFailed"
+    assert raised.value.error.status == 0
+
+
+@responses.activate
+def test_a_certificate_failure_is_named_separately(config: Config) -> None:
+    """A proxy inspecting TLS needs a different remediation from a dead route."""
+    responses.add(responses.GET, GRAPH, body=requests.exceptions.SSLError("bad cert"))
+    with pytest.raises(ApiCallError) as raised:
+        get_json(build_session(config), GRAPH, config)
+    assert raised.value.error.code == "TlsFailure"
+
+
+@responses.activate
+def test_a_read_timeout_is_named_separately(config: Config) -> None:
+    """A slow query and an unreachable service are different problems."""
+    responses.add(responses.GET, GRAPH, body=requests.exceptions.ReadTimeout("slow"))
+    with pytest.raises(ApiCallError) as raised:
+        get_json(build_session(config), GRAPH, config)
+    assert raised.value.error.code == "ReadTimeout"
+
+
+@responses.activate
+def test_a_body_that_is_not_json_says_so(config: Config) -> None:
+    """A captive portal answering with a sign in page is the usual cause."""
+    responses.add(
+        responses.GET,
+        GRAPH,
+        body="<html>sign in</html>",
+        status=200,
+        content_type="text/html",
+    )
+    with pytest.raises(ApiCallError) as raised:
+        get_json(build_session(config), GRAPH, config)
+    assert raised.value.error.code == "UndecodableBody"
+    assert "proxy" in raised.value.error.message
+
+
+def test_no_reply_is_not_reported_as_a_reply() -> None:
+    """Saying the service returned status zero would be nonsense."""
+    from entrascope.models import ApiError
+
+    summary = ApiError(status=0, code="ConnectionFailed", message="no route").summary()
+    assert summary.startswith("could not reach")
+    assert "returned 0" not in summary

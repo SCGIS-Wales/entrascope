@@ -287,3 +287,34 @@ def test_verbose_restores_the_third_party_loggers(config: Config) -> None:
     """Debugging a dependency needs the dependency's own account of itself."""
     configure_logging(config, surface="cli", level="DEBUG")
     assert logging.getLogger("azure.identity").level == logging.DEBUG
+
+
+def test_reconfiguring_closes_the_file_it_was_writing_to(
+    tmp_path: Path, config: Config
+) -> None:
+    """Removing a handler does not close its file, and a leaked one stays open."""
+    first = tmp_path / "one.log"
+    second = tmp_path / "two.log"
+    handles = []
+    for destination in (first, second):
+        settings = config.model_copy(
+            update={
+                "logging": config.logging.model_copy(
+                    update={"destination": str(destination), "format": "json"}
+                )
+            }
+        )
+        logger = configure_logging(settings, surface="unknown-surface")
+        handles.append(getattr(logger.handlers[0], "stream", None))
+    assert handles[0] is None or handles[0].closed
+    assert handles[1] is not None and not handles[1].closed
+
+
+def test_the_standard_streams_are_never_closed(config: Config) -> None:
+    """Closing standard error would take the rest of the run with it."""
+    import sys
+
+    configure_logging(config, surface="mcp_stdio")
+    configure_logging(config, surface="cli")
+    assert not sys.stderr.closed
+    assert not sys.stdout.closed

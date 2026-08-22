@@ -169,6 +169,7 @@ class ConcurrencySettings(_Frozen):
 class PagingSettings(_Frozen):
     page_size: int
     max_pages: int
+    max_objects: int = 2000
     no_page_size: tuple[str, ...] = ()
 
 

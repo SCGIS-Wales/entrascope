@@ -791,3 +791,46 @@ def test_the_servers_explain_a_broken_dependency(
     result = run(["serve", "http"])
     assert result.exit_code == EXIT_CONFIG
     assert "force-reinstall" in result.output
+
+
+def test_config_path_says_where_it_reads_from() -> None:
+    """An installed tool reads from inside the package, which surprises people."""
+    result = run(["config", "path"])
+    assert result.exit_code == 0
+    assert "_config" in result.output
+    assert "in use" in result.output
+
+
+def test_config_export_takes_a_copy(tmp_path: Path) -> None:
+    """The packaged copy is replaced on upgrade, so an edit needs a copy."""
+    target = tmp_path / "mine"
+    result = run(["config", "export", str(target)])
+    assert result.exit_code == 0
+    assert (target / "endpoints.yaml").is_file()
+    assert (target / "kql" / "graph_activity.kql").is_file()
+    assert "ENTRASCOPE_CONFIG_DIR" in result.output
+
+
+def test_config_export_refuses_to_clobber(tmp_path: Path) -> None:
+    """Overwriting somebody's edited configuration must be asked for."""
+    target = tmp_path / "mine"
+    run(["config", "export", str(target)])
+    again = run(["config", "export", str(target)])
+    assert again.exit_code == EXIT_CONFIG
+    assert "--force" in again.output
+    assert run(["config", "export", str(target), "--force"]).exit_code == 0
+
+
+def test_config_show_prints_one_file() -> None:
+    """Reading the file in force, whichever directory that is."""
+    result = run(["config", "show", "tables.yaml"])
+    assert result.exit_code == 0
+    assert "diagnostic_categories" in result.output
+
+
+def test_config_show_refuses_a_path_outside_the_directory() -> None:
+    """A name is a name, not a path to anywhere on the machine."""
+    for name in ("../../etc/passwd", "/etc/passwd"):
+        result = run(["config", "show", name])
+        assert result.exit_code == EXIT_CONFIG
+        assert "No configuration file named" in result.output

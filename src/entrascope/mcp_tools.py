@@ -15,7 +15,7 @@ from typing import Any, cast
 from azure.core.credentials import TokenCredential
 from fastmcp import FastMCP
 
-from entrascope.config import Config
+from entrascope.config import Config, read_text_file
 from entrascope.credentials import resolve_auth
 from entrascope.discovery import discover_applications, discover_service_principals
 from entrascope.doctor import run_checks
@@ -35,7 +35,7 @@ from entrascope.logs import (
     query_sign_ins_monitor,
     sign_in_kinds,
 )
-from entrascope.models import AuthSource, Severity
+from entrascope.models import AuthSource, ConfigError, Severity
 from entrascope.monitor import build_logs_client
 from entrascope.render import payload_for
 
@@ -151,6 +151,31 @@ def register_tools(
         finally:
             session.close()
         return dict(payload(result, config))
+
+    @server.tool(
+        name="configuration",
+        description=(
+            "Read the configuration this tool runs on: where it is being read "
+            "from, and the contents of one file. Every endpoint, table name, "
+            "error code and vocabulary lives there, so this is how to find out "
+            "what the tool knows."
+        ),
+    )
+    def configuration(name: str = "") -> dict[str, Any]:
+        if not name:
+            return {
+                "directory": str(config.root),
+                "files": sorted(item.name for item in config.root.glob("*.yaml")),
+                "kql_templates": sorted(
+                    item.stem for item in (config.root / "kql").glob("*.kql")
+                ),
+            }
+        path = (config.root / name).resolve()
+        if not path.is_relative_to(config.root.resolve()) or not path.is_file():
+            raise ConfigError(
+                f"No configuration file named {name}. Ask with no name for the list."
+            )
+        return {"name": name, "contents": read_text_file(path)}
 
     @server.tool(
         name="whoami",
@@ -455,6 +480,19 @@ COMMAND_TOOLS: dict[str, str] = {
     "errors explain": "explain_error",
     "errors list": "list_error_codes",
     "errors search": "list_error_codes",
+    "config path": "configuration",
+    "config show": "configuration",
+}
+
+#: Commands deliberately absent from the tool surface, and why. An assistant
+#: should not be writing to somebody's disk on its own initiative, and there is
+#: nothing it could learn by doing so that the configuration tool cannot tell
+#: it by reading.
+NOT_EXPOSED: dict[str, str] = {
+    "config export": (
+        "Writes files to the machine. An assistant reads the configuration "
+        "with the configuration tool instead."
+    ),
 }
 
 
@@ -463,6 +501,7 @@ def tool_names() -> tuple[str, ...]:
     return (
         "doctor",
         "investigate",
+        "configuration",
         "whoami",
         "inspect",
         "gallery_applications",

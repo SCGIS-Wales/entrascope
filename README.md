@@ -168,6 +168,23 @@ diagnostic setting and the Log Analytics Reader role, and gives longer
 retention. Microsoft Graph activity exists only through Azure Monitor. Sign in
 logs of any kind need an Entra ID P1 or P2 licence; audit logs do not.
 
+### Configuration
+
+Every endpoint, table name, retry value, error code, vocabulary and
+documentation link lives in configuration rather than in code. An installed
+entrascope carries its own copy inside the package, which is replaced on
+upgrade, so take a copy to edit:
+
+```bash
+entrascope config path                    # where it is being read from
+entrascope config export ~/.entrascope    # take a copy
+export ENTRASCOPE_CONFIG_DIR=~/.entrascope
+entrascope config show endpoints.yaml     # read one file
+```
+
+`--config-dir` does the same for one command, and a directory named that way is
+required rather than preferred, so a typo fails instead of quietly falling back.
+
 ### Output
 
 Four formats, each for a different reader.

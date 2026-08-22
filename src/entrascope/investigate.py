@@ -371,14 +371,31 @@ def investigate(
     they know something is wrong but not where. With a target it narrows to one
     application, matched by application id, object id or display name.
     """
-    applications = discover_applications(session, config, token)
-    principals = discover_service_principals(session, config, token)
+    ceiling = config.retry.paging.max_objects
+    applications = discover_applications(session, config, token, limit=ceiling)
+    principals = discover_service_principals(session, config, token, limit=ceiling)
+    truncated = [
+        f"{name} reached the ceiling of {ceiling} objects, so this is a "
+        "partial view. Raise paging.max_objects in config/retry.yaml, or "
+        "narrow the investigation to one application."
+        for name, rows in (
+            ("Application registrations", applications),
+            ("Enterprise applications", principals),
+        )
+        if len(rows) >= ceiling
+    ]
     excluded = 0
     if not include_first_party:
         kept = tuple(item for item in principals if not is_first_party(item, config))
         excluded = len(principals) - len(kept)
         principals = kept
-    audit, sign_ins, notes = gather_logs(session, config, limit=limit, kinds=kinds)
+    audit, sign_ins, gathered = gather_logs(session, config, limit=limit, kinds=kinds)
+    notes = [*truncated, *gathered]
+    if excluded:
+        notes.append(
+            f"{excluded} Microsoft first party enterprise applications were "
+            "excluded. Pass --include-first-party to see them."
+        )
 
     if target:
         applications = tuple(item for item in applications if matches(item, target))
@@ -435,13 +452,5 @@ def investigate(
         audit_events=audit,
         sign_ins=sign_ins,
         findings=filter_by_severity(findings, minimum_severity),
-        notes=(
-            (
-                *notes,
-                f"{excluded} Microsoft first party enterprise applications "
-                "were excluded. Pass --include-first-party to see them.",
-            )
-            if excluded
-            else notes
-        ),
+        notes=tuple(notes),
     )
