@@ -7,6 +7,8 @@ versioning.
 
 ## [Unreleased]
 
+## [0.1.0]
+
 ### Added
 - Repository scaffold: package layout, configuration files, steering
   documents and the continuous integration pipeline.
@@ -129,3 +131,14 @@ versioning.
   code extracted from a longer message, the specific AADSTS code preferred over
   a generic one such as invalid_client, and a configured default for anything
   unrecognised so that an unknown code still yields a link and a next step.
+- Release automation, gated by repository variables so that a merge to main
+  publishes nothing until the project is ready: auto-tag computes the next
+  patch version, rewrites it in the packaging and the package, commits, tags,
+  and hands the distribution to the publish jobs in the same run. Publishing
+  uses PyPI Trusted Publishing with no tokens, retries three times with backoff
+  because the transparency log intermittently fails while generating
+  attestations, and a GitHub release is created from the same artefact.
+- SECURITY.md, stating what entrascope does with credentials, how to report a
+  vulnerability, and the three rules the remote server holds to.
+
+[0.1.0]: https://github.com/SCGIS-Wales/entrascope/releases/tag/v0.1.0

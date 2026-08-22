@@ -8,11 +8,9 @@ engineers troubleshoot authentication and authorisation failures.
 > ApplicationManagement. entrascope reads them through Microsoft Graph and
 > through Azure Monitor.
 
-## Status
-
-Under construction, phase by phase, against
-[docs/steering/tasks.md](docs/steering/tasks.md). Phase 0 lays down the
-scaffold, the configuration, the steering documents and the pipeline.
+[![CI](https://github.com/SCGIS-Wales/entrascope/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/entrascope/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.14-blue)](https://www.python.org/downloads/)
+[![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
 ## What it does
 
@@ -204,6 +202,29 @@ Steering documents live in [docs/steering](docs/steering):
 [testing strategy](docs/steering/testing-strategy.md),
 [release and publishing](docs/steering/release-and-publishing.md) and the
 [phased task plan](docs/steering/tasks.md).
+
+## Contributing
+
+One change is one pull request, and every check must pass before it merges. The
+gate is `ruff check`, `ruff format --check`, `mypy --strict src` and `pytest`,
+plus five structural guards: no endpoint or table name written into code, no
+class without a framework contract comment, no secret in any output, one HTTP
+stack, one logger.
+
+```bash
+python3.14 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/ruff check src/ tests/ && .venv/bin/mypy --strict src && .venv/bin/pytest
+```
+
+The rules the code follows, and why, are in
+[docs/steering](docs/steering). Read
+[coding-standards.md](docs/steering/coding-standards.md) first.
+
+## Security
+
+Reporting a vulnerability, what entrascope does with credentials, and the rules
+the remote server holds to: [SECURITY.md](SECURITY.md).
 
 ## Licence
 
