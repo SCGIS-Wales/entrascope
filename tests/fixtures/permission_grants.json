@@ -1,0 +1,20 @@
+{
+  "oauth2PermissionGrants": [
+    {
+      "id": "grant-1",
+      "clientId": "66666666-6666-6666-6666-666666666666",
+      "resourceId": "00000003-0000-0000-c000-000000000000",
+      "consentType": "AllPrincipals",
+      "principalId": null,
+      "scope": "User.Read Directory.Read.All"
+    }
+  ],
+  "appRoleAssignments": [
+    {
+      "id": "assignment-1",
+      "appRoleId": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+      "principalDisplayName": "Confidential web application",
+      "resourceId": "00000003-0000-0000-c000-000000000000"
+    }
+  ]
+}

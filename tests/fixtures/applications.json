@@ -1,0 +1,105 @@
+{
+  "value": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "appId": "aaaaaaaa-1111-1111-1111-111111111111",
+      "displayName": "Confidential web application",
+      "signInAudience": "AzureADMyOrg",
+      "createdDateTime": "2024-01-15T09:00:00Z",
+      "identifierUris": ["api://aaaaaaaa-1111-1111-1111-111111111111"],
+      "web": {"redirectUris": ["https://app.example.invalid/callback"]},
+      "spa": {"redirectUris": []},
+      "publicClient": {"redirectUris": []},
+      "api": {"requestedAccessTokenVersion": 2},
+      "requiredResourceAccess": [
+        {
+          "resourceAppId": "00000003-0000-0000-c000-000000000000",
+          "resourceAccess": [
+            {"id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "type": "Role"},
+            {"id": "eeee1111-1111-1111-1111-111111111111", "type": "Scope"}
+          ]
+        }
+      ],
+      "passwordCredentials": [
+        {
+          "keyId": "cccccccc-1111-1111-1111-111111111111",
+          "displayName": "primary secret",
+          "startDateTime": "2024-01-15T09:00:00Z",
+          "endDateTime": "2099-01-15T09:00:00Z"
+        },
+        {
+          "keyId": "cccccccc-2222-2222-2222-222222222222",
+          "displayName": "expired secret",
+          "startDateTime": "2023-01-15T09:00:00Z",
+          "endDateTime": "2024-01-15T09:00:00Z"
+        }
+      ],
+      "keyCredentials": []
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "appId": "aaaaaaaa-2222-2222-2222-222222222222",
+      "displayName": "Single page application",
+      "signInAudience": "AzureADandPersonalMicrosoftAccount",
+      "createdDateTime": "2025-06-01T12:00:00Z",
+      "identifierUris": [],
+      "web": {"redirectUris": []},
+      "spa": {"redirectUris": ["https://spa.example.invalid/"]},
+      "publicClient": {"redirectUris": []},
+      "requiredResourceAccess": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "appId": "aaaaaaaa-3333-3333-3333-333333333333",
+      "displayName": "Native desktop client",
+      "signInAudience": "AzureADMultipleOrgs",
+      "createdDateTime": "2025-02-20T08:30:00Z",
+      "identifierUris": [],
+      "web": {"redirectUris": []},
+      "spa": {"redirectUris": []},
+      "publicClient": {"redirectUris": ["http://localhost:8400"]},
+      "requiredResourceAccess": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "44444444-4444-4444-4444-444444444444",
+      "appId": "aaaaaaaa-4444-4444-4444-444444444444",
+      "displayName": "Workload identity federation application",
+      "signInAudience": "AzureADMyOrg",
+      "createdDateTime": "2026-03-10T10:00:00Z",
+      "identifierUris": [],
+      "web": {"redirectUris": []},
+      "spa": {"redirectUris": []},
+      "publicClient": {"redirectUris": []},
+      "requiredResourceAccess": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "55555555-5555-5555-5555-555555555555",
+      "appId": "aaaaaaaa-5555-5555-5555-555555555555",
+      "displayName": "Certificate authenticated service",
+      "signInAudience": "PersonalMicrosoftAccount",
+      "createdDateTime": "2025-11-05T16:45:00Z",
+      "identifierUris": [],
+      "web": {"redirectUris": []},
+      "spa": {"redirectUris": []},
+      "publicClient": {"redirectUris": []},
+      "requiredResourceAccess": [],
+      "passwordCredentials": [],
+      "keyCredentials": [
+        {
+          "keyId": "dddddddd-1111-1111-1111-111111111111",
+          "displayName": "signing certificate",
+          "type": "AsymmetricX509Cert",
+          "usage": "Verify",
+          "startDateTime": "2025-11-05T16:45:00Z",
+          "endDateTime": "2026-09-05T16:45:00Z"
+        }
+      ]
+    }
+  ]
+}

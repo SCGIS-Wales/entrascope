@@ -1,0 +1,91 @@
+{
+  "value": [
+    {
+      "id": "66666666-6666-6666-6666-666666666666",
+      "appId": "aaaaaaaa-1111-1111-1111-111111111111",
+      "displayName": "Confidential web application",
+      "servicePrincipalType": "Application",
+      "signInAudience": "AzureADMyOrg",
+      "accountEnabled": true,
+      "appRoleAssignmentRequired": true,
+      "preferredSingleSignOnMode": null,
+      "replyUrls": ["https://app.example.invalid/callback"],
+      "servicePrincipalNames": ["api://aaaaaaaa-1111-1111-1111-111111111111"],
+      "tags": ["WindowsAzureActiveDirectoryIntegratedApp"],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "77777777-7777-7777-7777-777777777777",
+      "appId": "aaaaaaaa-7777-7777-7777-777777777777",
+      "displayName": "Gallery SAML application",
+      "servicePrincipalType": "Application",
+      "signInAudience": "AzureADMyOrg",
+      "accountEnabled": true,
+      "appRoleAssignmentRequired": false,
+      "preferredSingleSignOnMode": "saml",
+      "replyUrls": ["https://saas.example.invalid/acs"],
+      "servicePrincipalNames": ["https://saas.example.invalid/entity"],
+      "tags": [
+        "WindowsAzureActiveDirectoryGalleryApplicationPrimaryV1",
+        "WindowsAzureActiveDirectoryIntegratedApp"
+      ],
+      "passwordCredentials": [],
+      "keyCredentials": [
+        {
+          "keyId": "eeeeeeee-1111-1111-1111-111111111111",
+          "displayName": "SAML signing certificate",
+          "type": "AsymmetricX509Cert",
+          "usage": "Sign",
+          "startDateTime": "2026-01-01T00:00:00Z",
+          "endDateTime": "2026-09-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "88888888-8888-8888-8888-888888888888",
+      "appId": "aaaaaaaa-8888-8888-8888-888888888888",
+      "displayName": "Bespoke SAML application",
+      "servicePrincipalType": "Application",
+      "signInAudience": "AzureADMyOrg",
+      "accountEnabled": true,
+      "appRoleAssignmentRequired": true,
+      "preferredSingleSignOnMode": "saml",
+      "replyUrls": ["https://internal.example.invalid/acs"],
+      "servicePrincipalNames": ["https://internal.example.invalid/entity"],
+      "tags": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "99999999-9999-9999-9999-999999999999",
+      "appId": "aaaaaaaa-9999-9999-9999-999999999999",
+      "displayName": "aks-cluster-agentpool",
+      "servicePrincipalType": "ManagedIdentity",
+      "signInAudience": "AzureADMyOrg",
+      "accountEnabled": true,
+      "appRoleAssignmentRequired": false,
+      "preferredSingleSignOnMode": null,
+      "replyUrls": [],
+      "servicePrincipalNames": ["aaaaaaaa-9999-9999-9999-999999999999"],
+      "tags": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    },
+    {
+      "id": "bbbbbbbb-1111-1111-1111-111111111111",
+      "appId": "aaaaaaaa-bbbb-1111-1111-111111111111",
+      "displayName": "Legacy application",
+      "servicePrincipalType": "Legacy",
+      "signInAudience": "AzureADMyOrg",
+      "accountEnabled": false,
+      "appRoleAssignmentRequired": false,
+      "preferredSingleSignOnMode": "password",
+      "replyUrls": [],
+      "servicePrincipalNames": [],
+      "tags": [],
+      "passwordCredentials": [],
+      "keyCredentials": []
+    }
+  ]
+}

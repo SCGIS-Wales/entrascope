@@ -6,9 +6,13 @@ keeping with the functional rules in CLAUDE.md.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from entrascope.config import Config, load_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src" / "entrascope"
@@ -40,6 +44,34 @@ def config_root() -> Path:
 def sentinel_secret() -> str:
     """Return the sentinel secret used by the redaction guard."""
     return SENTINEL_SECRET
+
+
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+
+
+def load_fixture(name: str) -> dict[str, Any]:
+    """Parse one JSON fixture by file name, without its extension."""
+    data = json.loads((FIXTURE_ROOT / f"{name}.json").read_text())
+    assert isinstance(data, dict)
+    return data
+
+
+@pytest.fixture
+def applications() -> list[dict[str, Any]]:
+    """Return the application registration fixtures."""
+    return list(load_fixture("applications")["value"])
+
+
+@pytest.fixture
+def service_principals() -> list[dict[str, Any]]:
+    """Return the enterprise application fixtures."""
+    return list(load_fixture("service_principals")["value"])
+
+
+@pytest.fixture
+def config() -> Config:
+    """Return the repository configuration."""
+    return load_config()
 
 
 def source_files() -> list[Path]:
