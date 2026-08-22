@@ -16,8 +16,11 @@ inside a factory function and mark it:
 ```
 
 A guard test parses the abstract syntax tree of every module and fails the
-build on any class definition without that comment within the five lines above
-it.
+build on any class definition that is not permitted. A class is permitted when
+it carries that comment in the five lines above it, when it is a data transfer
+object deriving from `NamedTuple`, or when it derives from a class in the same
+module that is itself permitted. The last rule is what lets one comment cover a
+family of schema models or exception types.
 
 ## Typing
 

@@ -28,6 +28,7 @@ entrascope/
     tables.yaml
     error-codes.yaml
     capabilities.yaml
+    credentials.yaml
     retry.yaml
     fields.yaml
     logging.yaml

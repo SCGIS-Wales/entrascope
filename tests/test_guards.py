@@ -83,24 +83,58 @@ def test_guard_no_hardcoded_endpoints(path: Path) -> None:
     )
 
 
+#: Base classes that mark a class as an immutable data transfer object, which
+#: CLAUDE.md permits without a framework contract comment.
+DTO_BASES = frozenset({"NamedTuple", "Enum", "StrEnum", "IntEnum"})
+
+
+def base_names(node: ast.ClassDef) -> set[str]:
+    """Return the names of every base a class declares."""
+    names: set[str] = set()
+    for base in node.bases:
+        if isinstance(base, ast.Name):
+            names.add(base.id)
+        elif isinstance(base, ast.Attribute):
+            names.add(base.attr)
+    return names
+
+
+def permitted_classes(source: str) -> tuple[set[str], list[str]]:
+    """Return the permitted class names in a module, and the offenders.
+
+    A class is permitted when it carries a framework contract comment in the
+    five lines above it, when it is a data transfer object, or when it derives
+    from a class in the same module that is itself permitted. The last rule is
+    what lets one comment cover a family of schema models or exceptions.
+    """
+    lines = source.splitlines()
+    classes = [
+        node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef)
+    ]
+    permitted: set[str] = set()
+    undecided = list(classes)
+    while True:
+        remaining: list[ast.ClassDef] = []
+        for node in undecided:
+            preamble = "\n".join(lines[max(0, node.lineno - 6) : node.lineno])
+            bases = base_names(node)
+            if FRAMEWORK_CONTRACT in preamble or bases & DTO_BASES or bases & permitted:
+                permitted.add(node.name)
+            else:
+                remaining.append(node)
+        if len(remaining) == len(undecided):
+            return permitted, [node.name for node in remaining]
+        undecided = remaining
+
+
 @pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)
 def test_guard_no_classes(path: Path) -> None:
     """Guard two: no class without a framework contract comment above it."""
-    source = path.read_text()
-    lines = source.splitlines()
-    tree = ast.parse(source)
-    offenders: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        start = max(0, node.lineno - 6)
-        preamble = "\n".join(lines[start : node.lineno])
-        if FRAMEWORK_CONTRACT not in preamble:
-            offenders.append(node.name)
+    _, offenders = permitted_classes(path.read_text())
     assert not offenders, (
         f"{path.name} defines classes {offenders} without a "
         f'"{FRAMEWORK_CONTRACT}" comment. Application logic belongs in free '
-        "functions."
+        "functions, and a data transfer object derives from NamedTuple."
     )
 
 
@@ -154,3 +188,29 @@ def test_guard_one_logger(path: Path) -> None:
         assert not prints, (
             f"{path.name} calls print. Rendering belongs in {RENDER_MODULE}."
         )
+
+
+def test_class_guard_catches_an_unmarked_class() -> None:
+    """The class guard is proved against a module that breaks the rule."""
+    offending = "class Service:\n    def run(self) -> None: ...\n"
+    _, offenders = permitted_classes(offending)
+    assert offenders == ["Service"]
+
+
+def test_class_guard_accepts_a_marked_family() -> None:
+    """One framework contract comment covers the classes derived from it."""
+    source = (
+        "# framework contract: pydantic requires model classes.\n"
+        "class Base:\n    pass\n\n\n"
+        "class Child(Base):\n    pass\n"
+    )
+    permitted, offenders = permitted_classes(source)
+    assert not offenders
+    assert permitted == {"Base", "Child"}
+
+
+def test_class_guard_accepts_a_named_tuple() -> None:
+    """A data transfer object needs no comment."""
+    source = "class Row(NamedTuple):\n    value: str\n"
+    _, offenders = permitted_classes(source)
+    assert not offenders
