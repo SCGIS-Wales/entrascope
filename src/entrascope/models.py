@@ -230,6 +230,67 @@ class ServicePrincipalSummary(NamedTuple):
         )
 
 
+class Explanation(NamedTuple):
+    """What an error code means and what to do about it."""
+
+    code: str
+    meaning: str
+    remediation: str
+    docs_url: str
+    likely_cause: str = ""
+    known: bool = True
+
+
+class AuditEvent(NamedTuple):
+    """One directory audit event, from Graph or from Log Analytics."""
+
+    id: str
+    activity: str
+    category: str
+    result: str
+    reason: str
+    timestamp: str
+    initiated_by: str
+    target: str
+    correlation_id: str = ""
+
+
+class SignInEvent(NamedTuple):
+    """One sign in, from Graph or from Log Analytics."""
+
+    id: str
+    timestamp: str
+    identity: str
+    app_id: str
+    app_display_name: str
+    resource: str
+    client_app: str
+    ip_address: str
+    error_code: int
+    failure_reason: str
+    correlation_id: str = ""
+
+    def failed(self) -> bool:
+        """Return whether this sign in failed."""
+        return self.error_code != 0
+
+
+class GraphActivityEvent(NamedTuple):
+    """One Microsoft Graph request made against the tenant."""
+
+    timestamp: str
+    app_id: str
+    service_principal_id: str
+    user_id: str
+    method: str
+    status: int
+    uri: str
+    roles: str
+    scopes: str
+    duration_ms: int
+    request_id: str = ""
+
+
 class CheckResult(NamedTuple):
     """The outcome of one preflight check."""
 

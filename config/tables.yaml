@@ -33,3 +33,44 @@ diagnostic_categories:
 
 audit_categories:
   application_management: ApplicationManagement
+
+sign_in_kinds:
+  # OData filters for the Graph reporting API, and the KQL template that
+  # answers the same question through Azure Monitor. Graph reports every sign
+  # in kind from one endpoint, distinguished by signInEventTypes.
+  interactive:
+    graph_filter: "signInEventTypes/any(t: t eq 'interactiveUser')"
+    diagnostic_category: SignInLogs
+    kql_template: signins_failures
+  non-interactive:
+    graph_filter: "signInEventTypes/any(t: t eq 'nonInteractiveUser')"
+    diagnostic_category: NonInteractiveUserSignInLogs
+    kql_template: signins_failures
+  service-principal:
+    graph_filter: "signInEventTypes/any(t: t eq 'servicePrincipal')"
+    diagnostic_category: ServicePrincipalSignInLogs
+    kql_template: signins_failures
+  managed-identity:
+    graph_filter: "signInEventTypes/any(t: t eq 'managedIdentity')"
+    diagnostic_category: ManagedIdentitySignInLogs
+    kql_template: signins_failures
+
+log_queries:
+  # Filters and templates for the other log sources.
+  audit:
+    graph_filter_template: "category eq '{category}'"
+    diagnostic_category: AuditLogs
+    kql_template: audit_applicationmanagement
+  graph-activity:
+    graph_filter_template: ""
+    diagnostic_category: MicrosoftGraphActivityLogs
+    kql_template: graph_activity
+    graph_supported: false
+  provisioning:
+    graph_filter_template: ""
+    diagnostic_category: ProvisioningLogs
+    kql_template: ""
+
+defaults:
+  lookback_hours: 24
+  row_limit: 100
