@@ -39,6 +39,42 @@ and refresh are the library's concern.
 Unattended operation and the remote MCP server use the application sources. A
 delegated CLI session is not present in a container.
 
+## Forward proxies and certificate trust
+
+entrascope must work unchanged on a corporate network, which means honouring a
+forward web proxy and trusting a private certificate authority. Both are read
+from the environment, and the variable names live in the `network` section of
+`config/retry.yaml` so that a site with different conventions can add its own.
+
+Proxies. `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`, in either case, with
+`NO_PROXY` for the exceptions. requests honours these on its own when the
+session trusts the environment, and entrascope resolves them explicitly as
+well, so that `doctor` can report exactly which proxy is in force. An engineer
+diagnosing a failure behind a proxy needs to see that before anything else
+makes sense.
+
+Certificate trust, in this order:
+
+1. `ENTRASCOPE_CA_BUNDLE`, for a bundle that applies to this tool alone.
+2. `REQUESTS_CA_BUNDLE`, which requests recognises natively.
+3. `SSL_CERT_FILE`, the OpenSSL convention, which requests does not read.
+4. `CURL_CA_BUNDLE`.
+5. `SSL_CERT_DIR`, a directory of hashed certificates, used when no bundle file
+   is named.
+
+The first variable that is set and names a file that exists wins. A variable
+that points at nothing falls through to the next, and finally to the
+certificate bundle that requests ships. Verification is never silently
+disabled by a missing or wrong path. Turning it off is a deliberate change to
+`verify_tls` in configuration, and `doctor` reports it as a failed check with
+the remediation.
+
+The same setting reaches azure-identity and azure-monitor-query, which sit on
+azure-core and take it as `connection_verify`, so the token endpoint and the
+Log Analytics workspace are trusted the same way as Microsoft Graph. The Azure
+CLI credential is the exception: it holds its own session and its own proxy and
+certificate configuration, so nothing is passed through to it.
+
 ## Redaction
 
 Redaction is a logging filter, not a habit. It is installed once by

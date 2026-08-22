@@ -35,6 +35,11 @@ urllib3 retry policy: totals per class, backoff factor and ceiling, whether to
 respect `Retry-After`, the status forcelist and the allowed methods. The
 thread pool worker count. Paging page size and a page ceiling.
 
+The `network` section carries the forward proxy and certificate trust rules.
+The variable names themselves are configuration, so a site with different
+conventions can add its own without a code change. See
+`credentials-and-security.md` for what they do.
+
 ### fields.yaml
 
 Projections from Graph payloads onto data transfer objects. The left hand side

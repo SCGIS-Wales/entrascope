@@ -143,6 +143,43 @@ jobs:
           path: entrascope.cdx.json
           if-no-files-found: warn
 
+  install-test:
+    name: Install test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Install the built wheel into a clean environment and run the console
+      # script. This catches packaging faults an editable install never sees,
+      # in particular whether the configuration directory reached the wheel.
+      - name: Install the wheel and run the console script
+        run: |
+          python -m venv /tmp/install-test
+          /tmp/install-test/bin/pip install dist/*.whl
+          /tmp/install-test/bin/entrascope --version
+          /tmp/install-test/bin/entrascope --help
+          /tmp/install-test/bin/entrascope doctor --help
+
+      - name: Confirm the packaged configuration is readable
+        run: |
+          /tmp/install-test/bin/python -c "
+          from entrascope.config import load_config
+          config = load_config()
+          assert config.endpoints.graph.base_url
+          assert (config.root / 'kql').is_dir()
+          print('configuration read from', config.root)
+          "
+
   build:
     name: Build
     runs-on: ubuntu-latest

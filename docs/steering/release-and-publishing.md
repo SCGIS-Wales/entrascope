@@ -53,14 +53,29 @@ PyPI Trusted Publishing over OpenID Connect. No API tokens anywhere. The
 publish jobs carry `id-token: write` and no username or password. Attestations
 and Sigstore signing happen by default.
 
-Before the first tag:
+The PyPI pending publisher is registered, with these values:
 
-1. On pypi.org, under Your account then Publishing, add a pending publisher.
-   Project name `entrascope`, owner `SCGIS-Wales`, repository `entrascope`,
-   workflow `ci.yml`, environment `pypi`.
-2. Repeat on test.pypi.org with environment `testpypi`.
-3. In GitHub, create both environments with protection rules, required
-   reviewers on `pypi` and a tag restriction.
+| Field | Value |
+| --- | --- |
+| PyPI project name | `entrascope` |
+| Owner | `SCGIS-Wales` |
+| Repository name | `entrascope` |
+| Workflow name | `ci.yml` |
+| Environment name | not set |
+
+Leaving the environment unset is a valid configuration. It means PyPI accepts a
+token from that workflow whichever GitHub environment the job runs in, so the
+`pypi` environment protection still applies on our side without having to
+match a name on theirs.
+
+Still outstanding before the first tag:
+
+1. A pending publisher on test.pypi.org with the same four values, if the
+   TestPyPI dry run is to stay in the pipeline. Without it that job fails and
+   blocks the real publish.
+2. In GitHub, an environment named `pypi` with protection rules, required
+   reviewers and a tag restriction, and one named `testpypi` if the dry run
+   stays.
 
 On first successful publish the pending publisher becomes a normal publisher.
 

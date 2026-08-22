@@ -67,6 +67,7 @@ class GraphEndpoints(_Frozen):
 class AzureEndpoints(_Frozen):
     arm_base_url: str
     arm_api_version: str
+    diagnostic_settings_api_version: str
     arm_scope: str
     log_analytics_scope: str
     paths: dict[str, str]
@@ -136,6 +137,15 @@ class RetrySettings(_Frozen):
     allowed_methods: tuple[str, ...]
 
 
+class NetworkSettings(_Frozen):
+    trust_environment: bool
+    verify_tls: bool
+    proxy_variables: tuple[str, ...]
+    no_proxy_variables: tuple[str, ...]
+    ca_bundle_variables: tuple[str, ...]
+    ca_directory_variables: tuple[str, ...]
+
+
 class ConcurrencySettings(_Frozen):
     max_workers: int
 
@@ -148,6 +158,7 @@ class PagingSettings(_Frozen):
 class Retry(_Frozen):
     http: HttpSettings
     retry: RetrySettings
+    network: NetworkSettings
     concurrency: ConcurrencySettings
     paging: PagingSettings
 
@@ -297,9 +308,10 @@ class Config(_Frozen):
 def candidate_directories(explicit: Path | None = None) -> tuple[Path, ...]:
     """Return the directories to search for configuration, in order.
 
-    An explicit path wins. Then the environment variable. Then configuration
-    packaged inside the installed distribution. Then the repository directory,
-    which is what a development checkout uses.
+    The environment variable comes first, then configuration packaged inside
+    the installed distribution, then the repository directory, which is what a
+    development checkout uses. An explicit path is not a candidate: it is
+    required, and :func:`find_config_dir` fails rather than searching past it.
     """
     candidates: list[Path] = []
     if explicit is not None:
@@ -313,8 +325,20 @@ def candidate_directories(explicit: Path | None = None) -> tuple[Path, ...]:
 
 
 def find_config_dir(explicit: Path | None = None) -> Path:
-    """Return the first candidate directory that holds configuration."""
-    candidates = candidate_directories(explicit)
+    """Return the directory that holds configuration.
+
+    A directory named explicitly is required rather than preferred. Falling
+    through to another directory after the engineer named one would answer a
+    question they did not ask.
+    """
+    if explicit is not None:
+        named = Path(explicit)
+        if (named / SENTINEL_FILE).is_file():
+            return named
+        raise ConfigError(
+            f"The configuration directory {named} does not hold {SENTINEL_FILE}."
+        )
+    candidates = candidate_directories()
     for candidate in candidates:
         if (candidate / SENTINEL_FILE).is_file():
             return candidate

@@ -23,6 +23,7 @@ from azure.identity import (
 )
 
 from entrascope.config import Config, Credentials
+from entrascope.http import verify_setting
 from entrascope.logger import bind_context, get_logger
 from entrascope.models import (
     AUTH_SOURCE_ORDER,
@@ -222,27 +223,39 @@ def resolution_order(settings: Credentials) -> tuple[AuthSource, ...]:
     return (*configured, *missing)
 
 
-def build_client_secret_credential(credential: Credential) -> TokenCredential:
-    """Build a client credentials token source."""
+def build_client_secret_credential(
+    credential: Credential, verify: str | bool = True
+) -> TokenCredential:
+    """Build a client credentials token source.
+
+    The verification setting is passed through so that the token endpoint is
+    reached through the same proxy and trusted against the same certificate
+    authority as every other call.
+    """
     # framework contract: azure-identity requires a credential object. It is
     # treated as configuration and carries none of our logic.
     return ClientSecretCredential(
         tenant_id=credential.tenant_id,
         client_id=credential.client_id,
         client_secret=credential.secret,
+        connection_verify=verify,
     )
 
 
 def build_azure_cli_credential() -> TokenCredential:
-    """Build a token source backed by the Azure CLI session."""
+    """Build a token source backed by the Azure CLI session.
+
+    The Azure CLI holds its own session and its own proxy and certificate
+    configuration, so nothing is passed through here.
+    """
     # framework contract: azure-identity requires a credential object.
     return AzureCliCredential()
 
 
-def build_default_credential() -> TokenCredential:
+def build_default_credential(verify: str | bool = True) -> TokenCredential:
     """Build the full azure-identity chained token source."""
     # framework contract: azure-identity requires a credential object.
-    return DefaultAzureCredential()
+    return DefaultAzureCredential(connection_verify=verify)
 
 
 def describe(source: AuthSource, credential: Credential | None) -> str:
@@ -274,7 +287,9 @@ def try_source(
             client_id=credential.client_id,
             description=describe(source, credential),
         )
-        return context, build_client_secret_credential(credential)
+        return context, build_client_secret_credential(
+            credential, verify_setting(config, environ)
+        )
 
     if source == "env":
         from_environment = read_environment(settings, environ)
@@ -291,7 +306,9 @@ def try_source(
             client_id=from_environment.client_id,
             description=describe(source, from_environment),
         )
-        return context, build_client_secret_credential(from_environment)
+        return context, build_client_secret_credential(
+            from_environment, verify_setting(config, environ)
+        )
 
     if source == "azure-cli":
         if not azure_cli_available():
@@ -315,7 +332,7 @@ def try_source(
         client_id=None,
         description=describe("default", None),
     )
-    return context, build_default_credential()
+    return context, build_default_credential(verify_setting(config, environ))
 
 
 def resolve_auth(

@@ -15,6 +15,7 @@ from azure.core.exceptions import HttpResponseError
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 
 from entrascope.config import Config, load_kql, render_kql
+from entrascope.http import verify_setting
 from entrascope.logger import get_logger
 from entrascope.models import ApiCallError, ApiError, QueryResult
 
@@ -24,11 +25,20 @@ log = get_logger(__name__)
 SOURCE = "azure-monitor"
 
 
-def build_logs_client(credential: TokenCredential) -> LogsQueryClient:
-    """Build the Log Analytics query client."""
+def build_logs_client(
+    credential: TokenCredential, config: Config | None = None
+) -> LogsQueryClient:
+    """Build the Log Analytics query client.
+
+    When configuration is supplied the client verifies TLS against the same
+    certificate authority as every other call, which matters behind a proxy
+    performing TLS inspection.
+    """
     # framework contract: azure-monitor-query exposes a client object. It is
     # treated as configuration and carries none of our logic.
-    return LogsQueryClient(credential)
+    if config is None:
+        return LogsQueryClient(credential)
+    return LogsQueryClient(credential, connection_verify=verify_setting(config))
 
 
 def table_for(config: Config, category: str) -> str:

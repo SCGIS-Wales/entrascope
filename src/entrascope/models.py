@@ -291,6 +291,22 @@ class GraphActivityEvent(NamedTuple):
     request_id: str = ""
 
 
+class NetworkTrust(NamedTuple):
+    """The forward proxy and certificate trust in force for outbound calls."""
+
+    trust_environment: bool
+    verify: str
+    verify_enabled: bool
+    verify_source: str
+    proxies: tuple[str, ...]
+
+    def summary(self) -> str:
+        """Return a one line description for the doctor report."""
+        proxy = ", ".join(self.proxies) if self.proxies else "no proxy configured"
+        trust = self.verify or self.verify_source
+        return f"{proxy}; TLS verified against {trust}"
+
+
 class CheckResult(NamedTuple):
     """The outcome of one preflight check."""
 

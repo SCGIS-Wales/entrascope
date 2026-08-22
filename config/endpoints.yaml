@@ -28,6 +28,8 @@ graph:
 azure:
   arm_base_url: https://management.azure.com
   arm_api_version: "2021-05-01-preview"
+  # The Entra diagnostic settings resource provider has its own API version.
+  diagnostic_settings_api_version: "2017-04-01-preview"
   arm_scope: https://management.azure.com/.default
   log_analytics_scope: https://api.loganalytics.io/.default
   paths:

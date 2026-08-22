@@ -19,6 +19,33 @@ retry:
   status_forcelist: [429, 500, 502, 503, 504]
   allowed_methods: [GET, HEAD, OPTIONS]
 
+network:
+  # Forward web proxies and certificate trust. Every variable name is
+  # configuration so that a site with different conventions can add its own.
+  trust_environment: true
+  verify_tls: true
+  proxy_variables:
+    - HTTPS_PROXY
+    - https_proxy
+    - HTTP_PROXY
+    - http_proxy
+    - ALL_PROXY
+    - all_proxy
+  no_proxy_variables:
+    - NO_PROXY
+    - no_proxy
+  # A single certificate authority bundle file. The first variable that is set
+  # and names an existing file wins.
+  ca_bundle_variables:
+    - ENTRASCOPE_CA_BUNDLE
+    - REQUESTS_CA_BUNDLE
+    - SSL_CERT_FILE
+    - CURL_CA_BUNDLE
+  # A directory of hashed certificate authority certificates, the OpenSSL
+  # convention. Used when no bundle file is set.
+  ca_directory_variables:
+    - SSL_CERT_DIR
+
 concurrency:
   max_workers: 8
 
