@@ -19,6 +19,7 @@ from entrascope.inspect import (
     matching,
     named_permissions,
     permission_names,
+    read_catalogue,
     search_gallery,
     urls,
 )
@@ -289,3 +290,76 @@ def test_the_whole_gallery_can_be_listed(config: Config) -> None:
     rows, note = search_gallery(build_session(config), config, "", 10)
     assert len(rows) == 1
     assert note == ""
+
+
+@responses.activate
+def test_the_chooser_reads_names_not_whole_objects(config: Config) -> None:
+    """A list of names must not cost a call for every object in the tenant.
+
+    On a directory of several hundred, fetching owners and federated
+    credentials for each one takes minutes and looks like a hang.
+    """
+    register()
+    read_catalogue(build_session(config), config, lambda: "token")
+    for call in responses.calls:
+        url = call.request.url or ""
+        assert "/owners" not in url, "the chooser fetched owners"
+        assert "federatedIdentityCredentials" not in url
+        assert "appRoleAssignedTo" not in url
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_the_chooser_asks_for_only_the_fields_it_shows(config: Config) -> None:
+    """Whole objects for a list of names is payload nobody reads."""
+    register()
+    read_catalogue(build_session(config), config)
+    selected = [call.request.url or "" for call in responses.calls]
+    assert all("select=" in url or "%24select=" in url for url in selected)
+
+
+@responses.activate
+def test_inspecting_one_application_is_a_handful_of_calls(config: Config) -> None:
+    """Two to find it, then one each for the things that need their own call."""
+    register()
+    inspect(build_session(config), config, target="Confidential web")
+    assert len(responses.calls) <= 8, [call.request.url for call in responses.calls]
+
+
+@responses.activate
+def test_managed_identities_are_kept_out_of_the_chooser(config: Config) -> None:
+    """Azure creates one per resource, and Defender one per subscription."""
+    register()
+    catalogue = read_catalogue(build_session(config), config)
+    types = {item.application_type for item in catalogue.principals}
+    assert "managed-identity" not in types
+    assert any("managed-identity" in note for note in catalogue.hidden)
+
+
+@responses.activate
+def test_asking_for_everything_includes_them(config: Config) -> None:
+    """They are legitimate objects, just rarely the one being looked for."""
+    register()
+    catalogue = read_catalogue(build_session(config), config, everything=True)
+    types = {item.application_type for item in catalogue.principals}
+    assert "managed-identity" in types
+    assert catalogue.hidden == ()
+
+
+@responses.activate
+def test_the_identifiers_line_up(config: Config) -> None:
+    """A list where the identifier starts somewhere different on every line is
+    a list nobody can read down."""
+    register()
+    rows = read_catalogue(build_session(config), config).choices()
+    columns = {label.index(key) for key, label in rows if key in label}
+    assert len(columns) == 1, f"identifiers start at {sorted(columns)}"
+
+
+def test_a_name_too_long_for_the_column_is_shortened() -> None:
+    """Rather than pushing every identifier off the screen."""
+    from entrascope.inspect import NAME_WIDTH, shorten
+
+    long_name = "aad-extensions-app. Do not modify. Used by AAD for storing user data."
+    assert len(shorten(long_name, NAME_WIDTH)) == NAME_WIDTH
+    assert shorten("short", NAME_WIDTH) == "short"

@@ -23,7 +23,8 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, TextIO
 
@@ -548,6 +549,26 @@ def show_yaml(payload: Any, config: Config, output: OutputFormat = "yaml") -> No
     console.print(
         Syntax(text_form, "yaml", theme="ansi_dark", background_color="default")
     )
+
+
+@contextmanager
+def working(message: str) -> Iterator[None]:
+    """Say what is being done while it is being done.
+
+    A directory of several hundred applications takes a while to read, and a
+    tool that says nothing for a minute has, as far as anybody watching is
+    concerned, hung. On a terminal this is a spinner that clears itself; piped,
+    it is one line so a log still records what was happening.
+    """
+    console = console_for(sys.stderr)
+    if not console.is_terminal:
+        console.print(f"{message}...")
+        yield
+        return
+    # framework contract: rich expresses a spinner as a context manager. It is
+    # presentation only and the work is unaffected.
+    with console.status(f"[dim]{message}...[/dim]", spinner="dots"):
+        yield
 
 
 def emit(text: str) -> None:

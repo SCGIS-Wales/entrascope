@@ -233,6 +233,16 @@ def classify_application(
     return "public-client"
 
 
+def selected_fields(mapping: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the Graph properties a projection needs, for $select.
+
+    Asking for the whole object and using a tenth of it is the difference
+    between a listing that answers and one that looks broken on a directory of
+    several hundred. Only the first segment of a dotted path is a property.
+    """
+    return tuple(dict.fromkeys(path.split(".")[0] for path in mapping.values()))
+
+
 def exposes_an_api(payload: Mapping[str, Any], config: Config) -> bool:
     """Return whether an application offers anything for others to call."""
     mapping = config.fields.application
@@ -439,6 +449,7 @@ def discover_applications(
         session,
         config,
         "applications",
+        select=selected_fields(config.fields.application),
         filter_expression=filter_expression,
         limit=limit,
     )
@@ -475,6 +486,7 @@ def discover_service_principals(
         session,
         config,
         "service_principals",
+        select=selected_fields(config.fields.service_principal),
         filter_expression=filter_expression,
         limit=limit,
     )

@@ -8,6 +8,30 @@ versioning.
 ## [Unreleased]
 
 ### Fixed
+- inspect read every object in the tenant in full before it could offer a list
+  of names, which on a directory of several hundred meant over a thousand calls
+  and minutes of silence that looked like a hang. The list is now names and
+  identifiers only, two calls, and everything else is read for the one
+  application chosen.
+- Every query asks for the fields it projects rather than whole objects.
+- A long read now says what it is doing while it does it.
+- The chooser gave no sign that the search key had registered, so pressing it
+  again was the natural response, and the second slash went into the term and
+  made every match fail. The search is shown as it is typed, with a count of
+  what matched, and a slash typed first is ignored.
+- Identifiers line up in a column rather than starting wherever each name ends.
+- Managed identities are kept out of the chooser. Azure creates one per
+  resource and Defender one per subscription, so a tenant holds hundreds of
+  them. What was hidden is counted and --all includes them.
+
+### Added
+- A refusal that names a Microsoft Graph permission now prints the exact
+  command that grants it, with the identifier for that permission and the
+  application entrascope authenticated as, followed by the consent that
+  actually grants it.
+- Authentication_MSGraphPermissionMissing is explained.
+
+### Fixed
 - A credential file that is present but unsafe now stops the command instead of
   being passed over. The contract has always said to refuse to run, and quietly
   authenticating some other way is not refusing: it leaves a secret readable by

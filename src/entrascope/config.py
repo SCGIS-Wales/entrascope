@@ -237,6 +237,7 @@ class Classification(_Frozen):
     target_types: dict[str, str]
     first_party_owner_tenants: tuple[str, ...]
     audiences: dict[str, str]
+    hidden_from_the_chooser: tuple[str, ...] = ()
 
 
 class Fields(_Frozen):

@@ -165,6 +165,12 @@ arrow keys or with j and k, search with `/` as in vi, enter to open, q to stop.
 After showing an application it returns to the list, because looking at one is
 rarely the whole question.
 
+The list holds names and identifiers only, so it appears at once on a tenant of
+several hundred applications; everything else is read for the one that is
+chosen. Microsoft first party applications and the managed identities Azure
+creates for its own resources are kept out of it, with a count of what was
+hidden. `--all` includes them.
+
 Any command group given no subcommand does the same: it prints its help and
 then offers its commands, asking for whatever the chosen one cannot do without.
 Piped or in a script, it prints the help and exits exactly as before.
