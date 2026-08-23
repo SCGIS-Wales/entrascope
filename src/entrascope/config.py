@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,11 @@ CONFIG_DIR_VARIABLE = "ENTRASCOPE_CONFIG_DIR"
 
 #: Directory of packaged configuration inside an installed wheel.
 PACKAGED_CONFIG_DIRNAME = "_config"
+
+#: Where an engineer's own configuration lives. Outside the package, so that
+#: upgrading never touches it, and layered over the packaged defaults, so that
+#: a release adding a setting does not break a file written before it existed.
+USER_CONFIG_DIRNAME = "entrascope"
 
 #: File that marks a directory as a configuration directory.
 SENTINEL_FILE = "endpoints.yaml"
@@ -283,6 +289,7 @@ class Logging(_Frozen):
 class CredentialFileSettings(_Frozen):
     directory: str
     filename: str
+    environment_variable: str = "ENTRASCOPE_CREDENTIAL_FILE"
     required_directory_mode: str
     required_file_mode: str
     keys: dict[str, str]
@@ -434,6 +441,8 @@ class Config(_Frozen):
     """Every configuration file, validated, plus the directory they came from."""
 
     root: Path
+    #: The shipped defaults this was layered over, when it was layered at all.
+    defaults_root: Path | None = None
     endpoints: Endpoints
     tables: Tables
     retry: Retry
@@ -445,13 +454,36 @@ class Config(_Frozen):
     capabilities: Capabilities
 
 
+def user_config_dir(home: Path | None = None) -> Path:
+    """Return where an engineer's own configuration belongs.
+
+    Outside the package, because everything inside one is replaced when it is
+    upgraded, and somebody who edited a file there would lose the edit without
+    being told.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else (home or Path.home()) / ".config"
+    return root / USER_CONFIG_DIRNAME
+
+
+def packaged_config_dir() -> Path:
+    """Return the configuration carried inside the installed package."""
+    return Path(__file__).resolve().parent / PACKAGED_CONFIG_DIRNAME
+
+
+def repository_config_dir() -> Path:
+    """Return the configuration in a development checkout."""
+    return Path(__file__).resolve().parents[2] / "config"
+
+
 def candidate_directories(explicit: Path | None = None) -> tuple[Path, ...]:
     """Return the directories to search for configuration, in order.
 
-    The environment variable comes first, then configuration packaged inside
-    the installed distribution, then the repository directory, which is what a
-    development checkout uses. An explicit path is not a candidate: it is
-    required, and :func:`find_config_dir` fails rather than searching past it.
+    The environment variable comes first, then the engineer's own directory,
+    then configuration packaged inside the installed distribution, then the
+    repository directory, which is what a development checkout uses. An
+    explicit path is not a candidate: it is required, and
+    :func:`find_config_dir` fails rather than searching past it.
     """
     candidates: list[Path] = []
     if explicit is not None:
@@ -459,9 +491,35 @@ def candidate_directories(explicit: Path | None = None) -> tuple[Path, ...]:
     from_environment = os.environ.get(CONFIG_DIR_VARIABLE)
     if from_environment:
         candidates.append(Path(from_environment))
-    candidates.append(Path(__file__).resolve().parent / PACKAGED_CONFIG_DIRNAME)
-    candidates.append(Path(__file__).resolve().parents[2] / "config")
+    candidates.append(user_config_dir())
+    candidates.append(packaged_config_dir())
+    candidates.append(repository_config_dir())
     return tuple(candidates)
+
+
+def defaults_directory() -> Path | None:
+    """Return the directory holding the shipped defaults, if there is one."""
+    for candidate in (packaged_config_dir(), repository_config_dir()):
+        if (candidate / SENTINEL_FILE).is_file():
+            return candidate
+    return None
+
+
+def merge(defaults: Any, overrides: Any) -> Any:
+    """Layer one mapping over another, key by key.
+
+    A file an engineer wrote is layered over the shipped defaults rather than
+    replacing them, so a release that adds a setting works with a file written
+    before that setting existed. A list is replaced whole, because half of
+    somebody's list of endpoints merged with half of ours would be nobody's
+    list.
+    """
+    if isinstance(defaults, Mapping) and isinstance(overrides, Mapping):
+        merged = dict(defaults)
+        for key, value in overrides.items():
+            merged[key] = merge(merged.get(key), value) if key in merged else value
+        return merged
+    return overrides
 
 
 def find_config_dir(explicit: Path | None = None) -> Path:
@@ -481,6 +539,10 @@ def find_config_dir(explicit: Path | None = None) -> Path:
     candidates = candidate_directories()
     for candidate in candidates:
         if (candidate / SENTINEL_FILE).is_file():
+            return candidate
+        # A directory of somebody's own need hold only the files they changed,
+        # because the rest comes from the defaults underneath it.
+        if candidate == user_config_dir() and any(candidate.glob("*.yaml")):
             return candidate
     searched = ", ".join(str(path) for path in candidates)
     raise ConfigError(
@@ -515,6 +577,8 @@ def read_text_file(path: Path) -> str:
 def load_kql(name: str, config: Config) -> str:
     """Return one KQL template by file name, without its extension."""
     path = config.root / "kql" / f"{name}.kql"
+    if not path.is_file() and config.defaults_root is not None:
+        path = config.defaults_root / "kql" / f"{name}.kql"
     if not path.is_file():
         available = sorted(p.stem for p in (config.root / "kql").glob("*.kql"))
         raise ConfigError(
@@ -574,21 +638,48 @@ def render_kql(template: str, parameters: dict[str, object]) -> str:
         ) from error
 
 
+def read_layered(directory: Path, name: str, defaults: Path | None) -> dict[str, Any]:
+    """Read one file, layered over the shipped default of the same name.
+
+    A directory of an engineer's own holds whatever they chose to change. Every
+    other setting comes from the defaults, so an upgrade that adds one is
+    picked up without them touching anything, and a file written two releases
+    ago keeps working.
+    """
+    theirs = read_yaml(directory / name) if (directory / name).is_file() else {}
+    if defaults is None or defaults == directory or not (defaults / name).is_file():
+        return theirs
+    layered = merge(read_yaml(defaults / name), theirs)
+    return layered if isinstance(layered, dict) else theirs
+
+
+def layered_over_defaults(directory: Path) -> Path | None:
+    """Return the defaults this directory is layered over, if any.
+
+    A directory named explicitly is authoritative and stands alone. The
+    engineer's own directory is layered, because it is a set of changes rather
+    than a replacement.
+    """
+    return defaults_directory() if directory == user_config_dir() else None
+
+
 def build_config(directory: Path) -> Config:
     """Validate every configuration file in one directory."""
+    defaults = layered_over_defaults(directory)
     try:
         return Config.model_validate(
             {
                 "root": directory,
-                "endpoints": read_yaml(directory / "endpoints.yaml"),
-                "tables": read_yaml(directory / "tables.yaml"),
-                "retry": read_yaml(directory / "retry.yaml"),
-                "fields": read_yaml(directory / "fields.yaml"),
-                "logging": read_yaml(directory / "logging.yaml"),
-                "credentials": read_yaml(directory / "credentials.yaml"),
-                "server": read_yaml(directory / "server.yaml"),
-                "error_codes": read_yaml(directory / "error-codes.yaml"),
-                "capabilities": read_yaml(directory / "capabilities.yaml"),
+                "defaults_root": defaults,
+                "endpoints": read_layered(directory, "endpoints.yaml", defaults),
+                "tables": read_layered(directory, "tables.yaml", defaults),
+                "retry": read_layered(directory, "retry.yaml", defaults),
+                "fields": read_layered(directory, "fields.yaml", defaults),
+                "logging": read_layered(directory, "logging.yaml", defaults),
+                "credentials": read_layered(directory, "credentials.yaml", defaults),
+                "server": read_layered(directory, "server.yaml", defaults),
+                "error_codes": read_layered(directory, "error-codes.yaml", defaults),
+                "capabilities": read_layered(directory, "capabilities.yaml", defaults),
             }
         )
     except ValidationError as error:

@@ -297,3 +297,102 @@ def test_every_configuration_file_is_carried() -> None:
         "capabilities.yaml",
         "server.yaml",
     }
+
+
+def test_a_directory_of_your_own_layers_over_the_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One file changed must not mean every other file copied.
+
+    A release that adds a setting has to work with a file written before that
+    setting existed, or every upgrade becomes a merge.
+    """
+    from entrascope.config import build_config, clear_cache
+
+    mine = tmp_path / "entrascope"
+    mine.mkdir(parents=True)
+    (mine / "credentials.yaml").write_text(
+        (CONFIG_ROOT / "credentials.yaml")
+        .read_text()
+        .replace("provisioner-credentials.json", "somewhere-else.json")
+    )
+    monkeypatch.setattr("entrascope.config.user_config_dir", lambda home=None: mine)
+    monkeypatch.setattr("entrascope.config.defaults_directory", lambda: CONFIG_ROOT)
+    clear_cache()
+    config = build_config(mine)
+    assert config.credentials.file.filename == "somewhere-else.json"
+    assert config.endpoints.graph.base_url
+    assert len(config.error_codes.errors) > 10
+    assert config.defaults_root == CONFIG_ROOT
+    clear_cache()
+
+
+def test_a_setting_added_by_a_release_reaches_an_older_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point of layering rather than replacing."""
+    from entrascope.config import build_config, clear_cache
+
+    mine = tmp_path / "entrascope"
+    mine.mkdir(parents=True)
+    # A file from before update_check existed.
+    (mine / "logging.yaml").write_text("level: DEBUG\n")
+    monkeypatch.setattr("entrascope.config.user_config_dir", lambda home=None: mine)
+    monkeypatch.setattr("entrascope.config.defaults_directory", lambda: CONFIG_ROOT)
+    clear_cache()
+    config = build_config(mine)
+    assert config.logging.level == "DEBUG"
+    assert config.logging.update_check.interval_hours
+    assert config.logging.redaction.keys
+    clear_cache()
+
+
+def test_merging_replaces_a_list_whole() -> None:
+    """Half of somebody's list and half of ours would be nobody's list."""
+    from entrascope.config import merge
+
+    merged = merge(
+        {"a": {"b": 1, "c": 2}, "list": [1, 2, 3]},
+        {"a": {"c": 9}, "list": [7]},
+    )
+    assert merged == {"a": {"b": 1, "c": 9}, "list": [7]}
+
+
+def test_a_directory_named_explicitly_stands_alone(tmp_path: Path) -> None:
+    """Naming one means that one, not that one plus whatever we ship."""
+    from entrascope.config import layered_over_defaults
+
+    assert layered_over_defaults(tmp_path) is None
+
+
+def test_the_search_prefers_your_directory_to_the_packaged_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Otherwise an upgrade would silently take the edits back."""
+    from entrascope.config import (
+        candidate_directories,
+        packaged_config_dir,
+        user_config_dir,
+    )
+
+    order = list(candidate_directories())
+    assert order.index(user_config_dir()) < order.index(packaged_config_dir())
+
+
+def test_a_kql_template_falls_back_to_the_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Somebody changing one setting has not signed up to carry the queries."""
+    from entrascope.config import build_config, clear_cache, load_kql
+
+    mine = tmp_path / "entrascope"
+    mine.mkdir(parents=True)
+    (mine / "credentials.yaml").write_text(
+        (CONFIG_ROOT / "credentials.yaml").read_text()
+    )
+    monkeypatch.setattr("entrascope.config.user_config_dir", lambda home=None: mine)
+    monkeypatch.setattr("entrascope.config.defaults_directory", lambda: CONFIG_ROOT)
+    clear_cache()
+    config = build_config(mine)
+    assert "SigninLogs" in load_kql("signins_failures", config)
+    clear_cache()

@@ -63,18 +63,39 @@ def invocations() -> list[str]:
     return found
 
 
+def takes_a_value(command: click.Command, name: str) -> bool:
+    """Return whether an option is followed by a value rather than standing alone."""
+    for parameter in [*cli.params, *command.params]:
+        if name in getattr(parameter, "opts", []):
+            return not getattr(parameter, "is_flag", False)
+    return False
+
+
 def resolve(tokens: list[str]) -> tuple[click.Command, list[str]]:
-    """Walk the command tree, returning the command and what is left."""
+    """Walk the command tree, returning the command and what is left.
+
+    An option may come before the subcommand, as every global one does, so they
+    are stepped over rather than mistaken for a command that does not exist.
+    """
     command: click.Command = cli
     remaining = list(tokens)
     context = click.Context(cli)
-    while remaining and isinstance(command, click.Group):
-        candidate = command.get_command(context, remaining[0])
+    stepped: list[str] = []
+    while remaining:
+        token = remaining[0]
+        if token.startswith("-"):
+            stepped.append(remaining.pop(0))
+            if "=" not in token and takes_a_value(command, token) and remaining:
+                stepped.append(remaining.pop(0))
+            continue
+        if not isinstance(command, click.Group):
+            break
+        candidate = command.get_command(context, token)
         if candidate is None:
             break
         command = candidate
         remaining.pop(0)
-    return command, remaining
+    return command, [*stepped, *remaining]
 
 
 def option_names(command: click.Command) -> set[str]:

@@ -7,6 +7,27 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- A credential file can be named: --credentials takes a bare name, which is a
+  file inside the credential directory, or a path. ENTRASCOPE_CREDENTIAL_FILE
+  does the same for a shell. Naming one means the file source. One file per
+  tenant is ordinary and there was no way to say so.
+- When the expected credential file is absent, the ones that are present are
+  listed, with the command to use one of them.
+- The doctor says which credential file it looked at even when another source
+  answered, and names every source it passed over and why. A source that was
+  expected to answer and quietly did not was invisible.
+
+### Changed
+- Configuration of your own lives in ~/.config/entrascope, outside the package,
+  so upgrading never touches it, and is layered over the shipped defaults.
+  Copy only the files you want to change, with config export --only, and
+  everything else comes from underneath. A release that adds a setting is
+  picked up without anybody doing anything, and a file written two releases ago
+  keeps working. A directory named with --config-dir is used as it stands.
+- config path says what each directory is, whether it is the packaged copy that
+  an upgrade replaces, and what the one in force is layered over.
+
 ### Fixed
 - The version check cannot fail a command. Every step of it now sits behind one
   boundary rather than a list of the failures somebody thought of, and the

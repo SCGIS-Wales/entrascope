@@ -19,11 +19,13 @@ import click
 
 from entrascope import __version__
 from entrascope.config import (
-    SENTINEL_FILE,
     Config,
     candidate_directories,
     load_config,
+    packaged_config_dir,
     read_text_file,
+    repository_config_dir,
+    user_config_dir,
 )
 from entrascope.credentials import resolve_auth
 from entrascope.discovery import (
@@ -151,6 +153,7 @@ def build_settings(
     output: str,
     verbose: bool,
     timezone: str | None = None,
+    credential_file: str | None = None,
 ) -> dict[str, Any]:
     """Load configuration and prepare the shared settings for every command."""
     config = load_config(config_dir)
@@ -161,7 +164,12 @@ def build_settings(
     if auth:
         bind_context(auth_source=auth)
     announce_new_version(config, output)
-    return {"config": config, "auth": auth, "output": output}
+    return {
+        "config": config,
+        "auth": auth,
+        "output": output,
+        "credential_file": credential_file,
+    }
 
 
 def settings_of(context: click.Context) -> dict[str, Any]:
@@ -511,6 +519,11 @@ PICK_HELP = (
 )
 
 #: One idea, described one way, wherever it appears.
+CREDENTIALS_HELP = (
+    "Credential file to use. A bare name is taken as a file inside ~/.entra, "
+    "so --credentials provisioner-credentials-stage.json picks the one next to "
+    "the default. A path is used as given. Naming one means the file source."
+)
 APP_SELECTOR_HELP = (
     "Application id, object id, or part of a display name. Whichever of those "
     "the error message gave you."
@@ -610,7 +623,9 @@ def authenticated_session(
     the two have different signatures.
     """
     config: Config = settings["config"]
-    context, credential = resolve_auth(config, settings.get("auth"))
+    context, credential = resolve_auth(
+        config, settings.get("auth"), named=settings.get("credential_file")
+    )
     bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
     token = graph_token_provider(config, credential)
     return config, build_session(config, token), token
@@ -619,7 +634,9 @@ def authenticated_session(
 def logs_client(settings: Mapping[str, Any]) -> tuple[Config, Any]:
     """Resolve an identity and build the Log Analytics client."""
     config: Config = settings["config"]
-    _, credential = resolve_auth(config, settings.get("auth"))
+    _, credential = resolve_auth(
+        config, settings.get("auth"), named=settings.get("credential_file")
+    )
     return config, build_logs_client(credential, config)
 
 
@@ -863,6 +880,7 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
     default=None,
     help="Directory holding the configuration files.",
 )
+@click.option("--credentials", "credential_file", default=None, help=CREDENTIALS_HELP)
 @click.option("--verbose", is_flag=True, help=VERBOSE_HELP)
 @click.pass_context
 @handled
@@ -871,6 +889,7 @@ def cli(
     auth: str | None,
     output: str,
     config_dir: Path | None,
+    credential_file: str | None,
     verbose: bool,
 ) -> None:
     """Diagnose Entra ID and Azure application authentication failures.
@@ -883,7 +902,9 @@ def cli(
     through Microsoft Graph and through Azure Monitor.
     """
     context.ensure_object(dict)
-    context.obj[SETTINGS] = build_settings(config_dir, auth, output, verbose)
+    context.obj[SETTINGS] = build_settings(
+        config_dir, auth, output, verbose, None, credential_file
+    )
 
 
 @cli.command(cls=GlobalOptionCommand)
@@ -1022,7 +1043,8 @@ def config_path(context: click.Context) -> None:
     rows = [
         {
             "directory": str(candidate),
-            "holds_configuration": (candidate / SENTINEL_FILE).is_file(),
+            "what_it_is": describe_directory(candidate),
+            "files": len(sorted(candidate.glob("*.yaml"))) if candidate.is_dir() else 0,
             "in_use": candidate == active.root,
         }
         for candidate in candidate_directories()
@@ -1031,29 +1053,69 @@ def config_path(context: click.Context) -> None:
         rows,
         settings,
         "Configuration",
-        ("directory", "holds_configuration", "in_use"),
+        ("directory", "what_it_is", "files", "in_use"),
         "places",
     )
+    if active.defaults_root is not None:
+        emit(
+            f"\nYours at {active.root} is layered over the defaults at "
+            f"{active.defaults_root}. Anything you have not changed comes from "
+            "there, so an upgrade that adds a setting is picked up on its own."
+        )
+    elif active.root == packaged_config_dir():
+        emit(
+            "\nThis is the copy inside the package, which is replaced whenever "
+            "entrascope is upgraded. Run entrascope config export to take a "
+            "copy that is not."
+        )
+
+
+def describe_directory(candidate: Path) -> str:
+    """Say what a candidate directory is, so the order makes sense."""
+    if candidate == user_config_dir():
+        return "yours, layered over the defaults, survives an upgrade"
+    if candidate == packaged_config_dir():
+        return "shipped defaults, replaced on upgrade"
+    if candidate == repository_config_dir():
+        return "a development checkout"
+    return "named explicitly, used as it stands"
 
 
 @config_group.command("export")
 @click.argument(
-    "directory", type=click.Path(file_okay=False, path_type=Path), required=True
+    "directory", type=click.Path(file_okay=False, path_type=Path), required=False
 )
 @click.option("--force", is_flag=True, help="Overwrite files that are already there.")
+@click.option(
+    "--only",
+    "only",
+    multiple=True,
+    help="Copy just these files, for example --only credentials.yaml. A "
+    "directory holding only what you changed is easier to carry forward.",
+)
 @click.pass_context
 @handled
-def config_export(context: click.Context, directory: Path, force: bool) -> None:
+def config_export(
+    context: click.Context, directory: Path | None, force: bool, only: tuple[str, ...]
+) -> None:
     """Copy the configuration somewhere you can edit it.
 
-    Then point ENTRASCOPE_CONFIG_DIR at that directory, or pass --config-dir,
-    and your copy is used instead of the one inside the package.
+    With no directory it copies to your own configuration directory, which is
+    outside the package, is used automatically, and is never touched when
+    entrascope is upgraded. Anything you leave out of it comes from the shipped
+    defaults, so a release that adds a setting is picked up without you doing
+    anything.
     """
     settings = settings_of(context)
     active: Config = settings["config"]
-    written = copy_configuration(active.root, directory, force=force)
-    emit(f"Copied {len(written)} files from {active.root} to {directory}.")
-    emit(f"Use it with:  export ENTRASCOPE_CONFIG_DIR={directory}")
+    target = directory or user_config_dir()
+    source = active.defaults_root or active.root
+    written = copy_configuration(source, target, force=force, only=only)
+    emit(f"Copied {len(written)} files from {source} to {target}.")
+    if directory is None:
+        emit("That directory is used automatically and survives an upgrade.")
+    else:
+        emit(f"Use it with:  export ENTRASCOPE_CONFIG_DIR={target}")
 
 
 @config_group.command("show")
@@ -1074,11 +1136,16 @@ def config_show(context: click.Context, name: str) -> None:
     emit(read_text_file(path))
 
 
-def copy_configuration(source: Path, destination: Path, *, force: bool) -> list[Path]:
+def copy_configuration(
+    source: Path, destination: Path, *, force: bool, only: Sequence[str] = ()
+) -> list[Path]:
     """Copy a configuration directory, refusing to overwrite without being told."""
     written: list[Path] = []
+    wanted = set(only)
     for item in sorted(source.rglob("*")):
         if item.is_dir():
+            continue
+        if wanted and item.name not in wanted:
             continue
         target = destination / item.relative_to(source)
         if target.exists() and not force:
@@ -1178,7 +1245,9 @@ def whoami_command(context: click.Context, no_policies: bool) -> None:
     """
     settings = settings_of(context)
     config: Config = settings["config"]
-    auth_context, credential = resolve_auth(config, settings.get("auth"))
+    auth_context, credential = resolve_auth(
+        config, settings.get("auth"), named=settings.get("credential_file")
+    )
     session = graph_session_for(config, credential)
     try:
         report = run_whoami(
@@ -1318,7 +1387,7 @@ def doctor(context: click.Context) -> None:
     config: Config = settings["config"]
     auth: AuthSource | None = settings.get("auth")
     output: OutputFormat = settings.get("output", "table")
-    results = run_checks(config, requested=auth)
+    results = run_checks(config, requested=auth, named=settings.get("credential_file"))
     show_checks(results, config, output)
     raise SystemExit(exit_code_for_checks(results))
 

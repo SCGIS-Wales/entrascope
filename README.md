@@ -98,6 +98,18 @@ For unattended use, place client credentials at
 `TenantID`. The file must be mode 0600 inside a directory of mode 0700, and
 entrascope refuses to run otherwise.
 
+One file per tenant is ordinary, so the file can be named:
+
+```bash
+entrascope --credentials provisioner-credentials-stage.json doctor
+export ENTRASCOPE_CREDENTIAL_FILE=provisioner-credentials-stage.json
+```
+
+A bare name is a file inside `~/.entra`; a path is used as given. Naming one
+means the file source, so `--auth` is not needed as well. When the expected
+file is absent, entrascope lists the ones that are there rather than repeating
+the name it wanted.
+
 ## Using it
 
 Run `entrascope` with no arguments and it tells you what it can do, then offers
@@ -235,19 +247,30 @@ logs of any kind need an Entra ID P1 or P2 licence; audit logs do not.
 ### Configuration
 
 Every endpoint, table name, retry value, error code, vocabulary and
-documentation link lives in configuration rather than in code. An installed
-entrascope carries its own copy inside the package, which is replaced on
-upgrade, so take a copy to edit:
+documentation link lives in configuration rather than in code.
 
 ```bash
-entrascope config path                    # where it is being read from
-entrascope config export ~/.entrascope    # take a copy
-export ENTRASCOPE_CONFIG_DIR=~/.entrascope
-entrascope config show endpoints.yaml     # read one file
+entrascope config path                              # which directory is in force
+entrascope config export                            # take a copy you can edit
+entrascope config export --only credentials.yaml    # or just the one file
+entrascope config show endpoints.yaml               # read one file
 ```
 
-`--config-dir` does the same for one command, and a directory named that way is
-required rather than preferred, so a typo fails instead of quietly falling back.
+`config export` writes to `~/.config/entrascope`, which is **outside the
+package, so upgrading never touches it**, and which is used automatically. It
+is **layered over the shipped defaults**: copy only the files you want to
+change, and everything else comes from underneath, so a release that adds a
+setting is picked up without you doing anything and a file you wrote two
+releases ago keeps working.
+
+Do not edit the copy inside `site-packages`. It is replaced every time
+entrascope is upgraded, and `entrascope config path` will tell you if that is
+the one being read.
+
+`--config-dir` and `ENTRASCOPE_CONFIG_DIR` name a directory for one command or
+one shell. A directory named that way is used **as it stands**, with no
+layering, and is required rather than preferred, so a typo fails instead of
+quietly falling back.
 
 ### Output
 
