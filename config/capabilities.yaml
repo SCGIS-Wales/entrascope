@@ -248,3 +248,15 @@ licences:
   p1_service_plans:
     - AAD_PREMIUM
   free_label: Free
+
+# Which grant each part of the identity report needs. When a lookup is refused,
+# the report names the permission that would have answered it, rather than only
+# reporting the refusal.
+lookup_permissions:
+  tenant: Organization.Read.All, or Directory.Read.All
+  signed_in_user: User.Read
+  memberships: Directory.Read.All
+  service_principal: Application.Read.All
+  granted_permissions: Application.Read.All, or Directory.Read.All
+  conditional_access: Policy.Read.All
+  reachable_tenants: an Azure Resource Manager role on at least one subscription

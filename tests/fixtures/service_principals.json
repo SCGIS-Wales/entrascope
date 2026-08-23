@@ -9,11 +9,24 @@
       "accountEnabled": true,
       "appRoleAssignmentRequired": true,
       "preferredSingleSignOnMode": null,
-      "replyUrls": ["https://app.example.invalid/callback"],
-      "servicePrincipalNames": ["api://aaaaaaaa-1111-1111-1111-111111111111"],
-      "tags": ["WindowsAzureActiveDirectoryIntegratedApp"],
+      "replyUrls": [
+        "https://app.example.invalid/callback"
+      ],
+      "servicePrincipalNames": [
+        "api://aaaaaaaa-1111-1111-1111-111111111111"
+      ],
+      "tags": [
+        "WindowsAzureActiveDirectoryIntegratedApp"
+      ],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "77777777-7777-7777-7777-777777777777",
@@ -24,8 +37,12 @@
       "accountEnabled": true,
       "appRoleAssignmentRequired": false,
       "preferredSingleSignOnMode": "saml",
-      "replyUrls": ["https://saas.example.invalid/acs"],
-      "servicePrincipalNames": ["https://saas.example.invalid/entity"],
+      "replyUrls": [
+        "https://saas.example.invalid/acs"
+      ],
+      "servicePrincipalNames": [
+        "https://saas.example.invalid/entity"
+      ],
       "tags": [
         "WindowsAzureActiveDirectoryGalleryApplicationPrimaryV1",
         "WindowsAzureActiveDirectoryIntegratedApp"
@@ -40,6 +57,13 @@
           "startDateTime": "2026-01-01T00:00:00Z",
           "endDateTime": "2026-09-01T00:00:00Z"
         }
+      ],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
       ]
     },
     {
@@ -51,11 +75,22 @@
       "accountEnabled": true,
       "appRoleAssignmentRequired": true,
       "preferredSingleSignOnMode": "saml",
-      "replyUrls": ["https://internal.example.invalid/acs"],
-      "servicePrincipalNames": ["https://internal.example.invalid/entity"],
+      "replyUrls": [
+        "https://internal.example.invalid/acs"
+      ],
+      "servicePrincipalNames": [
+        "https://internal.example.invalid/entity"
+      ],
       "tags": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "99999999-9999-9999-9999-999999999999",
@@ -67,10 +102,19 @@
       "appRoleAssignmentRequired": false,
       "preferredSingleSignOnMode": null,
       "replyUrls": [],
-      "servicePrincipalNames": ["aaaaaaaa-9999-9999-9999-999999999999"],
+      "servicePrincipalNames": [
+        "aaaaaaaa-9999-9999-9999-999999999999"
+      ],
       "tags": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "bbbbbbbb-1111-1111-1111-111111111111",
@@ -85,7 +129,14 @@
       "servicePrincipalNames": [],
       "tags": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     }
   ]
 }

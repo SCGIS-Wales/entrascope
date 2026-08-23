@@ -372,8 +372,17 @@ def investigate(
     application, matched by application id, object id or display name.
     """
     ceiling = config.retry.paging.max_objects
-    applications = discover_applications(session, config, token, limit=ceiling)
-    principals = discover_service_principals(session, config, token, limit=ceiling)
+    log.info("reading application registrations")
+    # Owners are the only detail any rule reads, and they come back with the
+    # page. Federated credentials and role assignments would be one call per
+    # object each, which on a large tenant is thousands of calls for nothing.
+    applications = discover_applications(
+        session, config, token, limit=ceiling, with_federated=False
+    )
+    log.info("reading enterprise applications")
+    principals = discover_service_principals(
+        session, config, token, limit=ceiling, with_details=False
+    )
     truncated = [
         f"{name} reached the ceiling of {ceiling} objects, so this is a "
         "partial view. Raise paging.max_objects in config/retry.yaml, or "
@@ -389,6 +398,7 @@ def investigate(
         kept = tuple(item for item in principals if not is_first_party(item, config))
         excluded = len(principals) - len(kept)
         principals = kept
+    log.info("reading the audit log and the sign in logs")
     audit, sign_ins, gathered = gather_logs(session, config, limit=limit, kinds=kinds)
     notes = [*truncated, *gathered]
     if excluded:
@@ -439,6 +449,10 @@ def investigate(
         ]
     )
 
+    log.info(
+        "applying the rules to what was read",
+        extra={"applications": len(applications), "sign_ins": len(sign_ins)},
+    )
     log.info(
         "investigation produced %s findings",
         len(findings),

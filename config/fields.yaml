@@ -33,6 +33,7 @@ service_principal:
   object_id: id
   app_id: appId
   display_name: displayName
+  created: createdDateTime
   service_principal_type: servicePrincipalType
   sign_in_audience: signInAudience
   app_role_assignment_required: appRoleAssignmentRequired
@@ -119,6 +120,31 @@ display:
     pass: green
     success: green
     valid: green
+  # The interactive chooser, which paints its own screen while it runs. The
+  # colours below are chosen to be read on a dark terminal. A name may be one
+  # of black, red, green, yellow, blue, magenta, cyan, white, any of those
+  # prefixed with "bright", or one of the wider colours orange, amber, violet,
+  # mint, slate and grey, which need a terminal with 256 colours and fall back
+  # to the nearest of the eight when there are not.
+  chooser:
+    # "black" paints the chooser on black whatever the terminal is set to, so
+    # the colours below always read the way they were chosen. "terminal" keeps
+    # whatever background the terminal already has.
+    background: black
+    foreground: white
+    # The line under the cursor.
+    highlight: bright cyan
+    # Headings, the count, and the help along the bottom.
+    heading: bright cyan
+    hint: slate
+    # Colour by meaning. An application whose secret has expired cannot sign
+    # in at all, which is why it is the loudest colour on the screen.
+    tones:
+      danger: bright red
+      warning: amber
+      oauth: orange
+      saml: violet
+      quiet: slate
 
 findings:
   # Rules the investigation applies. Thresholds and wording are configuration

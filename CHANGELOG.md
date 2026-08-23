@@ -7,7 +7,34 @@ versioning.
 
 ## [Unreleased]
 
+### Changed
+- discover and inspect were one question asked at two depths, so they are one
+  command. `inspect applications`, `inspect enterprise-apps` and
+  `inspect gallery` are where the lists live, `inspect <name>` reads one
+  application, and `inspect` with nothing offers the list. `discover` is the
+  name it used to have and still works, short forms and all.
+- config show with nothing named is now the configuration entrascope is
+  actually running with, as YAML, above the full paths it was read from and the
+  directories it searched in order. Naming a file still prints that file, now
+  with its path above it.
+- Every menu comes back after the command it ran, rather than returning to the
+  shell, and offers the way out rather than leaving it to be guessed at. A
+  command that fails from a menu says so and the menu returns. A prompt for an
+  argument takes a blank answer as going back. Escape goes back a level rather
+  than ending the session.
+- After reading an application the choice is a menu: back to the list, save it
+  to a YAML file, or leave. It was a yes or no question, which could not offer
+  the file.
+
 ### Fixed
+- Investigation read the owners, federated credentials and role assignments of
+  every object one call at a time, which on a tenant of several hundred was
+  thousands of calls and minutes of waiting. Owners now come back with the
+  page, expanded, and nothing else is read that no rule looks at. It also says
+  what it is doing as it goes.
+- The arrow keys did nothing while a search was being typed, so narrowing five
+  hundred applications to two left no way to choose either. Movement now works
+  the same whether or not a search is in progress.
 - inspect read every object in the tenant in full before it could offer a list
   of names, which on a directory of several hundred meant over a thousand calls
   and minutes of silence that looked like a hang. The list is now names and
@@ -23,6 +50,20 @@ versioning.
 - Managed identities are kept out of the chooser. Azure creates one per
   resource and Defender one per subscription, so a tenant holds hundreds of
   them. What was hidden is counted and --all includes them.
+- A lookup the identity is not allowed to make now names the grant that would
+  have answered it, rather than only reporting the refusal.
+- "Reading the applications in the tenant" is now "Reading applications".
+
+### Added
+- The chooser is coloured by meaning, for a dark terminal: an expired
+  credential red, one expiring amber, an OAuth or OpenID Connect application
+  orange, a SAML application violet, a managed identity in the quietest colour
+  on the screen. The palette is configuration, under fields.display.chooser,
+  and the chooser paints its own background so the colours are read against
+  the one they were chosen for. A terminal with eight colours falls back to the
+  nearest of them, and one with none falls back to bold, dim and reverse.
+- The chooser sorts: s cycles between name, name reversed, newest and oldest.
+  Page up and page down move a screen at a time.
 
 ### Added
 - A refusal that names a Microsoft Graph permission now prints the exact

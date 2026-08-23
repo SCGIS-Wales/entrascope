@@ -6,17 +6,35 @@
       "displayName": "Confidential web application",
       "signInAudience": "AzureADMyOrg",
       "createdDateTime": "2024-01-15T09:00:00Z",
-      "identifierUris": ["api://aaaaaaaa-1111-1111-1111-111111111111"],
-      "web": {"redirectUris": ["https://app.example.invalid/callback"]},
-      "spa": {"redirectUris": []},
-      "publicClient": {"redirectUris": []},
-      "api": {"requestedAccessTokenVersion": 2},
+      "identifierUris": [
+        "api://aaaaaaaa-1111-1111-1111-111111111111"
+      ],
+      "web": {
+        "redirectUris": [
+          "https://app.example.invalid/callback"
+        ]
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
+      "api": {
+        "requestedAccessTokenVersion": 2
+      },
       "requiredResourceAccess": [
         {
           "resourceAppId": "00000003-0000-0000-c000-000000000000",
           "resourceAccess": [
-            {"id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "type": "Role"},
-            {"id": "eeee1111-1111-1111-1111-111111111111", "type": "Scope"}
+            {
+              "id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+              "type": "Role"
+            },
+            {
+              "id": "eeee1111-1111-1111-1111-111111111111",
+              "type": "Scope"
+            }
           ]
         }
       ],
@@ -34,7 +52,14 @@
           "endDateTime": "2024-01-15T09:00:00Z"
         }
       ],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "22222222-2222-2222-2222-222222222222",
@@ -43,12 +68,27 @@
       "signInAudience": "AzureADandPersonalMicrosoftAccount",
       "createdDateTime": "2025-06-01T12:00:00Z",
       "identifierUris": [],
-      "web": {"redirectUris": []},
-      "spa": {"redirectUris": ["https://spa.example.invalid/"]},
-      "publicClient": {"redirectUris": []},
+      "web": {
+        "redirectUris": []
+      },
+      "spa": {
+        "redirectUris": [
+          "https://spa.example.invalid/"
+        ]
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
       "requiredResourceAccess": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "33333333-3333-3333-3333-333333333333",
@@ -57,12 +97,27 @@
       "signInAudience": "AzureADMultipleOrgs",
       "createdDateTime": "2025-02-20T08:30:00Z",
       "identifierUris": [],
-      "web": {"redirectUris": []},
-      "spa": {"redirectUris": []},
-      "publicClient": {"redirectUris": ["http://localhost:8400"]},
+      "web": {
+        "redirectUris": []
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": [
+          "http://localhost:8400"
+        ]
+      },
       "requiredResourceAccess": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "44444444-4444-4444-4444-444444444444",
@@ -71,12 +126,25 @@
       "signInAudience": "AzureADMyOrg",
       "createdDateTime": "2026-03-10T10:00:00Z",
       "identifierUris": [],
-      "web": {"redirectUris": []},
-      "spa": {"redirectUris": []},
-      "publicClient": {"redirectUris": []},
+      "web": {
+        "redirectUris": []
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
       "requiredResourceAccess": [],
       "passwordCredentials": [],
-      "keyCredentials": []
+      "keyCredentials": [],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
+        }
+      ]
     },
     {
       "id": "55555555-5555-5555-5555-555555555555",
@@ -85,9 +153,15 @@
       "signInAudience": "PersonalMicrosoftAccount",
       "createdDateTime": "2025-11-05T16:45:00Z",
       "identifierUris": [],
-      "web": {"redirectUris": []},
-      "spa": {"redirectUris": []},
-      "publicClient": {"redirectUris": []},
+      "web": {
+        "redirectUris": []
+      },
+      "spa": {
+        "redirectUris": []
+      },
+      "publicClient": {
+        "redirectUris": []
+      },
       "requiredResourceAccess": [],
       "passwordCredentials": [],
       "keyCredentials": [
@@ -98,6 +172,13 @@
           "usage": "Verify",
           "startDateTime": "2025-11-05T16:45:00Z",
           "endDateTime": "2026-09-05T16:45:00Z"
+        }
+      ],
+      "owners": [
+        {
+          "id": "0a0a0a0a-1111-1111-1111-111111111111",
+          "displayName": "Platform Engineering",
+          "userPrincipalName": "platform.engineering@example.invalid"
         }
       ]
     }

@@ -214,11 +214,14 @@ def collection_params(
     top: int | None = None,
     order_by: str | None = None,
     page_size: bool = True,
+    expand: str = "",
 ) -> dict[str, Any]:
     """Build the OData query parameters for a collection request."""
     params: dict[str, Any] = {}
     if page_size:
         params["$top"] = top or config.retry.paging.page_size
+    if expand:
+        params["$expand"] = expand
     if select:
         params["$select"] = ",".join(select)
     if filter_expression:
@@ -240,12 +243,18 @@ def get_collection(
     limit: int | None = None,
     beta: bool = False,
     path_parameters: Mapping[str, str] | None = None,
+    expand: str = "",
 ) -> tuple[dict[str, Any], ...]:
     """Return every item of one configured Graph collection.
 
     A page size and a limit are different things. Graph treats $top as the
     number of items per page and keeps paging beyond it, so a caller asking for
     twelve rows is given twelve rows here rather than every page of twelve.
+
+    Expanding a related collection brings it back with the page rather than one
+    call per object. Graph shrinks the page when it is asked to expand, so this
+    is a trade of more pages against far fewer calls, and on a tenant of any
+    size the trade is worth making by a wide margin.
     """
     url = graph_url(config, endpoint, path_parameters, beta=beta)
     params = collection_params(
@@ -255,6 +264,7 @@ def get_collection(
         top=top,
         order_by=order_by,
         page_size=accepts_page_size(config, endpoint),
+        expand=expand,
     )
     items = page(session, url, config, params=params)
     if limit is None:

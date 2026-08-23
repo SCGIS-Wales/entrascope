@@ -236,6 +236,7 @@ class ServicePrincipalSummary(NamedTuple):
     saml: SamlConfiguration | None
     owners: tuple[str, ...]
     tags: tuple[str, ...]
+    created: str = ""
     owner_tenant_id: str = ""
 
     def expiring(self) -> tuple[CredentialSummary, ...]:

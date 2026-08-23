@@ -47,14 +47,32 @@ NO_APP_ROLE = "00000000-0000-0000-0000-000000000000"
 
 
 def safely(
-    call: Callable[[], Any], notes: list[str], description: str, default: Any
+    call: Callable[[], Any],
+    notes: list[str],
+    description: str,
+    default: Any,
+    needs: str = "",
 ) -> Any:
-    """Run one lookup, recording a refusal rather than failing the report."""
+    """Run one lookup, recording a refusal rather than failing the report.
+
+    An identity is usually granted some of what the report asks for and not
+    all of it, and an application credential is granted less than a person is.
+    A refusal names the grant that would have answered it, because a report
+    saying only that something was denied leaves the reader no better off.
+    """
     try:
         return call()
     except ApiCallError as error:
-        notes.append(f"{description}: {error.error.summary()}")
+        note = f"{description}: {error.error.summary()}"
+        if needs:
+            note = f"{note}. Grant {needs} to see this."
+        notes.append(note)
         return default
+
+
+def needed_for(config: Config, lookup: str) -> str:
+    """Return the grant a part of the report needs, if configuration names one."""
+    return config.capabilities.lookup_permissions.get(lookup, "")
 
 
 def membership(rows: Sequence[Mapping[str, Any]], kind: str) -> list[str]:
@@ -75,6 +93,7 @@ def tenant_details(
         notes,
         "Tenant details",
         (),
+        needed_for(config, "tenant"),
     )
     if not rows:
         return {}
@@ -113,6 +132,7 @@ def reachable_tenants(
             notes,
             "Reachable tenants",
             {},
+            needed_for(config, "reachable_tenants"),
         )
     finally:
         session.close()
@@ -139,13 +159,18 @@ def signed_in_user(
 ) -> dict[str, Any]:
     """Return the person a delegated session belongs to, and what bounds them."""
     profile = safely(
-        lambda: get_object(session, config, "me"), notes, "Signed in user", {}
+        lambda: get_object(session, config, "me"),
+        notes,
+        "Signed in user",
+        {},
+        needed_for(config, "signed_in_user"),
     )
     memberships = safely(
         lambda: get_collection(session, config, "me_member_of"),
         notes,
         "Directory roles and groups",
         (),
+        needed_for(config, "memberships"),
     )
     return {
         "object_id": text(profile.get("id")),
@@ -171,6 +196,7 @@ def service_principal_identity(
         notes,
         "Service principal",
         (),
+        needed_for(config, "service_principal"),
     )
     if not rows:
         return {}
@@ -186,6 +212,7 @@ def service_principal_identity(
         notes,
         "Directory roles and groups",
         (),
+        needed_for(config, "memberships"),
     )
     granted = safely(
         lambda: get_collection(
@@ -197,6 +224,7 @@ def service_principal_identity(
         notes,
         "Granted application permissions",
         (),
+        needed_for(config, "granted_permissions"),
     )
     return {
         "object_id": object_id,
@@ -235,6 +263,7 @@ def conditional_access(
         notes,
         "Conditional access policies",
         (),
+        needed_for(config, "conditional_access"),
     )
     policies = [
         {
