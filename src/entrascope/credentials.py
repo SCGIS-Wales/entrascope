@@ -42,6 +42,23 @@ log = get_logger(__name__)
 AZURE_CLI_EXECUTABLE = "az"
 
 
+def unsafe_reason(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> str:
+    """Return why an existing credential file cannot be used, or nothing.
+
+    A file that is not there is not a problem: something else will answer. A
+    file that is there and is readable by anyone else is a problem, and the
+    contract says so plainly. The two must not be treated alike.
+    """
+    if not resolve_file(settings, home, named).is_file():
+        return ""
+    for result in check_permissions(settings, home, named):
+        if not result.passed:
+            return f"{result.detail} Fix it with: {result.remediation}"
+    return ""
+
+
 def first_line(error: Exception) -> str:
     """Return the first line of an error, which is the part that says what."""
     return str(error).splitlines()[0] if str(error) else error.__class__.__name__
@@ -447,6 +464,18 @@ def resolve_auth(
         log.debug("authenticated using %s", context.description)
         return context, credential
 
+    # A credential file that is there but unsafe stops everything. Working
+    # around it would leave a secret readable by others while the tool carried
+    # on as though nothing were wrong, and the contract says refuse to run.
+    unsafe = unsafe_reason(settings, home, named)
+    if unsafe:
+        raise CredentialError(
+            f"The credential file cannot be used, and entrascope will not work "
+            f"around it.\n  {unsafe}\n"
+            "  Fix that, or name another source with --auth to leave the file "
+            "alone."
+        )
+
     failures: list[str] = []
     for source in resolution_order(settings):
         if not source_enabled(settings, source):
@@ -461,9 +490,11 @@ def resolve_auth(
         log.debug("authenticated using %s", context.description)
         # What was passed over on the way is worth saying. A source that was
         # expected to answer and quietly did not is the commonest confusion
-        # there is, and nothing else reports it.
+        # there is, and nothing else reports it. It goes to debug because the
+        # case that actually matters, an unusable credential file, is now an
+        # error rather than something to be read about afterwards.
         for skipped in failures:
-            log.info("passed over %s", skipped)
+            log.debug("passed over %s", skipped)
         return context._replace(skipped=tuple(failures)), credential
 
     tried = ", ".join(

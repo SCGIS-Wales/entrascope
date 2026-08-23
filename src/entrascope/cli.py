@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from functools import wraps
 from importlib import import_module
 from importlib.util import find_spec
@@ -60,6 +60,7 @@ from entrascope.models import (
     AUTH_SOURCE_ORDER,
     SEVERITY_ORDER,
     ApiCallError,
+    AuthContext,
     AuthSource,
     ConfigError,
     CredentialError,
@@ -176,14 +177,16 @@ def settings_of(context: click.Context) -> dict[str, Any]:
     """Return the shared settings from the click context.
 
     The settings are placed on the root context by the group callback, so a
-    subcommand and the error handler both find them by walking up.
+    subcommand and the error handler both find them by walking up. The dict
+    itself is returned rather than a copy, because a command records what it
+    authenticated as and the error handler reads it back.
     """
     current: click.Context | None = context
     while current is not None:
         values = current.obj or {}
         result = values.get(SETTINGS) if isinstance(values, dict) else None
         if isinstance(result, dict):
-            return dict(result)
+            return result
         current = current.parent
     return {}
 
@@ -614,7 +617,7 @@ Examples:
 
 
 def authenticated_session(
-    settings: Mapping[str, Any],
+    settings: MutableMapping[str, Any],
 ) -> tuple[Config, Session, Callable[[], str]]:
     """Resolve an identity, build a session, and return the token provider too.
 
@@ -627,6 +630,9 @@ def authenticated_session(
         config, settings.get("auth"), named=settings.get("credential_file")
     )
     bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
+    # Remembered so that a failure later can say which identity was used and
+    # what was passed over to reach it. Both are the first questions asked.
+    settings["identity"] = context
     token = graph_token_provider(config, credential)
     return config, build_session(config, token), token
 
@@ -751,10 +757,18 @@ def explanation_for(error: ApiCallError) -> str:
     config = settings.get("config")
     if config is None:
         return ""
+    identity = settings.get("identity")
+    context_lines: list[str] = []
+    if isinstance(identity, AuthContext):
+        context_lines.append(f"\nAuthenticated as: {identity.description}.")
+        if identity.skipped:
+            context_lines.append(
+                "Passed over on the way: " + "; ".join(identity.skipped) + "."
+            )
     explanation = explain_api_error(error.error, config)
     if not explanation.known:
-        return ""
-    lines = [f"\n{explanation.code}: {explanation.meaning}"]
+        return "\n".join(context_lines)
+    lines = [*context_lines, f"\n{explanation.code}: {explanation.meaning}"]
     if explanation.likely_cause:
         lines.append(f"Likely cause: {explanation.likely_cause}")
     lines.append(f"Remediation: {explanation.remediation}")
