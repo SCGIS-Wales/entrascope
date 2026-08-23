@@ -318,3 +318,24 @@ def test_the_standard_streams_are_never_closed(config: Config) -> None:
     configure_logging(config, surface="cli")
     assert not sys.stderr.closed
     assert not sys.stdout.closed
+
+
+def test_a_known_secret_is_redacted_as_a_literal(
+    config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A library that echoes what it was given will not use a name we know."""
+    from entrascope.logger import also_redact, configure_logging, get_logger
+
+    configure_logging(config)
+    also_redact("hunter2-the-actual-secret")
+    get_logger("tests").warning("the authority said: hunter2-the-actual-secret")
+    written = capsys.readouterr()
+    assert "hunter2-the-actual-secret" not in (written.err + written.out)
+
+
+def test_redacting_nothing_changes_nothing(config: Config) -> None:
+    """An empty secret is not a secret, and must not become a pattern."""
+    from entrascope.logger import also_redact, configure_logging
+
+    configure_logging(config)
+    also_redact("")

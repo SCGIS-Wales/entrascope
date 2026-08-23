@@ -1477,3 +1477,44 @@ def test_upgrade_check_names_the_files_even_when_up_to_date(
     )
     result = run(["upgrade", "--check"])
     assert "wheel.whl" in result.output
+
+
+def test_a_saved_file_never_writes_over_one_that_is_there(tmp_path: Path) -> None:
+    """Saving is meant to keep something, not to replace what was kept."""
+    from entrascope.cli import free_name
+
+    first = tmp_path / "thing.yaml"
+    first.write_text("one", encoding="utf-8")
+    assert free_name(first).name == "thing-2.yaml"
+
+
+def test_a_display_name_cannot_become_a_path(tmp_path: Path) -> None:
+    """A display name is somebody else's text, and a slash is a directory."""
+    from entrascope.cli import safe_name
+
+    assert safe_name("../../etc/passwd", "application").name == "etc-passwd.yaml"
+    assert safe_name("   ", "application").name == "application.yaml"
+
+
+def test_an_export_that_would_half_finish_does_not_start(tmp_path: Path) -> None:
+    """Some of one release and some of another is worse than neither."""
+    from entrascope.cli import copy_configuration
+    from entrascope.config import repository_config_dir
+    from entrascope.models import ConfigError
+
+    destination = tmp_path / "config"
+    destination.mkdir()
+    (destination / "tables.yaml").write_text("mine", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        copy_configuration(repository_config_dir(), destination, force=False)
+    assert sorted(item.name for item in destination.iterdir()) == ["tables.yaml"]
+
+
+@responses.activate
+def test_follow_with_machine_output_says_it_cannot(authenticated: None) -> None:
+    """A flag that is ignored in silence is a flag nobody trusts again."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = run(["--auth", "file", "--output", "json", "investigate", "--follow"])
+    assert "cannot be combined" in result.output

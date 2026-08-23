@@ -452,3 +452,21 @@ def test_a_loopback_address_is_accepted(config: Config) -> None:
 def test_https_is_accepted(config: Config) -> None:
     """The ordinary case."""
     assert base_url(config, ENVIRON) == BASE
+
+
+def test_a_correlation_id_from_the_wire_cannot_forge_a_log_line() -> None:
+    """It appears on every line the request causes, so it must be plain."""
+    from starlette.datastructures import Headers
+
+    from entrascope.mcp_http import correlation_from
+
+    class Asked:
+        def __init__(self, value: str) -> None:
+            self.headers = Headers({"x-correlation-id": value})
+
+    plain = correlation_from(Asked("7f3c-1234:abc"))
+    assert plain == "7f3c-1234:abc"
+    forged = correlation_from(Asked("ok\nERROR the tenant was deleted"))
+    assert "\n" not in forged
+    assert forged != "ok\nERROR the tenant was deleted"
+    assert correlation_from(Asked("x" * 200)) != "x" * 200

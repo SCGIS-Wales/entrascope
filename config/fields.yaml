@@ -152,6 +152,11 @@ display:
     # log within a minute or so of it happening, and asking more often than
     # this costs a call and answers nothing.
     interval_seconds: 20
+    # How long a poll waits. A live view is answering the question "what is
+    # happening now", so a call that has not answered in this long is better
+    # abandoned and asked again than waited on for the whole of the transport
+    # timeout, which is set for a report rather than for a screen.
+    timeout_seconds: 15
     # How many of the newest events each poll asks for. Anything already seen
     # is discarded by identifier, so this only has to cover a single interval.
     poll_events: 50

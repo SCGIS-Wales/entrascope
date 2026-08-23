@@ -1159,6 +1159,11 @@ def investigate(
 
     output: OutputFormat = settings.get("output", "table")
     if output != "table":
+        if follow:
+            emit_error(
+                "The live view draws a screen, so it cannot be combined with "
+                f"--output {output}. Reporting once instead."
+            )
         emit(render([result], config, output))
         return
 
@@ -1191,7 +1196,7 @@ def investigate(
         show(result.sign_ins, settings, "Sign ins", SIGN_IN_COLUMNS)
 
     if follow or (available() and after_findings(result, config) == "watch"):
-        watch(result, config, settings, kinds=list(kinds), target=target)
+        watch(result, config, token, kinds=list(kinds))
         return
     if result.errors():
         raise SystemExit(EXIT_CHECKS_FAILED)
@@ -1220,11 +1225,7 @@ def after_findings(result: Investigation, config: Config) -> str:
 
 def save_findings(result: Investigation, config: Config) -> None:
     """Write one investigation to a YAML file named after what it looked at."""
-    safe = "".join(
-        character if character.isalnum() or character in "-_." else "-"
-        for character in result.target
-    ).strip("-")
-    path = Path(f"investigation-{safe or 'tenant'}.yaml").resolve()
+    path = free_name(safe_name(f"investigation-{result.target}", "investigation"))
     path.write_text(yaml_text(to_payload(result), config), encoding="utf-8")
     emit(f"Saved to {path}")
 
@@ -1232,18 +1233,17 @@ def save_findings(result: Investigation, config: Config) -> None:
 def watch(
     result: Investigation,
     config: Config,
-    settings: Mapping[str, Any],
+    token: Callable[[], str],
     *,
     kinds: Sequence[str],
-    target: str,
 ) -> None:
     """Open the live view on what the investigation already read.
 
-    An empty screen and a wait of one polling interval is a poor way to start,
-    so what has been read already is what it opens on.
+    The token source outlives the session it was used with, so the view takes
+    the one the investigation authenticated with rather than authenticating a
+    second time. An empty screen and a wait of one polling interval is a poor
+    way to start, so what has been read already is what it opens on.
     """
-    _, session, token = authenticated_session(dict(settings))
-    session.close()
     follow_tenant(
         config,
         token,
@@ -1422,20 +1422,31 @@ def config_show(context: click.Context, name: str | None = None) -> None:
 def copy_configuration(
     source: Path, destination: Path, *, force: bool, only: Sequence[str] = ()
 ) -> list[Path]:
-    """Copy a configuration directory, refusing to overwrite without being told."""
-    written: list[Path] = []
+    """Copy a configuration directory, refusing to overwrite without being told.
+
+    Everything is checked before anything is written. Refusing halfway leaves a
+    directory holding some of one release and some of another, which is worse
+    than refusing before it started.
+    """
     wanted = set(only)
-    for item in sorted(source.rglob("*")):
-        if item.is_dir():
-            continue
-        if wanted and item.name not in wanted:
-            continue
-        target = destination / item.relative_to(source)
-        if target.exists() and not force:
+    pairs = [
+        (item, destination / item.relative_to(source))
+        for item in sorted(source.rglob("*"))
+        if not item.is_dir() and (not wanted or item.name in wanted)
+    ]
+    if not force:
+        existing = [str(target) for _, target in pairs if target.exists()]
+        if existing:
             raise ConfigError(
-                f"{target} is already there. Pass --force to overwrite, or "
-                "choose an empty directory."
+                f"{existing[0]} is already there, along with {len(existing) - 1} "
+                "other files. Pass --force to overwrite, or choose an empty "
+                "directory."
+                if len(existing) > 1
+                else f"{existing[0]} is already there. Pass --force to "
+                "overwrite, or choose an empty directory."
             )
+    written: list[Path] = []
+    for item, target in pairs:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(item.read_bytes())
         written.append(target)
@@ -1775,14 +1786,41 @@ def after_viewing(report: Mapping[str, Any], config: Config) -> str:
 def save_report(report: Mapping[str, Any], config: Config) -> None:
     """Write one inspection to a YAML file named after the application."""
     identity = report.get("identity") or {}
-    name = str(identity.get("display_name") or "application").strip()
-    safe = "".join(
-        character if character.isalnum() or character in "-_." else "-"
-        for character in name
-    ).strip("-")
-    path = Path(f"{safe or 'application'}.yaml").resolve()
+    name = str(identity.get("display_name") or "application")
+    path = free_name(safe_name(name, "application"))
     path.write_text(yaml_text(report, config), encoding="utf-8")
     emit(f"Saved to {path}")
+
+
+def safe_name(name: str, fallback: str) -> Path:
+    """Return a file name made from a display name.
+
+    A display name is somebody else's text. It may hold a slash, which would
+    make this a path rather than a name, so only letters, digits and a few
+    harmless characters survive.
+    """
+    kept = "".join(
+        character if character.isalnum() or character in "-_." else "-"
+        for character in name.strip()
+    ).strip("-.")
+    return Path(f"{kept or fallback}.yaml")
+
+
+def free_name(path: Path) -> Path:
+    """Return a name nothing is using, numbering it if the first one is taken.
+
+    Saving is meant to keep something, and quietly writing over what somebody
+    saved a minute ago is the opposite of keeping it.
+    """
+    candidate = path.resolve()
+    for number in range(2, 100):
+        if not candidate.exists():
+            return candidate
+        candidate = path.with_name(f"{path.stem}-{number}{path.suffix}").resolve()
+    raise ConfigError(
+        f"There are already ninety nine files named like {path.name} here. "
+        "Move some of them, or run this from another directory."
+    )
 
 
 def no_choice_made(total: int) -> str:

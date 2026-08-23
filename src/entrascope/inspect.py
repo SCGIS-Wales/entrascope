@@ -36,7 +36,7 @@ from entrascope.models import (
     ServicePrincipalSummary,
 )
 from entrascope.picker import Choice, Tone
-from entrascope.render import portal_link, to_payload
+from entrascope.render import flatten, portal_link, to_payload
 
 log = get_logger(__name__)
 
@@ -140,8 +140,14 @@ def tone_for_principal(item: ServicePrincipalSummary) -> Tone:
 
 
 def shorten(name: str, width: int) -> str:
-    """Return a name that fits, with an ellipsis where it was cut."""
-    return name if len(name) <= width else name[: width - 1] + "\u2026"
+    """Return a name that fits, with an ellipsis where it was cut.
+
+    A display name is somebody else's text and the chooser draws it on a
+    screen, so a newline or an escape sequence is taken out before anything is
+    measured or cut.
+    """
+    plain = flatten(name)
+    return plain if len(plain) <= width else plain[: width - 1] + "\u2026"
 
 
 #: All the chooser needs. Reading whole objects to draw a list of names is the

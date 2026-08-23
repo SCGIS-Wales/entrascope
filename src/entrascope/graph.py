@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from itertools import islice
 from typing import Any
+from urllib.parse import urlparse
 
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import ClientAuthenticationError
@@ -191,9 +192,28 @@ def page(
             )
             return
         following = body.get(NEXT_LINK)
-        next_url = str(following) if isinstance(following, str) else None
+        candidate = str(following) if isinstance(following, str) else None
+        # The next link comes back in the body, and every call carries a bearer
+        # token. Following one to another host would hand the token to that
+        # host. Graph would never send such a link, which is exactly why a
+        # check here costs nothing and closes the case where something between
+        # us and Graph is not what it claims to be.
+        if candidate is not None and not same_origin(url, candidate):
+            log.warning(
+                "stopped paging: the next link points at %s rather than at the "
+                "collection that was asked for",
+                urlparse(candidate).netloc or candidate,
+            )
+            return
+        next_url = candidate
         # The next link already carries the query, so it must not be repeated.
         query = None
+
+
+def same_origin(first: str, second: str) -> bool:
+    """Return whether two addresses share a scheme and a host."""
+    one, two = urlparse(first), urlparse(second)
+    return (one.scheme, one.netloc) == (two.scheme, two.netloc)
 
 
 def accepts_page_size(config: Config, endpoint: str) -> bool:

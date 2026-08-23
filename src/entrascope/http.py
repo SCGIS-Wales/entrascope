@@ -448,15 +448,26 @@ def fan_out[Item, Result](
         return context.run(work, session_for_this_thread(), item)
 
     pool = ThreadPoolExecutor(max_workers=workers)
+    interrupted = False
     try:
         futures = [pool.submit(run, item, contextvars.copy_context()) for item in items]
         return tuple(future.result() for future in futures)
     except KeyboardInterrupt:
+        # Somebody who pressed control C wants it to stop now, so the workers
+        # are abandoned rather than waited for, and their sessions are left
+        # alone: closing one out from under a call in flight would raise inside
+        # a thread nobody is going to read the output of.
+        interrupted = True
         log.warning("interrupted, abandoning %s queued calls", len(items))
         pool.shutdown(wait=False, cancel_futures=True)
         raise
     finally:
-        pool.shutdown(wait=False)
-        with made_lock:
-            for session in made:
-                session.close()
+        if not interrupted:
+            # Anything queued and not started is dropped, and anything running
+            # is waited for. A session closed while a worker still holds it is
+            # a use after free in all but name, and the first failure of a fan
+            # out is exactly when the others are still going.
+            pool.shutdown(wait=True, cancel_futures=True)
+            with made_lock:
+                for session in made:
+                    session.close()

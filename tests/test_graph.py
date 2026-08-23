@@ -302,3 +302,33 @@ def test_two_threads_missing_the_token_cache_fetch_once(config: Config) -> None:
     for thread in threads:
         thread.join()
     assert credential.calls == 1
+
+
+@responses.activate
+def test_a_next_link_to_another_host_is_not_followed(config: Config) -> None:
+    """Every call carries a bearer token, so where the next one goes matters."""
+    from entrascope.graph import page
+    from entrascope.http import build_session
+
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={
+            "value": [{"id": "one"}],
+            "@odata.nextLink": "https://elsewhere.invalid/applications?page=2",
+        },
+        status=200,
+    )
+    session = build_session(config)
+    items = list(page(session, f"{ROOT}/applications", config))
+    assert [item["id"] for item in items] == ["one"]
+    assert len(responses.calls) == 1
+
+
+def test_two_addresses_share_an_origin_or_do_not() -> None:
+    """Scheme and host, because either one differing is another server."""
+    from entrascope.graph import same_origin
+
+    assert same_origin("https://graph.invalid/a", "https://graph.invalid/b?c=1")
+    assert not same_origin("https://graph.invalid/a", "http://graph.invalid/a")
+    assert not same_origin("https://graph.invalid/a", "https://other.invalid/a")

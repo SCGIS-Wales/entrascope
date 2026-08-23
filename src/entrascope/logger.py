@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from entrascope.config import Config, Logging
-from entrascope.redaction import redact
+from entrascope.redaction import redact, register_secret
 
 #: The logger namespace. Every logger is a child of this one.
 ROOT_NAME = "entrascope"
@@ -95,6 +95,12 @@ class _RedactionFilter(logging.Filter):
     def __init__(self, settings: Logging) -> None:
         super().__init__()
         self._settings = settings
+
+    def extend(self, secret: str) -> None:
+        """Also redact one literal secret, once it is known."""
+        self._settings = self._settings.model_copy(
+            update={"redaction": register_secret(secret, self._settings.redaction)}
+        )
 
     def filter(self, record: logging.LogRecord) -> bool:
         redaction = self._settings.redaction
@@ -197,6 +203,22 @@ def configure_logging(
     logger.propagate = False
     quieten(settings, verbose=(level or "").upper() == "DEBUG")
     return logger
+
+
+def also_redact(secret: str) -> None:
+    """Add one literal secret to what the installed handlers redact.
+
+    The patterns catch a secret that appears with a recognisable key or a
+    bearer prefix. A secret that appears as a bare word, in an error message
+    from some library that echoed what it was given, would slip through, and
+    the surest way to redact a known secret is to know it.
+    """
+    if not secret:
+        return
+    for handler in logging.getLogger(ROOT_NAME).handlers:
+        for existing in handler.filters:
+            if isinstance(existing, _RedactionFilter):
+                existing.extend(secret)
 
 
 def quieten(settings: Logging, verbose: bool = False) -> None:

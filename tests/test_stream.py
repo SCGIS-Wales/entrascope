@@ -448,3 +448,33 @@ def test_one_reason_is_reported_once_however_many_sources_it_stopped() -> None:
         [("audit", "no permission"), ("interactive", "no permission")],
     )
     assert notes == ("Unavailable for audit, interactive: no permission",)
+
+
+def test_nothing_is_lost_between_the_threads(config: Config) -> None:
+    """A record can arrive while the drawing thread is emptying the queue."""
+    from collections import deque
+
+    from entrascope.stream import drain
+
+    waiting: deque[Row] = deque(
+        [row_from_record(record(message=str(number)), config) for number in range(5)]
+    )
+    taken = drain(waiting)
+    assert len(taken) == 5
+    assert not waiting
+    assert drain(waiting) == ()
+
+
+def test_an_escape_sequence_in_a_name_never_reaches_the_screen(
+    config: Config,
+) -> None:
+    """A display name is somebody else's text and the view is a screen."""
+    row = row_from_sign_in(sign_in(app_display_name="evil\x1b[2Jname\n"), config)
+    assert "\x1b" not in row.subject
+    assert "\n" not in row.subject
+
+
+def test_a_log_line_is_redacted_before_it_is_drawn(config: Config) -> None:
+    """A secret must not reach a screen because of how the screen was drawn."""
+    row = row_from_record(record(message="Authorization: Bearer abc.def.ghi"), config)
+    assert "abc.def.ghi" not in row.detail

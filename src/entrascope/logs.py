@@ -318,13 +318,36 @@ def query_provisioning_graph(
     )
 
 
+def within(value: int, ceiling: int, what: str) -> int:
+    """Return a number inside its bounds, saying so when it was not.
+
+    These reach a KQL query as numbers rather than as text, so nothing can be
+    injected through them. What they can do is ask a workspace for ten million
+    rows, which is a way to hang a terminal rather than to read a log.
+    """
+    if value < 1:
+        log.warning("%s of %s is not a number of anything, using 1", what, value)
+        return 1
+    if value > ceiling:
+        log.warning("%s of %s is above the ceiling of %s", what, value, ceiling)
+        return ceiling
+    return value
+
+
 def query_parameters(
     config: Config, *, lookback_hours: int | None = None, row_limit: int | None = None
 ) -> dict[str, Any]:
     """Return the KQL parameters common to every template."""
+    defaults = config.tables.defaults
     return {
-        "lookback_hours": lookback_hours or config.tables.defaults.lookback_hours,
-        "row_limit": row_limit or config.tables.defaults.row_limit,
+        "lookback_hours": within(
+            lookback_hours or defaults.lookback_hours,
+            defaults.max_lookback_hours,
+            "a lookback",
+        ),
+        "row_limit": within(
+            row_limit or defaults.row_limit, defaults.max_row_limit, "a row limit"
+        ),
         "app_filter": "",
         "target_filter": "",
     }

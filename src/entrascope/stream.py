@@ -16,6 +16,7 @@ from __future__ import annotations
 import curses
 import logging
 import time
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -36,7 +37,8 @@ from entrascope.logs import (
 )
 from entrascope.models import ApiCallError, AuditEvent, SignInEvent
 from entrascope.picker import Scheme, hide_cursor, start_colour
-from entrascope.render import format_timestamp
+from entrascope.redaction import redact_with_config
+from entrascope.render import flatten, format_timestamp
 
 log = get_logger(__name__)
 
@@ -137,9 +139,12 @@ def row_from_sign_in(event: SignInEvent, config: Config) -> Row:
         when=format_timestamp(event.timestamp, config),
         severity="error" if event.failed() else "ok",
         area="sign in",
-        subject=event.app_display_name or "unnamed application",
-        about=event.app_id,
-        detail=detail,
+        # A display name is somebody else's text and a line here is one line.
+        # A newline would forge a row and an escape sequence would move the
+        # cursor about, so neither reaches the screen.
+        subject=flatten(event.app_display_name) or "unnamed application",
+        about=flatten(event.app_id),
+        detail=flatten(detail),
     )
 
 
@@ -157,9 +162,9 @@ def row_from_audit(event: AuditEvent, config: Config) -> Row:
         when=format_timestamp(event.timestamp, config),
         severity=severity,
         area="directory",
-        subject=event.target or event.activity,
-        about=event.target_id,
-        detail=detail,
+        subject=flatten(event.target or event.activity),
+        about=flatten(event.target_id),
+        detail=flatten(detail),
     )
 
 
@@ -181,7 +186,11 @@ def row_from_record(record: logging.LogRecord, config: Config) -> Row:
         area="entrascope",
         subject=record.name.removeprefix("entrascope."),
         about="",
-        detail=record.getMessage(),
+        # Redacted again here rather than relied upon. The filter that redacts
+        # is attached to the handler this view displaces, and a secret reaching
+        # a screen because of how the screen was being drawn would be an
+        # indefensible way to leak one.
+        detail=flatten(str(redact_with_config(record.getMessage(), config))),
     )
 
 
@@ -197,20 +206,40 @@ def read_events(
     One source refusing must not empty the view. A tenant without a premium
     licence cannot read sign ins at all and its audit log still answers.
     """
-    limit = config.fields.display.stream.poll_events
+    settings = config.fields.display.stream
+    limit = settings.poll_events
     rows: list[Row] = []
     refusals: list[tuple[str, str]] = []
+    # A shorter wait than a report gets. The view asks again in a moment
+    # anyway, and a call still hanging when somebody leaves the view would keep
+    # the process alive after it while nothing was on the screen.
+    quick = config.model_copy(
+        update={
+            "retry": config.retry.model_copy(
+                update={
+                    "http": config.retry.http.model_copy(
+                        update={
+                            "connect_timeout_seconds": settings.timeout_seconds,
+                            "read_timeout_seconds": settings.timeout_seconds,
+                        }
+                    )
+                }
+            )
+        }
+    )
 
     def read(session: Session, source: str) -> tuple[Row, ...]:
+        # The shorter timeouts are read from the configuration handed to the
+        # call rather than from the session, so the call gets them too.
         if source == "audit":
-            events = query_audit_graph(session, config, top=limit)
+            events = query_audit_graph(session, quick, top=limit)
             return tuple(row_from_audit(event, config) for event in events)
         sign_ins = query_sign_ins_graph(
-            session, config, kind=source, app_id=app_id or None, top=limit
+            session, quick, kind=source, app_id=app_id or None, top=limit
         )
         return tuple(row_from_sign_in(event, config) for event in sign_ins)
 
-    session = build_session(config, token)
+    session = build_session(quick, token)
     try:
         # One line per reason, said here with the sources named, rather than
         # one from the transport and one from here for every source of every
@@ -238,6 +267,16 @@ def collapse(refusals: Sequence[tuple[str, str]]) -> tuple[str, ...]:
         f"Unavailable for {', '.join(sorted(sources))}: {reason}"
         for reason, sources in by_reason.items()
     )
+
+
+def drain(arriving: deque[Row]) -> tuple[Row, ...]:
+    """Take everything waiting, one item at a time so nothing is dropped."""
+    taken: list[Row] = []
+    while True:
+        try:
+            taken.append(arriving.popleft())
+        except IndexError:
+            return tuple(taken)
 
 
 def combine(older: Row, newer: Row) -> Row:
@@ -278,8 +317,15 @@ def matches(row: Row, terms: Sequence[str]) -> bool:
 
 
 def visible(rows: Sequence[Row], term: str, allowed: Sequence[str]) -> list[Row]:
-    """Return the lines a filter and a severity floor leave showing."""
+    """Return the lines a filter and a severity floor leave showing.
+
+    Drawing happens several times a second, so an empty filter does no work
+    rather than building the text of two thousand lines to match nothing
+    against.
+    """
     terms = term.lower().split()
+    if not terms:
+        return [row for row in rows if row.severity in allowed]
     return [row for row in rows if row.severity in allowed and matches(row, terms)]
 
 
@@ -436,7 +482,12 @@ def run(
     poll = poller(config, token, kinds=kinds, app_id=app_id)
 
     rows = merge((), initial, settings.maximum_rows)
-    arriving: list[Row] = []
+    # A log record can arrive on the polling thread while the drawing thread is
+    # emptying this. Reading a list and then clearing it is two steps, and a
+    # record that lands between them is lost; taking from one end of a deque is
+    # one step, and losing the line that says why the screen is empty would be
+    # the worst line to lose.
+    arriving: deque[Row] = deque(maxlen=settings.maximum_rows)
     term = ""
     searching = False
     paused = False
@@ -454,8 +505,8 @@ def run(
 
         with handed_to(take):
             while True:
-                if arriving:
-                    taken, arriving[:] = list(arriving), []
+                taken = drain(arriving)
+                if taken:
                     rows = merge(rows, taken, settings.maximum_rows)
                 if pending is not None and pending.done():
                     rows = merge(rows, harvest(pending), settings.maximum_rows)

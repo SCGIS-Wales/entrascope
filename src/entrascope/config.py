@@ -136,6 +136,8 @@ class LogQuery(_Frozen):
 class LogDefaults(_Frozen):
     lookback_hours: int
     row_limit: int
+    max_row_limit: int
+    max_lookback_hours: int
 
 
 class Tables(_Frozen):
@@ -222,6 +224,7 @@ class Chooser(_Frozen):
 
 class Stream(_Frozen):
     interval_seconds: int
+    timeout_seconds: float
     poll_events: int
     maximum_rows: int
     skip_kinds: tuple[str, ...]

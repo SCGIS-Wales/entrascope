@@ -57,6 +57,13 @@ redaction:
       regex: "(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*"
     - name: jwt
       regex: "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"
+    # A package index or a proxy address can carry a user name and a password,
+    # and the installer echoes the address it was given.
+    - name: url_credentials
+      regex: "(?<=://)[^/\\s:@]+:[^/\\s@]+(?=@)"
+    # A secret in a query string is a secret wherever the string came from.
+    - name: query_secret
+      regex: "(?i)\\b(client_secret|client_assertion|assertion|password|api[_-]?key|access_token|refresh_token|id_token)=[^&\\s\"']+"
 
 update_check:
   # A version check must never slow a command down or stop it working. It is
