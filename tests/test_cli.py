@@ -16,7 +16,12 @@ from click.testing import CliRunner
 from entrascope import __version__
 from entrascope.cli import cli
 from entrascope.config import Config
-from entrascope.render import EXIT_API, EXIT_CHECKS_FAILED, EXIT_CONFIG
+from entrascope.render import (
+    EXIT_API,
+    EXIT_CHECKS_FAILED,
+    EXIT_CONFIG,
+    EXIT_CREDENTIALS,
+)
 from tests.conftest import SENTINEL_SECRET, load_fixture
 
 
@@ -1010,3 +1015,33 @@ def test_a_broken_version_check_does_not_stop_the_upgrade_command(
     result = run(["upgrade", "--check"])
     assert result.exit_code == 0
     assert "running version" in result.output
+
+
+@responses.activate
+def test_a_failure_says_which_identity_it_used(authenticated: None) -> None:
+    """The first question after a refusal is always which identity was refused."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={"error": {"code": "Authorization_RequestDenied", "message": "no"}},
+        status=403,
+    )
+    result = run(["--auth", "file", "discover", "applications", "--no-details"])
+    assert result.exit_code == EXIT_API
+    assert "Authenticated as: client credentials from" in result.output
+
+
+def test_an_unsafe_credential_file_stops_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rather than being worked around, which is what used to happen."""
+    from entrascope.config import load_config
+    from tests.test_credentials import write_credentials
+
+    write_credentials(tmp_path, config=load_config(), directory_mode=0o750)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    result = run(["logs", "audit"])
+    assert result.exit_code == EXIT_CREDENTIALS
+    assert "will not work around it" in result.output
+    assert "chmod 0700" in result.output

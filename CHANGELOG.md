@@ -7,6 +7,17 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- A credential file that is present but unsafe now stops the command instead of
+  being passed over. The contract has always said to refuse to run, and quietly
+  authenticating some other way is not refusing: it leaves a secret readable by
+  others while the tool carries on as though nothing were wrong. A file that is
+  absent is still passed over, and naming a source with --auth still leaves the
+  file alone.
+- Any failure now says which identity answered and what was passed over to
+  reach it. The reason a credential file was skipped used to be a log line
+  nobody would see unless they happened to be reading at info level.
+
 ### Added
 - A credential file can be named: --credentials takes a bare name, which is a
   file inside the credential directory, or a path. ENTRASCOPE_CREDENTIAL_FILE

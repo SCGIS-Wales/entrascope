@@ -10,6 +10,12 @@ Reuse it exactly. Do not change it.
 - entrascope validates both at startup by taking `st_mode` masked with `0o777`
   and comparing. If either is group or world accessible it refuses to run and
   prints the exact `chmod` that fixes it, without revealing the secret.
+- Refusing means refusing. A credential file that is there and unsafe stops the
+  command even when another source could have answered, because working around
+  it would leave a secret readable by others while the tool carried on as
+  though nothing were wrong. A file that is simply absent is not a
+  misconfiguration and is passed over quietly. Naming another source with
+  `--auth` is the deliberate act that leaves the file alone.
 - An alternative filename inside `~/.entra` may be named in configuration.
 - The secret is never logged and never printed.
 
@@ -25,6 +31,11 @@ log record, so it is always obvious which identity produced a result.
 | 2 | `env` | `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID` | application |
 | 3 | `azure-cli` | `AzureCliCredential`, the session from `az login` | delegated user |
 | 4 | `default` | `DefaultAzureCredential` | varies |
+
+When resolution passes a source over, the reason is carried on the answer and
+printed with any later failure, along with the identity that did answer. A
+source that was expected to answer and quietly did not is the commonest
+confusion there is.
 
 The Azure CLI source needs no credential file, no client secret and no
 application registration. Because the token is delegated it carries the

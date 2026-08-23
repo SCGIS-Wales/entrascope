@@ -389,3 +389,66 @@ def test_the_answer_says_what_was_passed_over(
     assert any("file:" in reason for reason in context.skipped)
     assert any("does not exist" in reason for reason in context.skipped)
     assert any("env: not enabled" in reason for reason in context.skipped)
+
+
+def test_an_unsafe_credential_file_is_not_worked_around(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contract says refuse to run, and quietly using something else is not
+    refusing.
+
+    Falling through would leave a secret readable by others while the tool
+    carried on as though nothing were wrong.
+    """
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    write_credentials(tmp_path, config=config, directory_mode=0o750)
+    with pytest.raises(CredentialError) as raised:
+        resolve_auth(config, home=tmp_path, environ={})
+    message = str(raised.value)
+    assert "will not work around it" in message
+    assert "chmod 0700" in message
+    assert "--auth" in message
+
+
+def test_a_file_with_the_wrong_mode_is_not_worked_around(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file itself, not only the directory."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    write_credentials(tmp_path, config=config, file_mode=0o644)
+    with pytest.raises(CredentialError, match="chmod 0600"):
+        resolve_auth(config, home=tmp_path, environ={})
+
+
+def test_a_file_that_is_absent_is_passed_over_quietly(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not having one is not a misconfiguration. Something else can answer."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    context, _ = resolve_auth(config, home=tmp_path, environ={})
+    assert context.source == "azure-cli"
+
+
+def test_naming_another_source_leaves_an_unsafe_file_alone(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saying which source to use is the deliberate act that overrides it."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    write_credentials(tmp_path, config=config, directory_mode=0o750)
+    context, _ = resolve_auth(config, "azure-cli", home=tmp_path, environ={})
+    assert context.source == "azure-cli"
+
+
+def test_the_reason_is_reported_for_each_kind_of_unsafety(
+    tmp_path: Path, config: Config
+) -> None:
+    """Directory, file, and neither."""
+    from entrascope.credentials import unsafe_reason
+
+    assert unsafe_reason(config.credentials, tmp_path) == ""
+    write_credentials(tmp_path, config=config)
+    assert unsafe_reason(config.credentials, tmp_path) == ""
+    write_credentials(tmp_path, config=config, file_mode=0o644)
+    assert "0600" in unsafe_reason(config.credentials, tmp_path)
+    write_credentials(tmp_path, config=config, directory_mode=0o755)
+    assert "0700" in unsafe_reason(config.credentials, tmp_path)

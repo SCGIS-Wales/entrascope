@@ -110,6 +110,12 @@ means the file source, so `--auth` is not needed as well. When the expected
 file is absent, entrascope lists the ones that are there rather than repeating
 the name it wanted.
 
+A credential file that is present but unsafe stops the command rather than
+being worked around, and prints the exact `chmod`. Leaving it readable by
+others while quietly authenticating some other way is not a kindness. A file
+that is simply absent is passed over, and any later failure says which identity
+answered and what was passed over to reach it.
+
 ## Using it
 
 Run `entrascope` with no arguments and it tells you what it can do, then offers
