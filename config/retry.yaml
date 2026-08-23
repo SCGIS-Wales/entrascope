@@ -46,6 +46,14 @@ network:
   ca_directory_variables:
     - SSL_CERT_DIR
 
+# Running the installer to upgrade this package. The installer reaches the
+# network, and a package index that is briefly unreachable should cost a wait
+# rather than a failed upgrade.
+upgrade:
+  attempts: 3
+  wait_seconds: 3
+  timeout_seconds: 600
+
 concurrency:
   max_workers: 8
 

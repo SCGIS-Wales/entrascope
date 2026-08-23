@@ -7,7 +7,40 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- A command run from a menu had its output wiped by the menu redrawing over it
+  the moment it finished, which is why config show, config path, errors list
+  and upgrade all appeared to do nothing. The menu now waits for a keystroke,
+  so what a command said stays on the screen to be read and scrolled through.
+- A command that ends with a non-zero exit code, which is how doctor reports a
+  failed check and how investigate reports an error level finding, ended the
+  whole session when it was run from a menu. The code is noted and the menu
+  returns.
+- The remote server refused to start when no canonical URI was set, which
+  helped nobody trying it out on their own machine. It now assumes the loopback
+  address, says out loud that it has, and says what to set in production. Both
+  servers say that control C stops them.
+- The live view left managed identities out. Azure signs them in constantly and
+  none of it is anybody's authentication problem. --kind managed-identity
+  watches them anyway.
+- The live view said the same refusal once per source. One reason is now one
+  line, naming the sources it stopped.
+
+### Changed
+- config export with no destination writes to the downloads folder, where a
+  file is easy to find and open, and names every file it wrote. That copy is
+  for reading. config export --use writes to the configuration directory, where
+  entrascope reads it automatically, which is what the bare command used to do.
+
 ### Added
+- upgrade names the files a release published, wheel first, so somebody whose
+  Python is managed by something else, or who is behind a proxy that blocks the
+  package index, has the address to hand. upgrade --check names them too,
+  whether or not this copy is behind.
+- The installer is run again when it fails, three times by default, because a
+  package index that is briefly unreachable should cost a wait rather than an
+  upgrade. An installer that will not start at all is reported at once, since
+  no amount of waiting produces a program that is not there.
 - investigate --follow watches a tenant rather than reporting on it once. The
   audit log and the sign in logs stream newest at the top, refreshing on their
   own, coloured by meaning: errors red, warnings amber, everything else quiet.

@@ -881,7 +881,7 @@ def test_upgrade_runs_the_command_and_says_what_it_ran(
 
     monkeypatch.setattr(
         cli_module,
-        "newer_release",
+        "latest_release",
         lambda config, force=False: Release(version="v9.9.9", url="https://n.invalid"),
     )
     monkeypatch.setattr(
@@ -1297,7 +1297,7 @@ def test_a_refusal_is_printed_rather_than_raised(
     monkeypatch.setattr(cli_module, "run_upgrade", refuse)
     monkeypatch.setattr(
         cli_module,
-        "newer_release",
+        "latest_release",
         lambda *a, **k: Release(version="v9.9.9", url="https://example.invalid"),
     )
     result = run(["upgrade"])
@@ -1372,3 +1372,108 @@ def test_a_finding_names_the_application_it_is_about() -> None:
     assert "identifier" in FINDING_TABLE_COLUMNS
     assert "when" in FINDING_TABLE_COLUMNS
     assert "occurrences" not in FINDING_TABLE_COLUMNS
+
+
+def test_the_menu_waits_before_drawing_over_what_a_command_said(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The menu is drawn over the screen, so it must not repaint at once."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import LEAVE, SETTINGS, build_settings
+
+    picked = iter(["list", LEAVE])
+    waited: list[str] = []
+    monkeypatch.setattr(cli_module, "available", lambda: True)
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: next(picked))
+    monkeypatch.setattr(cli_module, "run_command", lambda *a: None)
+    monkeypatch.setattr(cli_module.click, "pause", lambda text: waited.append(text))
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        cli_module.offer_commands(errors_group, parent)
+    assert waited and "menu" in waited[0]
+
+
+def test_a_command_that_exits_with_a_code_returns_to_the_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finding is not a reason to end somebody's session."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import SETTINGS, build_settings
+
+    def fail(command: Any, name: str, ctx: Any) -> None:
+        raise SystemExit(1)
+
+    monkeypatch.setattr(cli_module, "run_command", fail)
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        assert cli_module.attempt(errors_group.commands["list"], "list", parent) is None
+
+
+def test_config_export_goes_where_it_can_be_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A configuration directory is the wrong place for a file to be read."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_DOWNLOAD_DIR", raising=False)
+    result = run(["config", "export"])
+    assert result.exit_code == 0
+    assert (downloads / "endpoints.yaml").is_file()
+    assert "for reading" in result.output
+
+
+def test_config_export_can_go_where_it_takes_effect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The copy that counts is the one entrascope reads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = run(["config", "export", "--use"])
+    assert result.exit_code == 0
+    assert (tmp_path / "config" / "entrascope" / "endpoints.yaml").is_file()
+    assert "used automatically" in result.output
+
+
+def test_upgrade_says_where_the_files_are(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Somebody who cannot run the installer can still fetch the wheel."""
+    from entrascope import cli as cli_module
+    from entrascope.upgrade import Release
+
+    wheel = "https://example.invalid/entrascope-9.9.9-py3-none-any.whl"
+    monkeypatch.setattr(
+        cli_module,
+        "latest_release",
+        lambda *a, **k: Release(
+            version="v9.9.9", url="https://example.invalid", files=(wheel,)
+        ),
+    )
+    monkeypatch.setattr(cli_module, "run_upgrade", lambda *a, **k: (["pip"], "done"))
+    result = run(["upgrade"])
+    assert wheel in result.output
+
+
+def test_upgrade_check_names_the_files_even_when_up_to_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asking what is published is worth answering however old this copy is."""
+    from entrascope import cli as cli_module
+    from entrascope.upgrade import Release
+
+    monkeypatch.setattr(
+        cli_module,
+        "latest_release",
+        lambda *a, **k: Release(
+            version="v0.0.1", url="https://example.invalid", files=("wheel.whl",)
+        ),
+    )
+    result = run(["upgrade", "--check"])
+    assert "wheel.whl" in result.output

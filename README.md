@@ -189,8 +189,10 @@ hidden. `--all` includes them.
 Any command group given no subcommand does the same: it prints its help and
 then offers its commands, asking for whatever the chosen one cannot do without.
 The menu comes back after each command rather than returning you to the shell,
-a command that fails says so and the menu returns, and every menu offers the
-way out rather than leaving you to guess at it. A prompt for an argument takes
+waiting for a keystroke first so that what the command said stays on the screen
+to be read and scrolled through. A command that fails says so and the menu
+returns, as does one that ends with a non-zero exit code, and every menu offers
+the way out rather than leaving you to guess at it. A prompt for an argument takes
 a blank answer as going back. Piped or in a script, the help is printed and
 nothing is offered, exactly as before.
 
@@ -215,6 +217,10 @@ line means: errors red, warnings amber, everything else quiet. Type `/` and
 some words to narrow it, `f` to cycle the severity floor, `p` to pause while
 you read a line, `r` to ask again now, `q` or escape to go back to the menu.
 Nothing in it leaves the tool.
+
+Managed identities are left out: Azure signs them in constantly and none of it
+is anybody's authentication problem. `--kind managed-identity` watches them
+anyway.
 
 The same failure happening forty times is one line saying forty, timestamped at
 the most recent, rather than forty lines saying the same thing. Every line
@@ -302,7 +308,8 @@ documentation link lives in configuration rather than in code.
 
 ```bash
 entrascope config path                              # which directory is in force
-entrascope config export                            # take a copy you can edit
+entrascope config export                            # a copy to read, in Downloads
+entrascope config export --use                      # put it where it takes effect
 entrascope config export --only credentials.yaml    # or just the one file
 entrascope config show                              # every setting in force
 entrascope config show endpoints.yaml               # read one file
@@ -312,7 +319,11 @@ entrascope config show endpoints.yaml               # read one file
 running with, as YAML, above the full paths it was read from and the
 directories it searched in order. It is the answer to "which file do I edit".
 
-`config export` writes to `~/.config/entrascope`, which is **outside the
+`config export` with no destination writes to your downloads folder, where a
+file is easy to find and open, and says so with the full path of everything it
+wrote. That copy is for reading and does not take effect on its own.
+
+`config export --use` writes to `~/.config/entrascope`, which is **outside the
 package, so upgrading never touches it**, and which is used automatically. It
 is **layered over the shipped defaults**: copy only the files you want to
 change, and everything else comes from underneath, so a release that adds a

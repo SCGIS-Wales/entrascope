@@ -120,16 +120,25 @@ def server_identity(
 
 def base_url(config: Config, environ: Mapping[str, str] | None = None) -> str:
     """Return the canonical URI clients use to reach this server."""
+    transport = config.server.transport
     configured = (
         from_environment(config.server.environment.base_url, environ)
-        or config.server.transport.base_url
+        or transport.base_url
     )
     if not configured:
-        raise ConfigError(
-            "The remote server needs its canonical URI. It appears in the "
-            "protected resource metadata and clients bind their tokens to it. "
-            f"Set {config.server.environment.base_url} or base_url in "
-            "config/server.yaml, and use https in production."
+        # Refusing to start because nobody has said where the server will live
+        # helps nobody who is trying it out on their own machine. The loopback
+        # address is assumed, which is only ever right here, and said out loud
+        # so that nothing is deployed under it by accident.
+        configured = transport.local_base_url.format(port=transport.port)
+        log.warning(
+            "no canonical URI is set, so this server assumes %s. That address "
+            "works on this machine only. In production set %s or base_url in "
+            "config/server.yaml to the https address clients reach, because it "
+            "appears in the protected resource metadata and clients bind their "
+            "tokens to it",
+            configured,
+            config.server.environment.base_url,
         )
     trimmed = configured.rstrip("/")
     if not is_secure(trimmed):

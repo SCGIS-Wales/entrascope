@@ -405,3 +405,46 @@ def test_a_count_is_shown_only_when_there_is_one(config: Config) -> None:
     single = row_from_audit(audit(), config)
     assert times(single) == ""
     assert times(single._replace(keys=frozenset({"a", "b"}))) == "x2"
+
+
+def test_managed_identities_are_left_out_by_default(
+    monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """Azure signs them in constantly and none of it is an authentication problem."""
+    from entrascope.stream import follow
+
+    asked: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        curses,
+        "wrapper",
+        lambda run, config, token, kinds, app_id, initial: asked.append(kinds),
+    )
+    follow(config, None)
+    assert "managed-identity" not in asked[0]
+    assert "interactive" in asked[0]
+
+
+def test_a_kind_asked_for_by_name_is_watched(
+    monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """Left out by default is not the same as impossible to see."""
+    from entrascope.stream import follow
+
+    asked: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        curses,
+        "wrapper",
+        lambda run, config, token, kinds, app_id, initial: asked.append(kinds),
+    )
+    follow(config, None, kinds=["managed-identity"])
+    assert asked[0] == ("managed-identity",)
+
+
+def test_one_reason_is_reported_once_however_many_sources_it_stopped() -> None:
+    """Five identical refusals say nothing that one does not."""
+    from entrascope.stream import collapse
+
+    notes = collapse(
+        [("audit", "no permission"), ("interactive", "no permission")],
+    )
+    assert notes == ("Unavailable for audit, interactive: no permission",)

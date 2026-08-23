@@ -222,14 +222,44 @@ def test_a_failed_upgrade_says_what_it_ran(
         stdout = "one\ntwo\n"
         stderr = "it went wrong\n"
 
+    tried: list[int] = []
     monkeypatch.setattr("entrascope.upgrade.installation_kind", lambda: "virtualenv")
     monkeypatch.setattr(
-        "entrascope.upgrade.subprocess.run", lambda *a, **k: Completed()
+        "entrascope.upgrade.subprocess.run",
+        lambda *a, **k: tried.append(1) or Completed(),
     )
+    monkeypatch.setattr("entrascope.upgrade.time.sleep", lambda seconds: None)
     with pytest.raises(EntrascopeError) as raised:
         run_upgrade(config)
     assert "it went wrong" in str(raised.value)
     assert "pip install --upgrade" in str(raised.value)
+    # An index that is briefly unreachable should cost a wait, not the upgrade.
+    assert len(tried) == config.retry.upgrade.attempts
+
+
+def test_an_upgrade_that_works_on_the_second_go_is_not_a_failure(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A package index that blinks is the most ordinary failure there is."""
+
+    class Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "temporary failure in name resolution"
+
+    class Worked:
+        returncode = 0
+        stdout = "installed"
+        stderr = ""
+
+    answers: list[Any] = [Failed(), Worked()]
+    monkeypatch.setattr("entrascope.upgrade.installation_kind", lambda: "virtualenv")
+    monkeypatch.setattr(
+        "entrascope.upgrade.subprocess.run", lambda *a, **k: answers.pop(0)
+    )
+    monkeypatch.setattr("entrascope.upgrade.time.sleep", lambda seconds: None)
+    _, output = run_upgrade(config)
+    assert "installed" in output
 
 
 def test_an_upgrade_that_cannot_start_says_so(
@@ -347,3 +377,21 @@ def test_an_unwritable_cache_does_not_stop_the_answer(
 
     monkeypatch.setattr(Path, "write_text", refuse)
     write_cache(cached_in, Release(version="v9.9.9", url=""))
+
+
+def test_the_wheel_is_named_before_the_source(config: Config) -> None:
+    """Somebody fetching a file by hand almost always wants the wheel."""
+    from entrascope.upgrade import published_files
+
+    body = {
+        "assets": [
+            {"browser_download_url": "https://example.invalid/thing.tar.gz"},
+            {"browser_download_url": "https://example.invalid/thing.whl"},
+            {"name": "an asset with no address"},
+        ]
+    }
+    assert published_files(body) == (
+        "https://example.invalid/thing.whl",
+        "https://example.invalid/thing.tar.gz",
+    )
+    assert published_files({}) == ()

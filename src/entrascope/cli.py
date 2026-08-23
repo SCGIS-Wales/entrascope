@@ -26,6 +26,7 @@ from entrascope.capabilities import (
 from entrascope.config import (
     Config,
     candidate_directories,
+    downloads_dir,
     effective,
     load_config,
     packaged_config_dir,
@@ -103,6 +104,7 @@ from entrascope.stream import follow as follow_tenant
 from entrascope.stream import rows_from
 from entrascope.upgrade import (
     describe_installation,
+    latest_release,
     newer_release,
     run_upgrade,
     tail,
@@ -487,6 +489,11 @@ def offer_commands(group: click.Group, ctx: click.Context) -> Any:
         if command is None:
             return result
         result = attempt(command, picked, ctx)
+        # The menu is drawn over whatever is on the screen, so redrawing it the
+        # moment a command finishes wipes what the command just said. Waiting
+        # for a keystroke is what makes the output readable, and it is also
+        # where somebody scrolls back through it.
+        click.pause("Press any key to go back to the menu ")
 
 
 def attempt(command: click.Command, name: str, ctx: click.Context) -> Any:
@@ -502,6 +509,12 @@ def attempt(command: click.Command, name: str, ctx: click.Context) -> Any:
         emit_error(str(error))
     except click.Abort:
         emit_error("Cancelled.")
+    except SystemExit as ending:
+        # A command reports a bad result by exiting with a code. From a menu
+        # that would end the session over a finding, which is not what an exit
+        # code is for, so the code is noted and the menu returns.
+        if ending.code not in (0, None):
+            emit_error(f"That command finished with exit code {ending.code}.")
     return None
 
 
@@ -1325,6 +1338,12 @@ def describe_directory(candidate: Path) -> str:
 )
 @click.option("--force", is_flag=True, help="Overwrite files that are already there.")
 @click.option(
+    "--use",
+    is_flag=True,
+    help="Write to your own configuration directory, where entrascope reads it "
+    "automatically, rather than to the downloads folder.",
+)
+@click.option(
     "--only",
     "only",
     multiple=True,
@@ -1334,24 +1353,42 @@ def describe_directory(candidate: Path) -> str:
 @click.pass_context
 @handled
 def config_export(
-    context: click.Context, directory: Path | None, force: bool, only: tuple[str, ...]
+    context: click.Context,
+    directory: Path | None,
+    force: bool,
+    use: bool,
+    only: tuple[str, ...],
 ) -> None:
     """Copy the configuration somewhere you can edit it.
 
-    With no directory it copies to your own configuration directory, which is
-    outside the package, is used automatically, and is never touched when
-    entrascope is upgraded. Anything you leave out of it comes from the shipped
-    defaults, so a release that adds a setting is picked up without you doing
-    anything.
+    With no directory it copies to the downloads folder, where a file is easy
+    to find and open. That copy is for reading and editing and does not take
+    effect on its own. Pass --use to write it to your own configuration
+    directory instead, which is outside the package, is used automatically, and
+    is never touched when entrascope is upgraded. Anything left out of that
+    directory comes from the shipped defaults, so a release that adds a setting
+    is picked up without you doing anything.
+
+        entrascope config export                  a copy to read, in Downloads
+        entrascope config export --use            put it where it takes effect
+        entrascope config export ~/somewhere      or anywhere you name
     """
     settings = settings_of(context)
     active: Config = settings["config"]
-    target = directory or user_config_dir()
+    target = directory or (user_config_dir() if use else downloads_dir())
     source = active.defaults_root or active.root
     written = copy_configuration(source, target, force=force, only=only)
     emit(f"Copied {len(written)} files from {source} to {target}.")
-    if directory is None:
+    for path in written:
+        emit(f"  {path}")
+    if use:
         emit("That directory is used automatically and survives an upgrade.")
+    elif directory is None:
+        emit(
+            "This copy is for reading. To make it the configuration in force, "
+            "run entrascope config export --use, or move it to "
+            f"{user_config_dir()}."
+        )
     else:
         emit(f"Use it with:  export ENTRASCOPE_CONFIG_DIR={target}")
 
@@ -1440,10 +1477,17 @@ def upgrade(
     config: Config = settings["config"]
     output: OutputFormat = settings.get("output", "table")
     report = describe_installation(config)
-    release = newer_release(config, force=True)
-    report["latest_version"] = release.version if release else report["running_version"]
+    published = latest_release(config, force=True)
+    release = published if published and published.newer_than(__version__) else None
+    report["latest_version"] = (
+        published.version if published else report["running_version"]
+    )
     report["upgrade_available"] = bool(release)
-    report["release_notes"] = release.url if release else None
+    report["release_notes"] = published.url if published else None
+    # The files, always, because somebody whose Python is managed by something
+    # else cannot run the upgrade and can still fetch the wheel, and somebody
+    # behind a proxy that blocks the index needs the address to hand.
+    report["files"] = list(published.files) if published else []
 
     if check_only or dry_run:
         # One record reads as a list of fields, not as a table one column wide
@@ -1459,6 +1503,9 @@ def upgrade(
         return
 
     emit(f"Upgrading from {report['running_version']} to {release.version}.")
+    emit(f"Release notes: {release.url}")
+    for address in release.files:
+        emit(f"  {address}")
     command, output_text = run_upgrade(
         config, break_system_packages=break_system_packages
     )
@@ -2236,6 +2283,7 @@ def serve_stdio(context: click.Context) -> None:
     server_module = import_server("mcp_stdio")
     settings = settings_of(context)
     config: Config = settings["config"]
+    emit_error("Serving over stdio. Press control C to stop.")
     server_module.run(server_module.build_server(config, settings.get("auth")))
 
 
@@ -2268,6 +2316,11 @@ def serve_http(context: click.Context, host: str | None, port: int | None) -> No
         config = config.model_copy(
             update={"server": config.server.model_copy(update={"transport": transport})}
         )
+    listening = config.server.transport
+    emit(
+        f"Serving over Streamable HTTP on {listening.host}:{listening.port}"
+        f"{listening.path}. Press control C to stop."
+    )
     server_module.run(config)
 
 

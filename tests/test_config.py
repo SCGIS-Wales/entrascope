@@ -146,10 +146,13 @@ def test_authentication_sources_are_ordered() -> None:
 
 def test_config_loads_through_the_loader() -> None:
     """The loader validates every file and reports where they came from."""
-    from entrascope.config import load_config
+    from entrascope.config import candidate_directories, load_config
 
     config = load_config()
-    assert config.root == CONFIG_ROOT
+    # Which directory wins depends on the machine: somebody who has exported a
+    # copy of their own is reading that one. What must hold is that it is one
+    # of the places the loader looks, and that it validated.
+    assert config.root in candidate_directories()
     assert config.endpoints.graph.paths["applications"] == "/applications"
     assert config.retry.concurrency.max_workers >= 1
     assert config.credentials.file.filename
@@ -396,3 +399,18 @@ def test_a_kql_template_falls_back_to_the_defaults(
     config = build_config(mine)
     assert "SigninLogs" in load_kql("signins_failures", config)
     clear_cache()
+
+
+def test_a_copy_to_read_goes_where_it_can_be_found(tmp_path: Path) -> None:
+    """A configuration directory is the wrong place for a file to be opened."""
+    from entrascope.config import downloads_dir
+
+    (tmp_path / "Downloads").mkdir()
+    assert downloads_dir(tmp_path) == tmp_path / "Downloads"
+
+
+def test_without_a_downloads_folder_the_home_directory_will_do(tmp_path: Path) -> None:
+    """Findable matters more than conventional."""
+    from entrascope.config import downloads_dir
+
+    assert downloads_dir(tmp_path) == tmp_path

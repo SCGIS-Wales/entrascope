@@ -17,11 +17,12 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from entrascope import __version__
-from entrascope.config import Config
+from entrascope.config import Config, UpgradeSettings
 from entrascope.http import build_session, get_json
 from entrascope.logger import get_logger
 from entrascope.models import EntrascopeError
@@ -37,11 +38,16 @@ EXTERNALLY_MANAGED = "EXTERNALLY-MANAGED"
 
 
 class Release(NamedTuple):
-    """The newest published version, and where to read about it."""
+    """The newest published version, where to read about it, and its files."""
 
     version: str
     url: str
     published: str = ""
+    #: The files published with the release, wheel first. Somebody whose Python
+    #: is managed by something else cannot run the upgrade and can still fetch
+    #: the file, and somebody behind a proxy that blocks the index needs the
+    #: address to hand.
+    files: tuple[str, ...] = ()
 
     def newer_than(self, running: str) -> bool:
         """Return whether this release is ahead of the version running."""
@@ -131,9 +137,26 @@ def fetch_release(config: Config) -> Release | None:
     tag = str(body.get("tag_name") or "")
     if not tag:
         return None
-    release = Release(version=tag, url=str(body.get("html_url") or releases.page_url))
+    release = Release(
+        version=tag,
+        url=str(body.get("html_url") or releases.page_url),
+        files=published_files(body),
+    )
     write_cache(config, release)
     return release
+
+
+def published_files(body: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the download addresses of a release, the wheel first."""
+    assets = body.get("assets")
+    if not isinstance(assets, Sequence):
+        return ()
+    addresses = [
+        str(asset.get("browser_download_url"))
+        for asset in assets
+        if isinstance(asset, Mapping) and asset.get("browser_download_url")
+    ]
+    return tuple(sorted(addresses, key=lambda name: not name.endswith(".whl")))
 
 
 def check_disabled(config: Config, environ: dict[str, str] | None = None) -> bool:
@@ -167,13 +190,35 @@ def _newer_release(
     config: Config, *, force: bool, environ: dict[str, str] | None
 ) -> Release | None:
     """Work out whether a newer release exists. Never called directly."""
-    if check_disabled(config, environ) and not force:
-        return None
-    cached, fresh = read_cache(config)
-    release = cached if fresh and not force else (fetch_release(config) or cached)
+    release = _latest_release(config, force=force, environ=environ)
     if release is None or not release.newer_than(__version__):
         return None
     return release
+
+
+def latest_release(
+    config: Config, *, force: bool = False, environ: dict[str, str] | None = None
+) -> Release | None:
+    """Return the newest published release, whether or not it is ahead.
+
+    Somebody asking what is published wants the answer even when they already
+    have it, because the answer includes where the files are.
+    """
+    try:
+        return _latest_release(config, force=force, environ=environ)
+    except Exception as error:
+        log.debug("the version check failed and was ignored: %r", error)
+        return None
+
+
+def _latest_release(
+    config: Config, *, force: bool, environ: dict[str, str] | None
+) -> Release | None:
+    """Read the newest published release. Never called directly."""
+    if check_disabled(config, environ) and not force:
+        return None
+    cached, fresh = read_cache(config)
+    return cached if fresh and not force else (fetch_release(config) or cached)
 
 
 def upgrade_notice(release: Release) -> str:
@@ -283,23 +328,57 @@ def run_upgrade(
     )
     if dry_run:
         return command, ""
-    try:
-        # framework contract: upgrading a package means running the installer,
-        # and there is no library interface for that. The command is built
-        # here from a fixed shape, never from anything an engineer typed.
-        completed = subprocess.run(
-            command, capture_output=True, text=True, check=False, timeout=600
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise EntrascopeError(
-            f"Could not run the upgrade. {' '.join(command)}\n  {error}"
-        ) from error
-    output = (completed.stdout or "") + (completed.stderr or "")
-    if completed.returncode != 0:
-        raise EntrascopeError(
-            f"The upgrade failed.\n  {' '.join(command)}\n{tail(output)}"
-        )
-    return command, output
+    return command, install(command, config.retry.upgrade)
+
+
+def install(command: Sequence[str], settings: UpgradeSettings) -> str:
+    """Run the installer, trying again when it fails.
+
+    The installer reaches a package index across the network, and an index that
+    is briefly unreachable should cost a wait rather than a failed upgrade.
+    Installing is idempotent, so trying again is safe.
+
+    An installer that will not start at all is a different thing. No amount of
+    waiting produces a program that is not there, so that is reported at once.
+    """
+    attempts = max(1, settings.attempts)
+    output = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            # framework contract: upgrading a package means running the
+            # installer, and there is no library interface for that. The
+            # command is built here from a fixed shape, never from anything an
+            # engineer typed.
+            completed = subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=settings.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            output = f"the installer did not finish in time: {error}"
+        except (OSError, subprocess.SubprocessError) as error:
+            raise EntrascopeError(
+                f"Could not run the upgrade. {' '.join(command)}\n  {error}"
+            ) from error
+        else:
+            output = (completed.stdout or "") + (completed.stderr or "")
+            if completed.returncode == 0:
+                return output
+        if attempt < attempts:
+            log.warning(
+                "the upgrade did not succeed on attempt %s of %s, trying again "
+                "in %s seconds",
+                attempt,
+                attempts,
+                settings.wait_seconds,
+            )
+            time.sleep(settings.wait_seconds)
+    raise EntrascopeError(
+        f"The upgrade failed after {attempts} attempts.\n"
+        f"  {' '.join(command)}\n{tail(output)}"
+    )
 
 
 def tail(output: str, lines: int = 12) -> str:
