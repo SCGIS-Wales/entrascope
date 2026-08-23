@@ -213,12 +213,20 @@ class Chooser(_Frozen):
     tones: dict[str, str]
 
 
+class Stream(_Frozen):
+    interval_seconds: int
+    poll_events: int
+    maximum_rows: int
+    severity_tones: dict[str, str]
+
+
 class Display(_Frozen):
     timestamp: TimestampDisplay
     guest_marker: str
     wrapping_columns: tuple[str, ...]
     colours: dict[str, str]
     chooser: Chooser
+    stream: Stream
 
 
 class FindingRule(_Frozen):

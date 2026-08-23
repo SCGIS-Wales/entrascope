@@ -1280,3 +1280,95 @@ def test_a_name_that_is_not_a_subcommand_is_an_application() -> None:
     name, command, _ = inspect_group.resolve_command(context, ["saml2"])
     assert name == "app"
     assert command is inspect_group.commands["app"]
+
+
+def test_a_refusal_is_printed_rather_than_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal shown as a stack trace reads as a crash, not as an answer."""
+    from entrascope import cli as cli_module
+    from entrascope.models import EntrascopeError
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise EntrascopeError("This Python is managed by something other than pip.")
+
+    from entrascope.upgrade import Release
+
+    monkeypatch.setattr(cli_module, "run_upgrade", refuse)
+    monkeypatch.setattr(
+        cli_module,
+        "newer_release",
+        lambda *a, **k: Release(version="v9.9.9", url="https://example.invalid"),
+    )
+    result = run(["upgrade"])
+    assert result.exit_code != 0
+    assert "managed by something other than pip" in result.output
+    assert "Traceback" not in result.output
+
+
+@responses.activate
+def test_investigate_can_follow_instead_of_reporting_once(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report that prints once cannot answer what is happening now."""
+    from entrascope import cli as cli_module
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    watched: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "follow_tenant",
+        lambda config, token, **kwargs: watched.append(kwargs.get("app_id", "")),
+    )
+    result = run(["--auth", "file", "investigate", "--follow"])
+    assert result.exit_code == 0
+    assert watched == [""]
+
+
+def test_the_menu_after_an_investigation_offers_the_live_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the findings and being dropped at the shell is rarely the end."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: "watch")
+    assert cli_module.after_findings(investigation(), load_config(None)) == "watch"
+
+
+def test_findings_can_be_saved_from_the_menu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Six hundred findings are worth keeping rather than scrolling past."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: "save")
+    assert cli_module.after_findings(investigation(), load_config(None)) == "save"
+    assert (tmp_path / "investigation-the-whole-tenant.yaml").is_file()
+
+
+def investigation() -> Any:
+    """Return one investigation of a whole tenant, with nothing in it."""
+    from entrascope.models import Investigation
+
+    return Investigation(
+        target="the whole tenant",
+        scope="tenant",
+        applications=(),
+        service_principals=(),
+        audit_events=(),
+        sign_ins=(),
+        findings=(),
+    )
+
+
+def test_a_finding_names_the_application_it_is_about() -> None:
+    """An error message quotes the identifier and never the display name."""
+    from entrascope.cli import FINDING_TABLE_COLUMNS
+
+    assert "identifier" in FINDING_TABLE_COLUMNS
+    assert "when" in FINDING_TABLE_COLUMNS
+    assert "occurrences" not in FINDING_TABLE_COLUMNS

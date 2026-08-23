@@ -338,7 +338,14 @@ class Finding(NamedTuple):
     severity: Severity
     area: str
     subject: str
-    detail: str
+    #: The application id or object id of the subject, where it has one. An
+    #: error message quotes the identifier and never the display name, and two
+    #: applications in a tenant may share a name.
+    identifier: str = ""
+    #: When the evidence for this was recorded, where there is a moment to
+    #: name. Configuration has no timestamp; a failed sign in does.
+    when: str = ""
+    detail: str = ""
     remediation: str = ""
     docs_url: str = ""
     occurrences: int = 1

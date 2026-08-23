@@ -36,6 +36,7 @@ from rich.table import Table
 from rich.text import Text
 
 from entrascope.config import Config
+from entrascope.logger import handed_to
 from entrascope.redaction import redact_with_config
 
 #: The output formats every command supports.
@@ -567,7 +568,16 @@ def working(message: str) -> Iterator[None]:
         return
     # framework contract: rich expresses a spinner as a context manager. It is
     # presentation only and the work is unaffected.
-    with console.status(f"[dim]{message}...[/dim]", spinner="dots"):
+    # A log line written straight to the stream lands on top of the spinner,
+    # which is how "⠸ Investigating...INFO discovered 383" comes about. Printed
+    # through the same console, rich moves the spinner out of the way and the
+    # line lands above it where it should.
+    with (
+        console.status(f"[dim]{message}...[/dim]", spinner="dots"),
+        handed_to(
+            lambda _, written: console.print(written, markup=False, highlight=False)
+        ),
+    ):
         yield
 
 

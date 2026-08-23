@@ -17,6 +17,8 @@ import json
 import logging
 import sys
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -206,6 +208,66 @@ def quieten(settings: Logging, verbose: bool = False) -> None:
     """
     for name, level in settings.quiet_loggers.items():
         logging.getLogger(name).setLevel(logging.DEBUG if verbose else level.upper())
+
+
+# framework contract: the logging module expresses a destination as a handler
+# subclass, so taking the records means writing one. It carries no logic beyond
+# handing each record to the function it was given.
+class _HandOverHandler(logging.Handler):
+    """A handler that gives each record to a function."""
+
+    def __init__(self, receive: Callable[[logging.LogRecord], None]) -> None:
+        super().__init__()
+        self.receive = receive
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Hand one record over, never raising into the code that logged it."""
+        try:
+            self.receive(record)
+        except Exception:
+            self.handleError(record)
+
+
+@contextmanager
+def handed_to(
+    receive: Callable[[logging.LogRecord, str], None],
+) -> Iterator[None]:
+    """Hand every record to a function instead of writing it out.
+
+    A full screen view owns the terminal while it runs, and a log line written
+    underneath it scribbles over what is drawn. A spinner has the same problem.
+    Rather than losing those lines, whatever owns the screen takes them and
+    shows them itself, which is where somebody watching wants them anyway.
+
+    The redaction filter comes across with them. It is attached to the handler
+    rather than to the logger, and a secret must not reach a screen because
+    something else was drawing on it. The receiver is given the record and the
+    line the displaced handler would have written, so a caller that wants one
+    of the two need not know how to make the other.
+    """
+    logger = logging.getLogger(ROOT_NAME)
+    existing = list(logger.handlers)
+    formatter = next(
+        (previous.formatter for previous in existing if previous.formatter), None
+    )
+
+    def hand_over(record: logging.LogRecord) -> None:
+        written = formatter.format(record) if formatter else record.getMessage()
+        receive(record, written)
+
+    handler = _HandOverHandler(hand_over)
+    for previous in existing:
+        for existing_filter in previous.filters:
+            handler.addFilter(existing_filter)
+    for previous in existing:
+        logger.removeHandler(previous)
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        for previous in existing:
+            logger.addHandler(previous)
 
 
 def build_handler(destination: str) -> logging.Handler:

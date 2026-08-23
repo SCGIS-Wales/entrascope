@@ -152,10 +152,24 @@ def test_rendering_a_table_writes_nothing_by_itself(
     assert captured.err == ""
 
 
+def in_zone(config: Config, zone: str) -> Config:
+    """Return the configuration with timestamps shown in one zone."""
+    display = config.fields.display
+    timestamp = display.timestamp.model_copy(update={"zone": zone})
+    return config.model_copy(
+        update={
+            "fields": config.fields.model_copy(
+                update={"display": display.model_copy(update={"timestamp": timestamp})}
+            )
+        }
+    )
+
+
 def test_timestamps_are_trimmed_and_named(config: Config) -> None:
     """Two decimal places, and the zone said out loud."""
     from entrascope.render import format_timestamp
 
+    config = in_zone(config, "utc")
     assert format_timestamp("2026-08-22T13:24:32.7891111Z", config) == (
         "2026-08-22 13:24:32.79 UTC"
     )
@@ -167,6 +181,7 @@ def test_an_offset_timestamp_is_converted(config: Config) -> None:
     """A timestamp with an offset is shown in the configured zone."""
     from entrascope.render import format_timestamp
 
+    config = in_zone(config, "utc")
     assert format_timestamp("2026-08-22T13:24:32.78+01:00", config).startswith(
         "2026-08-22 12:24:32.78"
     )
@@ -176,16 +191,7 @@ def test_timestamps_can_be_shown_in_the_local_zone(config: Config) -> None:
     """The zone is named whichever one is chosen, so nothing is ambiguous."""
     from entrascope.render import format_timestamp
 
-    display = config.fields.display
-    timestamp = display.timestamp.model_copy(update={"zone": "local"})
-    local = config.model_copy(
-        update={
-            "fields": config.fields.model_copy(
-                update={"display": display.model_copy(update={"timestamp": timestamp})}
-            )
-        }
-    )
-    rendered = format_timestamp("2026-08-22T13:24:32.78Z", local)
+    rendered = format_timestamp("2026-08-22T13:24:32.78Z", in_zone(config, "local"))
     assert rendered.count(":") == 2
     assert rendered.split()[-1]
 

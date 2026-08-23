@@ -7,6 +7,39 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- investigate --follow watches a tenant rather than reporting on it once. The
+  audit log and the sign in logs stream newest at the top, refreshing on their
+  own, coloured by meaning: errors red, warnings amber, everything else quiet.
+  Typing narrows by keyword, f cycles the severity floor, p pauses, r asks
+  again now, and q or escape goes back to the menu rather than out of the tool.
+  Interactively, the menu after an investigation offers it.
+- The same failure happening forty times is one line saying forty, timestamped
+  at the most recent, rather than forty lines saying the same thing.
+- The tool's own log lines appear in the live view along with the events, which
+  is where the reason for an empty screen belongs.
+
+### Changed
+- Timestamps are shown in the machine's own zone by default rather than in UTC,
+  with the zone named as before. Somebody diagnosing a failure from twenty
+  minutes ago should not have to do the arithmetic. --timezone utc is unchanged.
+- Findings carry the application id beside the display name, and the moment the
+  evidence was recorded where there is one. The occurrences column is gone: a
+  count of one repeated down a column says nothing, and where a finding groups
+  several events the detail says how many, in words.
+
+### Fixed
+- A refusal that entrascope raises on purpose, such as declining to upgrade
+  into a Python that something else manages, was printed as a stack trace. It
+  reads as a crash rather than as the considered answer it is, and it is now
+  printed as the message it always carried.
+- A log line written while the spinner was turning landed on top of it, which
+  is how "⠸ Investigating...INFO discovered 383" came about. Log lines now go
+  through the same console, which moves the spinner out of the way.
+- A refusal the caller was going to report itself is no longer also shouted
+  about by the transport. Reading five kinds of sign in from a tenant with no
+  premium licence said the same thing six times.
+
 ### Changed
 - discover and inspect were one question asked at two depths, so they are one
   command. `inspect applications`, `inspect enterprise-apps` and

@@ -13,6 +13,7 @@ over independent sessions.
 from __future__ import annotations
 
 import contextvars
+import logging
 import os
 import threading
 import time
@@ -33,6 +34,24 @@ from entrascope.logger import get_logger
 from entrascope.models import ApiCallError, ApiError, NetworkTrust
 
 log = get_logger(__name__)
+
+#: Set while a caller is going to report a refusal itself. The transport still
+#: records the call, at debug rather than at warning, so the detail is there
+#: for anybody who asks for it and the person watching is told once.
+_expected: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "refusal_expected", default=False
+)
+
+
+@contextmanager
+def refusal_reported_by_caller() -> Iterator[None]:
+    """Say that a refusal on this call is expected and will be reported."""
+    token = _expected.set(True)
+    try:
+        yield
+    finally:
+        _expected.reset(token)
+
 
 #: The session type, re-exported so that no other module imports requests.
 Session = requests.Session
@@ -334,7 +353,12 @@ def request(
     )
     if not response.ok:
         failure = to_api_error(response, source)
-        log.warning(
+        # A caller that has said it will report the refusal itself gets one
+        # report rather than two. Reading five kinds of sign in from a tenant
+        # with no premium licence is five identical refusals, and the caller
+        # collapses them into one note that says what to do about it.
+        log.log(
+            logging.DEBUG if _expected.get() else logging.WARNING,
             "%s call failed: %s",
             source,
             failure.summary(),
