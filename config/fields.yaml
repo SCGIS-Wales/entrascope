@@ -206,6 +206,13 @@ classification:
   # Service principals owned by these tenants are Microsoft first party
   # applications. A tenant carries hundreds of them, almost all irrelevant to
   # diagnosing your own applications, so they are excluded unless asked for.
+  # Types kept out of the chooser unless everything is asked for. Azure creates
+  # a managed identity for each resource that needs one, and Defender creates
+  # one per subscription, so a tenant can hold hundreds. Somebody choosing an
+  # application to inspect is almost never after one of those, and a list they
+  # cannot read down is a list that does not work.
+  hidden_from_the_chooser:
+    - managed-identity
   first_party_owner_tenants:
     - f8cdef31-a31e-4b4a-93e4-5f571e91255a
     - 72f988bf-86f1-41af-91ab-2d7cd011db47

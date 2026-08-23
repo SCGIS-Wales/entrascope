@@ -1045,3 +1045,47 @@ def test_an_unsafe_credential_file_stops_the_command(
     assert result.exit_code == EXIT_CREDENTIALS
     assert "will not work around it" in result.output
     assert "chmod 0700" in result.output
+
+
+@responses.activate
+def test_a_missing_permission_prints_the_command_that_grants_it(
+    authenticated: None,
+) -> None:
+    """Microsoft names the permission it wanted, and entrascope knows its
+    identifier and the application it authenticated as. Printing the exact
+    command beats telling somebody to look one up."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/directoryAudits",
+        json={
+            "error": {
+                "code": "Authentication_MSGraphPermissionMissing",
+                "message": (
+                    "The principal does not have required Microsoft Graph "
+                    "permission(s): AuditLog.Read.All to call this API."
+                ),
+            }
+        },
+        status=403,
+    )
+    result = run(["--auth", "file", "logs", "audit"])
+    assert result.exit_code == EXIT_API
+    assert "Grant it with:" in result.output
+    assert "az ad app permission add --id 11111111" in result.output
+    assert "b0afded3-3588-46d8-8b3d-9842eff778da=Role" in result.output
+    assert "admin-consent" in result.output
+
+
+@responses.activate
+def test_a_refusal_naming_no_permission_prints_no_command(
+    authenticated: None,
+) -> None:
+    """A command that grants the wrong thing is worse than no command."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/directoryAudits",
+        json={"error": {"code": "Authorization_RequestDenied", "message": "no"}},
+        status=403,
+    )
+    result = run(["--auth", "file", "logs", "audit"])
+    assert "Grant it with:" not in result.output

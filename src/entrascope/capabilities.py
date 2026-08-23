@@ -8,6 +8,7 @@ route logs to a workspace. Every prerequisite and every remediation comes from
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -114,6 +115,42 @@ def sufficient_directory_roles(config: Config) -> tuple[str, ...]:
         role.name
         for role in config.capabilities.directory_roles
         if role.sufficient is True
+    )
+
+
+#: Microsoft names the permissions it wanted in the refusal itself, which is
+#: more precise than anything that could be guessed from the call.
+NAMED_PERMISSION = re.compile(r"\b([A-Z][A-Za-z]+(?:\.[A-Za-z]+){1,3})\b")
+
+
+def permissions_named_in(message: str, config: Config) -> tuple[str, ...]:
+    """Return the Graph permissions a refusal named, in the order given.
+
+    Only names entrascope can act on are returned, so that a sentence
+    mentioning something that merely looks like a permission does not produce a
+    command that grants the wrong thing.
+    """
+    known = {
+        permission.name.lower(): permission.name
+        for permission in config.capabilities.graph_permissions
+    }
+    found: list[str] = []
+    for candidate in NAMED_PERMISSION.findall(message or ""):
+        name = known.get(candidate.lower())
+        if name and name not in found:
+            found.append(name)
+    return tuple(found)
+
+
+def permissions_by_name(
+    names: Sequence[str], config: Config
+) -> tuple[GraphPermission, ...]:
+    """Return the configured permissions matching a set of names."""
+    wanted = {name.lower() for name in names}
+    return tuple(
+        permission
+        for permission in config.capabilities.graph_permissions
+        if permission.name.lower() in wanted
     )
 
 

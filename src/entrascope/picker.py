@@ -35,6 +35,7 @@ BACKSPACE_KEYS = (curses.KEY_BACKSPACE, 127, 8)
 
 #: Shown along the bottom, because a chooser nobody can drive is no use.
 HELP_LINE = "  up and down or j k to move, / to search, enter to open, q to stop"
+SEARCH_LINE = "  type to narrow the list, enter to keep it, escape to clear"
 
 
 class Choice(NamedTuple):
@@ -67,19 +68,35 @@ def draw(
     selected: int,
     term: str,
     title: str,
+    *,
+    searching: bool = False,
+    total: int = 0,
 ) -> None:
-    """Draw the chooser once."""
+    """Draw the chooser once.
+
+    While a search is being typed the heading is the search itself, with a
+    cursor. Without that there is nothing to say the slash was registered, and
+    the natural response is to press it again, which puts a slash in the term
+    and makes the search match nothing.
+    """
     screen.erase()
     height, width = screen.getmaxyx()
     body = max(1, height - 3)
     top = max(0, min(selected - body // 2, max(0, len(choices) - body)))
-    heading = f"{title}  ({len(choices)})" if not term else f"{title}  /{term}"
+    heading = (
+        f"Search: {term}\u258f    {len(choices)} of {total} match"
+        if searching
+        else f"{title}  ({len(choices)})"
+        if not term
+        else f"{title}  ({len(choices)} matching {term!r})"
+    )
     screen.addnstr(0, 0, heading, width - 1, curses.A_BOLD)
     for offset, choice in enumerate(choices[top : top + body]):
         index = top + offset
         style = curses.A_REVERSE if index == selected else curses.A_NORMAL
         screen.addnstr(offset + 1, 0, f"  {choice.label}", width - 1, style)
-    screen.addnstr(height - 1, 0, HELP_LINE, width - 1, curses.A_DIM)
+    footer = SEARCH_LINE if searching else HELP_LINE
+    screen.addnstr(height - 1, 0, footer, width - 1, curses.A_DIM)
     screen.refresh()
 
 
@@ -104,7 +121,15 @@ def run(screen: window, choices: Sequence[Choice], title: str) -> str | None:
     while True:
         shown = visible(choices, term)
         selected = max(0, min(selected, len(shown) - 1)) if shown else 0
-        draw(screen, shown, selected, term, title)
+        draw(
+            screen,
+            shown,
+            selected,
+            term,
+            title,
+            searching=searching,
+            total=len(choices),
+        )
         key = screen.getch()
 
         if searching:
@@ -115,7 +140,12 @@ def run(screen: window, choices: Sequence[Choice], title: str) -> str | None:
             elif key == 27:
                 term, searching = "", False
             elif 32 <= key < 127:
-                term += chr(key)
+                character = chr(key)
+                # A slash typed as the first character is somebody pressing it
+                # twice because nothing told them the first one worked. It can
+                # only have been meant as the search key.
+                if not (character == "/" and not term):
+                    term += character
                 selected = 0
             continue
 

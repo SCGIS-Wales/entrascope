@@ -83,6 +83,21 @@ errors:
       Grant admin consent, or send an interactive consent request to the user.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
 
+  Authentication_MSGraphPermissionMissing:
+    meaning: >
+      The identity is missing a Microsoft Graph application permission that the
+      call requires.
+    likely_cause: >
+      The permission was never granted, or it was added to the application
+      registration and admin consent was never recorded. Adding a permission
+      records a requirement; consent is what grants it.
+    remediation: >
+      Grant the permission named in the message and record admin consent.
+      entrascope prints the exact command when it knows the application it
+      authenticated as. Run entrascope doctor to see every permission it has
+      against every one it needs.
+    docs_url: https://learn.microsoft.com/en-us/graph/permissions-overview
+
   Authorization_RequestDenied:
     meaning: Insufficient privileges to complete the operation.
     likely_cause: >

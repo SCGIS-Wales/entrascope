@@ -18,6 +18,11 @@ from typing import Any, NoReturn, cast
 import click
 
 from entrascope import __version__
+from entrascope.capabilities import (
+    grant_command,
+    permissions_by_name,
+    permissions_named_in,
+)
 from entrascope.config import (
     Config,
     candidate_directories,
@@ -87,6 +92,7 @@ from entrascope.render import (
     show_checks,
     show_yaml,
     to_payload,
+    working,
     yaml_text,
 )
 from entrascope.render import show as show_rows
@@ -543,6 +549,11 @@ TYPE_HELP = (
     "Show only one application type, for example confidential-client, "
     "single-page-application, managed-identity or workload-identity-federation."
 )
+EVERYTHING_HELP = (
+    "Offer everything, including Microsoft first party applications and the "
+    "managed identities Azure creates for its own resources. A tenant holds "
+    "hundreds of both and they are almost never what somebody is looking for."
+)
 FIRST_PARTY_HELP = (
     "Include Microsoft first party enterprise applications. A tenant carries "
     "hundreds and they are Microsoft's to manage, so they are excluded by "
@@ -773,7 +784,35 @@ def explanation_for(error: ApiCallError) -> str:
         lines.append(f"Likely cause: {explanation.likely_cause}")
     lines.append(f"Remediation: {explanation.remediation}")
     lines.append(f"See: {explanation.docs_url}")
+    exact = exact_grant(error, identity, config)
+    if exact:
+        lines.append(exact)
     return "\n".join(line.strip() for line in lines)
+
+
+def exact_grant(error: ApiCallError, identity: object, config: Config) -> str:
+    """Return the command that grants what a refusal named, if it named one.
+
+    Microsoft says which permission it wanted, and entrascope knows the
+    identifier for it and the application it authenticated as. Printing the
+    exact command beats telling somebody to look one up.
+    """
+    named = permissions_named_in(error.error.message, config)
+    if not named:
+        return ""
+    client_id = (
+        identity.client_id
+        if isinstance(identity, AuthContext) and identity.client_id
+        else "<client-id>"
+    )
+    command = grant_command(permissions_by_name(named, config), config, client_id)
+    if not command:
+        return ""
+    return (
+        f"\nGrant it with:\n{command}\n"
+        "Adding a permission records a requirement. The consent is what grants "
+        "it, and both lines are needed."
+    )
 
 
 def pick_one(
@@ -1283,14 +1322,14 @@ def whoami_command(context: click.Context, no_policies: bool) -> None:
 @cli.command("inspect", cls=GlobalOptionCommand)
 @click.argument("target", required=False, default="")
 @click.option("--type", "kinds", multiple=True, help=TYPE_HELP)
-@click.option("--include-first-party", is_flag=True, help=FIRST_PARTY_HELP)
+@click.option("--all", "everything", is_flag=True, help=EVERYTHING_HELP)
 @click.pass_context
 @handled
 def inspect_command(
     context: click.Context,
     target: str,
     kinds: tuple[str, ...],
-    include_first_party: bool,
+    everything: bool,
 ) -> None:
     """Show everything about one application, as YAML.
 
@@ -1313,20 +1352,16 @@ def inspect_command(
     output: OutputFormat = settings.get("output", "table")
     try:
         if target:
-            report = run_inspect(
-                session, config, token, target=target, kinds=list(kinds)
-            )
+            with working(f"Looking for {target} and reading it in full"):
+                report = run_inspect(
+                    session, config, token, target=target, kinds=list(kinds)
+                )
             write_report(report, config, output)
             return
         # No target. Read the directory once and stay in the chooser, because
         # looking at one application is almost never the whole question.
-        catalogue = read_catalogue(
-            session,
-            config,
-            token,
-            include_first_party=include_first_party,
-            with_details=True,
-        )
+        with working("Reading the applications in the tenant"):
+            catalogue = read_catalogue(session, config, token, everything=everything)
         browse(catalogue, session, config, token, list(kinds), output)
     finally:
         session.close()
@@ -1358,6 +1393,11 @@ def browse(
     rows = catalogue.choices()
     if not rows:
         raise ConfigError("There are no applications this identity can see.")
+    if catalogue.hidden:
+        emit_error(
+            "Kept out of the list: " + ", ".join(catalogue.hidden) + ". Pass --all "
+            "to include them."
+        )
     lines = [Choice(key=key, label=label) for key, label in rows]
     opened = 0
     while True:
@@ -1366,9 +1406,10 @@ def browse(
             if opened == 0:
                 raise ConfigError(no_choice_made(len(rows)))
             return
-        report = run_inspect(
-            session, config, token, target=picked, kinds=kinds, catalogue=catalogue
-        )
+        with working("Reading that application in full"):
+            report = run_inspect(
+                session, config, token, target=picked, kinds=kinds, catalogue=catalogue
+            )
         write_report(report, config, output)
         opened += 1
         if not available():

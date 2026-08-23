@@ -19,6 +19,9 @@ class Screen:
         self.keys = list(keys)
         self.size = (height, width)
         self.drawn: list[str] = []
+        #: Everything ever drawn, because erase clears the current frame and a
+        #: test about what was shown along the way needs the whole run.
+        self.history: list[str] = []
 
     def getmaxyx(self) -> tuple[int, int]:
         return self.size
@@ -31,12 +34,19 @@ class Screen:
     ) -> None:
         _ = row, column, width, style
         self.drawn.append(text)
+        self.history.append(text)
 
     def refresh(self) -> None:
         return None
 
     def getch(self) -> int:
-        return self.keys.pop(0) if self.keys else ord("q")
+        # Running out of keys means the chooser did not do what the test
+        # expected. Raising turns that into a failure rather than a hang,
+        # because in search mode every printable key is a character and none
+        # of them ends the loop.
+        if not self.keys:
+            raise AssertionError(f"the chooser asked for another key: {self.drawn[:1]}")
+        return self.keys.pop(0)
 
 
 def choices() -> list[Choice]:
@@ -109,7 +119,7 @@ def test_the_help_line_is_always_drawn() -> None:
     """A chooser nobody can drive is no use."""
     screen = Screen([ord("q")])
     run(screen, choices(), "Choose")
-    assert any("enter to open" in line for line in screen.drawn)
+    assert any("enter to open" in line for line in screen.history)
 
 
 def test_there_is_no_chooser_without_a_terminal(
@@ -147,3 +157,28 @@ def test_a_drawing_failure_is_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("entrascope.picker.available", lambda: True)
     monkeypatch.setattr("entrascope.picker.curses.wrapper", explode)
     assert choose(choices()) is None
+
+
+def test_a_slash_typed_twice_does_not_end_up_in_the_search() -> None:
+    """Nothing said the first one worked, so pressing it again is natural.
+
+    A slash in the term makes every match fail, which reads as a broken search
+    rather than a mistyped one.
+    """
+    keys = [ord("/"), ord("/"), ord("g"), ord("a"), 10, 10]
+    assert run(Screen(keys), choices(), "Choose") == "c3"
+
+
+def test_the_search_is_shown_as_it_is_typed() -> None:
+    """Otherwise there is no sign the slash registered."""
+    screen = Screen([ord("/"), ord("g"), 27, ord("q")])
+    run(screen, choices(), "Choose")
+    assert any(line.startswith("Search: g") for line in screen.history)
+    assert any("escape to clear" in line for line in screen.history)
+
+
+def test_the_heading_counts_what_matched() -> None:
+    """A search that found nothing should say so, not look frozen."""
+    screen = Screen([ord("/"), ord("z"), 27, ord("q")])
+    run(screen, choices(), "Choose")
+    assert any("0 of 3 match" in line for line in screen.history)

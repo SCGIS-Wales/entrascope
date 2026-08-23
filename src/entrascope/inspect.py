@@ -16,9 +16,14 @@ from typing import Any, NamedTuple
 
 from entrascope.config import Config
 from entrascope.discovery import (
+    classify_application,
     discover_applications,
     discover_service_principals,
+    owner_names,
     pluck,
+    project_application,
+    project_federated_credentials,
+    project_service_principal,
     strings,
     text,
 )
@@ -48,23 +53,60 @@ class Catalogue(NamedTuple):
 
     applications: tuple[ApplicationSummary, ...]
     principals: tuple[ServicePrincipalSummary, ...]
+    #: What was kept out of the list, and why. Hiding things silently is worse
+    #: than showing too many.
+    hidden: tuple[str, ...] = ()
 
     def choices(self) -> tuple[tuple[str, str], ...]:
-        """Return identifier and label for each, sorted by name."""
+        """Return identifier and label for each, sorted by name.
+
+        The names are padded to a common width so that the identifiers line up
+        in a column. A list of several hundred where the identifier starts at a
+        different place on every line is a list nobody can read down.
+        """
         seen = {item.app_id for item in self.applications}
-        rows = [
-            (item.app_id or item.object_id, f"{item.display_name}  ({item.app_id})")
+        named: list[tuple[str, str, str]] = [
+            (item.app_id or item.object_id, item.display_name, "")
             for item in self.applications
         ]
-        rows.extend(
-            (
-                item.app_id or item.object_id,
-                f"{item.display_name}  ({item.app_id})  [enterprise]",
-            )
+        named.extend(
+            (item.app_id or item.object_id, item.display_name, "enterprise")
             for item in self.principals
             if item.app_id not in seen
         )
+        width = min(max((len(name) for _, name, _ in named), default=0), NAME_WIDTH)
+        rows = [
+            (
+                key,
+                f"{shorten(name, width):<{width}}  {key}"
+                + (f"  [{marker}]" if marker else ""),
+            )
+            for key, name, marker in named
+        ]
         return tuple(sorted(rows, key=lambda pair: pair[1].lower()))
+
+
+#: The widest a name is allowed to be before the identifier column. Long
+#: enough for almost every display name, short enough that the identifiers are
+#: still on the screen.
+NAME_WIDTH = 56
+
+
+def shorten(name: str, width: int) -> str:
+    """Return a name that fits, with an ellipsis where it was cut."""
+    return name if len(name) <= width else name[: width - 1] + "\u2026"
+
+
+#: All the chooser needs. Reading whole objects to draw a list of names is the
+#: difference between answering and appearing to hang.
+CHOOSER_FIELDS = ("id", "appId", "displayName")
+PRINCIPAL_CHOOSER_FIELDS = (
+    "id",
+    "appId",
+    "displayName",
+    "servicePrincipalType",
+    "appOwnerOrganizationId",
+)
 
 
 def read_catalogue(
@@ -72,23 +114,56 @@ def read_catalogue(
     config: Config,
     token: Callable[[], str] | None = None,
     *,
-    include_first_party: bool = False,
-    with_details: bool = False,
+    everything: bool = False,
 ) -> Catalogue:
-    """Read every application and enterprise application, once."""
+    """Read enough of every application to offer a list of them.
+
+    Names and identifiers only. Everything else is read for the one
+    application that is chosen, because reading it for all of them means a
+    call per object and a directory of several hundred then takes minutes.
+    """
     from entrascope.discovery import is_first_party
 
-    applications = discover_applications(
-        session, config, token, with_details=with_details
+    applications = tuple(
+        project_application(payload, config)
+        for payload in get_collection(
+            session, config, "applications", select=CHOOSER_FIELDS
+        )
     )
-    principals = discover_service_principals(
-        session, config, token, with_details=with_details
+    principals = tuple(
+        project_service_principal(payload, config)
+        for payload in get_collection(
+            session, config, "service_principals", select=PRINCIPAL_CHOOSER_FIELDS
+        )
     )
-    if not include_first_party:
+    hidden: list[str] = []
+    if not everything:
+        before = len(principals)
         principals = tuple(
             item for item in principals if not is_first_party(item, config)
         )
-    return Catalogue(applications=applications, principals=principals)
+        if before != len(principals):
+            hidden.append(
+                f"{before - len(principals)} Microsoft first party enterprise "
+                "applications"
+            )
+        kinds = set(config.fields.classification.hidden_from_the_chooser)
+        before = len(principals)
+        principals = tuple(
+            item for item in principals if item.application_type not in kinds
+        )
+        if before != len(principals):
+            hidden.append(
+                f"{before - len(principals)} of type {', '.join(sorted(kinds))}"
+            )
+    log.info(
+        "read %s application registrations and %s enterprise applications",
+        len(applications),
+        len(principals),
+    )
+    return Catalogue(
+        applications=applications, principals=principals, hidden=tuple(hidden)
+    )
 
 
 def candidates(
@@ -359,25 +434,35 @@ def inspect(
     engineer told only about one will look in the wrong place. A catalogue that
     has already been read is used rather than reading the directory again.
     """
-    known = catalogue or read_catalogue(session, config, token, with_details=True)
+    known = catalogue or read_catalogue(session, config, token)
     applications = matching(known.applications, target, kinds)
     principals = matching(known.principals, target, kinds)
     if not applications and not principals:
         raise ApiCallError(_not_found(target))
 
-    application = applications[0] if applications else None
+    # The catalogue holds names and identifiers. The one being inspected is
+    # read in full, on its own, which is two calls rather than one per object
+    # in the tenant.
+    application = (
+        read_one_application(session, config, applications[0]) if applications else None
+    )
     principal = principals[0] if principals else None
     if application and not principal:
         principal = next(
             (item for item in known.principals if item.app_id == application.app_id),
             None,
         )
+    principal = read_one_principal(session, config, principal)
 
     log.info(
         "inspecting %s",
         application.display_name if application else target,
         extra={"application_id": application.app_id if application else ""},
     )
+    # Details are fetched for the one application being inspected, not for
+    # every application in the tenant. On a directory of several hundred the
+    # difference is two calls against several hundred.
+    application = with_owners_and_federation(session, config, application)
     payload = raw_application(session, config, application)
     portal = config.endpoints.portal
     return {
@@ -481,6 +566,88 @@ def _not_found(target: str) -> Any:
         ),
         source="inspect",
     )
+
+
+def read_one_application(
+    session: Session, config: Config, summary: ApplicationSummary
+) -> ApplicationSummary:
+    """Read one application in full and project it."""
+    if not summary.object_id:
+        return summary
+    try:
+        payload = get_object(
+            session,
+            config,
+            "application_by_id",
+            path_parameters={"object_id": summary.object_id},
+        )
+    except ApiCallError as error:
+        log.debug("could not read the application: %s", error.error.summary())
+        return summary
+    return project_application(payload, config)
+
+
+def read_one_principal(
+    session: Session, config: Config, summary: ServicePrincipalSummary | None
+) -> ServicePrincipalSummary | None:
+    """Read one enterprise application in full and project it."""
+    if summary is None or not summary.object_id:
+        return summary
+    try:
+        payload = get_object(
+            session,
+            config,
+            "service_principal_by_id",
+            path_parameters={"object_id": summary.object_id},
+        )
+    except ApiCallError as error:
+        log.debug(
+            "could not read the enterprise application: %s", error.error.summary()
+        )
+        return summary
+    grants = read_collection(
+        session, config, "app_role_assignments", {"object_id": summary.object_id}
+    )
+    return project_service_principal(payload, config, assignments=grants)
+
+
+def with_owners_and_federation(
+    session: Session,
+    config: Config,
+    application: ApplicationSummary | None,
+) -> ApplicationSummary | None:
+    """Fill in the details that need a call of their own, for one application."""
+    if application is None or not application.object_id:
+        return application
+    parameters = {"object_id": application.object_id}
+    owners = read_collection(session, config, "application_owners", parameters)
+    federated = read_collection(
+        session, config, "federated_identity_credentials", parameters
+    )
+    return application._replace(
+        owners=owner_names(owners),
+        federated_credentials=project_federated_credentials(federated),
+        application_type=classify_application(
+            application.redirect_uris,
+            application.credentials,
+            project_federated_credentials(federated),
+            application.exposes_api,
+        ),
+    )
+
+
+def read_collection(
+    session: Session,
+    config: Config,
+    endpoint: str,
+    parameters: Mapping[str, str],
+) -> tuple[dict[str, Any], ...]:
+    """Read one collection for one object, tolerating a refusal."""
+    try:
+        return get_collection(session, config, endpoint, path_parameters=parameters)
+    except ApiCallError as error:
+        log.debug("could not read %s: %s", endpoint, error.error.summary())
+        return ()
 
 
 def raw_application(
