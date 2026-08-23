@@ -1,5 +1,5 @@
 """entrascope: observability over Microsoft Entra ID and Azure Monitor logs."""
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
 
 __all__ = ["__version__"]
