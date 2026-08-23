@@ -71,6 +71,7 @@ from entrascope.models import (
     ConfigError,
     CredentialError,
     EntrascopeError,
+    Investigation,
     Severity,
 )
 from entrascope.monitor import build_logs_client
@@ -98,6 +99,8 @@ from entrascope.render import (
     yaml_text,
 )
 from entrascope.render import show as show_rows
+from entrascope.stream import follow as follow_tenant
+from entrascope.stream import rows_from
 from entrascope.upgrade import (
     describe_installation,
     newer_release,
@@ -257,7 +260,17 @@ SIGN_IN_TABLE_COLUMNS = (
     "error_code",
     "failure_reason",
 )
-FINDING_TABLE_COLUMNS = ("severity", "area", "subject", "occurrences", "detail")
+# A count of one, repeated down a column, tells nobody anything: where a
+# finding groups several events the detail says how many, in words. What was
+# missing was which application, exactly, and when.
+FINDING_TABLE_COLUMNS = (
+    "severity",
+    "area",
+    "subject",
+    "identifier",
+    "when",
+    "detail",
+)
 SIGN_IN_COLUMNS = (
     "timestamp",
     "identity",
@@ -279,7 +292,8 @@ FINDING_COLUMNS = (
     "severity",
     "area",
     "subject",
-    "occurrences",
+    "identifier",
+    "when",
     "detail",
     "remediation",
     "docs_url",
@@ -989,6 +1003,13 @@ def handled[Returns](function: Callable[..., Returns]) -> Callable[..., Returns]
             emit_error(error.error.summary())
             emit_error(explanation_for(error))
             raise SystemExit(EXIT_API) from error
+        # Last, because the three above are all kinds of this one. Anything
+        # entrascope raises on purpose carries its own remediation, and a
+        # refusal printed as a stack trace reads as a crash rather than as the
+        # considered answer it is.
+        except EntrascopeError as error:
+            emit_error(str(error))
+            raise SystemExit(EXIT_CHECKS_FAILED) from error
 
     return wrapper
 
@@ -1067,6 +1088,14 @@ def cli(
     "were drawn from.",
 )
 @click.option("--include-first-party", is_flag=True, help=FIRST_PARTY_HELP)
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help="Watch the tenant rather than report on it once. The audit log and "
+    "the sign in logs stream newest first, coloured by severity, and typing "
+    "narrows them by keyword.",
+)
 @click.pass_context
 @handled
 def investigate(
@@ -1077,6 +1106,7 @@ def investigate(
     limit: int,
     full: bool,
     include_first_party: bool,
+    follow: bool,
 ) -> None:
     """Diagnose authentication and authorisation failures, ranked by severity.
 
@@ -1089,8 +1119,10 @@ def investigate(
     enterprise applications, assignment requirements, insecure redirect URIs
     and applications with no owner.
 
+    \b
         entrascope investigate                       everything, worst first
         entrascope investigate my-api --severity error   only what is broken
+        entrascope investigate --follow                  watch it live
         entrascope investigate 6fb17f1c-7c19-41a5-bd50-63a16bd7346b
     """
     settings = settings_of(context)
@@ -1144,8 +1176,75 @@ def investigate(
         )
         show(result.audit_events, settings, "Audit events", AUDIT_COLUMNS)
         show(result.sign_ins, settings, "Sign ins", SIGN_IN_COLUMNS)
+
+    if follow or (available() and after_findings(result, config) == "watch"):
+        watch(result, config, settings, kinds=list(kinds), target=target)
+        return
     if result.errors():
         raise SystemExit(EXIT_CHECKS_FAILED)
+
+
+#: What somebody might want once an investigation has reported.
+AFTER_FINDINGS: tuple[tuple[str, str], ...] = (
+    ("watch", "watch the tenant live, newest first"),
+    ("save", "save these findings to a YAML file"),
+    ("back", "back to the menu"),
+)
+
+
+def after_findings(result: Investigation, config: Config) -> str:
+    """Offer what to do next, rather than returning to the shell."""
+    emit("")
+    chosen = choose(
+        [Choice(key=key, label=label) for key, label in AFTER_FINDINGS],
+        title="Next",
+        **palette(config),
+    )
+    if chosen == "save":
+        save_findings(result, config)
+    return chosen or "back"
+
+
+def save_findings(result: Investigation, config: Config) -> None:
+    """Write one investigation to a YAML file named after what it looked at."""
+    safe = "".join(
+        character if character.isalnum() or character in "-_." else "-"
+        for character in result.target
+    ).strip("-")
+    path = Path(f"investigation-{safe or 'tenant'}.yaml").resolve()
+    path.write_text(yaml_text(to_payload(result), config), encoding="utf-8")
+    emit(f"Saved to {path}")
+
+
+def watch(
+    result: Investigation,
+    config: Config,
+    settings: Mapping[str, Any],
+    *,
+    kinds: Sequence[str],
+    target: str,
+) -> None:
+    """Open the live view on what the investigation already read.
+
+    An empty screen and a wait of one polling interval is a poor way to start,
+    so what has been read already is what it opens on.
+    """
+    _, session, token = authenticated_session(dict(settings))
+    session.close()
+    follow_tenant(
+        config,
+        token,
+        kinds=kinds or None,
+        app_id=identifier_of(result),
+        initial=rows_from(result, config),
+    )
+
+
+def identifier_of(result: Investigation) -> str:
+    """Return the application id an investigation narrowed to, if it did."""
+    if result.scope != "application" or not result.applications:
+        return ""
+    return str(result.applications[0].app_id)
 
 
 CONFIG_EPILOG = """

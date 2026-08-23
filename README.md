@@ -206,7 +206,26 @@ entrascope investigate                     # what is wrong in this tenant
 entrascope investigate --severity error    # only what is already broken
 entrascope investigate my-api              # narrow to one application
 entrascope investigate my-api --full       # and show the evidence behind it
+entrascope investigate --follow            # watch it live, newest first
 ```
+
+`--follow` opens a live view rather than a report. The audit log and the sign in
+logs stream newest at the top and refresh on their own, coloured by what each
+line means: errors red, warnings amber, everything else quiet. Type `/` and
+some words to narrow it, `f` to cycle the severity floor, `p` to pause while
+you read a line, `r` to ask again now, `q` or escape to go back to the menu.
+Nothing in it leaves the tool.
+
+The same failure happening forty times is one line saying forty, timestamped at
+the most recent, rather than forty lines saying the same thing. Every line
+carries the day, the month, the year, the time to the second and the zone it is
+shown in, which is the machine's own zone unless `--timezone utc` says
+otherwise. The tool's own log lines appear in the same list, which is where the
+reason for an empty screen belongs.
+
+Findings name both the display name and the application id, because an error
+message quotes the identifier and never the name, and two applications in a
+tenant may share a name.
 
 The argument to `investigate` is an application id, an object id or part of a
 display name, whichever the error message gave you. The same value works as

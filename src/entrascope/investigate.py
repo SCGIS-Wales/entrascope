@@ -19,7 +19,7 @@ from entrascope.discovery import (
     is_first_party,
 )
 from entrascope.errors import explain
-from entrascope.http import Session
+from entrascope.http import Session, refusal_reported_by_caller
 from entrascope.logger import get_logger
 from entrascope.logs import query_audit_graph, query_sign_ins_graph, sign_in_kinds
 from entrascope.models import (
@@ -92,6 +92,8 @@ def credential_findings(
                     severity="error",
                     area="credential",
                     subject=application.display_name,
+                    identifier=application.app_id,
+                    when=credential.end,
                     detail=(
                         f"The {credential.kind} {credential.display_name!r} expired "
                         f"on {credential.end}. Every client credentials flow using "
@@ -108,6 +110,8 @@ def credential_findings(
                     severity="warning",
                     area="credential",
                     subject=application.display_name,
+                    identifier=application.app_id,
+                    when=credential.end,
                     detail=(
                         f"The {credential.kind} {credential.display_name!r} expires "
                         f"on {credential.end}, in {credential.days_remaining} days, "
@@ -141,6 +145,7 @@ def configuration_findings(
                 severity=severity_of(rules.no_owner),
                 area="ownership",
                 subject=application.display_name,
+                identifier=application.app_id,
                 detail=rules.no_owner.detail.strip(),
                 remediation=rules.no_owner.remediation.strip(),
                 docs_url=rules.no_owner.docs_url,
@@ -160,6 +165,7 @@ def configuration_findings(
                 severity=severity_of(rules.insecure_redirect),
                 area="redirect uri",
                 subject=application.display_name,
+                identifier=application.app_id,
                 detail=f"{rules.insecure_redirect.detail.strip()} {listed}",
                 remediation=rules.insecure_redirect.remediation.strip(),
                 docs_url=rules.insecure_redirect.docs_url,
@@ -173,6 +179,7 @@ def configuration_findings(
                 severity=severity_of(rules.token_version_one),
                 area="token version",
                 subject=application.display_name,
+                identifier=application.app_id,
                 detail=rules.token_version_one.detail.strip(),
                 remediation=rules.token_version_one.remediation.strip(),
                 docs_url=rules.token_version_one.docs_url,
@@ -193,6 +200,7 @@ def principal_findings(
                 severity=severity_of(rules.disabled_principal),
                 area="enterprise application",
                 subject=principal.display_name,
+                identifier=principal.app_id,
                 detail=rules.disabled_principal.detail.strip(),
                 remediation=rules.disabled_principal.remediation.strip(),
                 docs_url=rules.disabled_principal.docs_url,
@@ -204,6 +212,7 @@ def principal_findings(
                 severity=severity_of(rules.assignment_required),
                 area="assignment",
                 subject=principal.display_name,
+                identifier=principal.app_id,
                 detail=rules.assignment_required.detail.strip(),
                 remediation=rules.assignment_required.remediation.strip(),
                 docs_url=rules.assignment_required.docs_url,
@@ -231,6 +240,10 @@ def audit_findings(events: Sequence[AuditEvent], config: Config) -> tuple[Findin
                 severity="error",
                 area="directory operation",
                 subject=target or activity,
+                identifier=next(
+                    (event.target_id for event in group if event.target_id), ""
+                ),
+                when=max((event.timestamp for event in group), default=""),
                 detail=(
                     f"{activity} failed {times(len(group))}. "
                     f"Most recent reason: {reason or 'none recorded'}."
@@ -260,6 +273,8 @@ def sign_in_findings(
                 severity="error",
                 area="sign in",
                 subject=application or "unnamed application",
+                identifier=next((event.app_id for event in group if event.app_id), ""),
+                when=max((event.timestamp for event in group), default=""),
                 detail=(
                     f"Sign in failed {times(len(group))} with AADSTS{code}. "
                     f"{explanation.meaning} "
@@ -337,19 +352,23 @@ def gather_logs(
     audit: tuple[AuditEvent, ...] = ()
     sign_ins: list[SignInEvent] = []
     refusals: list[tuple[str, str]] = []
-    try:
-        audit = query_audit_graph(session, config, top=limit)
-    except ApiCallError as failure:
-        notes.append(f"Audit logs unavailable: {failure.error.summary()}")
-    for kind in kinds or sign_in_kinds(config):
+    # Every refusal below becomes a note that says what to do about it, so the
+    # transport does not also shout about each one as it happens. Five kinds of
+    # sign in on a tenant with no premium licence is five identical refusals.
+    with refusal_reported_by_caller():
         try:
-            sign_ins.extend(
-                query_sign_ins_graph(
-                    session, config, kind=kind, failures_only=True, top=limit
-                )
-            )
+            audit = query_audit_graph(session, config, top=limit)
         except ApiCallError as failure:
-            refusals.append((kind, failure.error.summary()))
+            notes.append(f"Audit logs unavailable: {failure.error.summary()}")
+        for kind in kinds or sign_in_kinds(config):
+            try:
+                sign_ins.extend(
+                    query_sign_ins_graph(
+                        session, config, kind=kind, failures_only=True, top=limit
+                    )
+                )
+            except ApiCallError as failure:
+                refusals.append((kind, failure.error.summary()))
     notes.extend(collapse_sign_in_failures(refusals))
     return audit, tuple(sign_ins), tuple(notes)
 
