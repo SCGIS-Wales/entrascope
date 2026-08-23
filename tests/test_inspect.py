@@ -351,8 +351,8 @@ def test_the_identifiers_line_up(config: Config) -> None:
     """A list where the identifier starts somewhere different on every line is
     a list nobody can read down."""
     register()
-    rows = read_catalogue(build_session(config), config).choices()
-    columns = {label.index(key) for key, label in rows if key in label}
+    rows = read_catalogue(build_session(config), config).lines()
+    columns = {line.label.index(line.key) for line in rows if line.key in line.label}
     assert len(columns) == 1, f"identifiers start at {sorted(columns)}"
 
 

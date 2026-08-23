@@ -35,6 +35,7 @@ from entrascope.models import (
     ApplicationSummary,
     ServicePrincipalSummary,
 )
+from entrascope.picker import Choice, Tone
 from entrascope.render import portal_link, to_payload
 
 log = get_logger(__name__)
@@ -57,39 +58,85 @@ class Catalogue(NamedTuple):
     #: than showing too many.
     hidden: tuple[str, ...] = ()
 
-    def choices(self) -> tuple[tuple[str, str], ...]:
-        """Return identifier and label for each, sorted by name.
-
-        The names are padded to a common width so that the identifiers line up
-        in a column. A list of several hundred where the identifier starts at a
-        different place on every line is a list nobody can read down.
-        """
+    def lines(self) -> tuple[Choice, ...]:
+        """Return the chooser lines, coloured by what each one means."""
         seen = {item.app_id for item in self.applications}
-        named: list[tuple[str, str, str]] = [
-            (item.app_id or item.object_id, item.display_name, "")
+        named: list[tuple[str, str, str, Tone, str]] = [
+            (
+                item.app_id or item.object_id,
+                item.display_name,
+                "",
+                tone_for_application(item),
+                item.created,
+            )
             for item in self.applications
         ]
         named.extend(
-            (item.app_id or item.object_id, item.display_name, "enterprise")
+            (
+                item.app_id or item.object_id,
+                item.display_name,
+                "enterprise",
+                tone_for_principal(item),
+                item.created,
+            )
             for item in self.principals
             if item.app_id not in seen
         )
-        width = min(max((len(name) for _, name, _ in named), default=0), NAME_WIDTH)
-        rows = [
-            (
-                key,
-                f"{shorten(name, width):<{width}}  {key}"
+        width = min(
+            max((len(name) for _, name, _, _, _ in named), default=0), NAME_WIDTH
+        )
+        rows = tuple(
+            Choice(
+                key=key,
+                label=f"{shorten(name, width):<{width}}  {key}"
                 + (f"  [{marker}]" if marker else ""),
+                tone=tone,
+                created=created,
+                name=name,
             )
-            for key, name, marker in named
-        ]
-        return tuple(sorted(rows, key=lambda pair: pair[1].lower()))
+            for key, name, marker, tone, created in named
+        )
+        return tuple(sorted(rows, key=lambda line: line.name.lower()))
 
 
 #: The widest a name is allowed to be before the identifier column. Long
 #: enough for almost every display name, short enough that the identifiers are
 #: still on the screen.
 NAME_WIDTH = 56
+
+
+def tone_for_application(item: ApplicationSummary) -> Tone:
+    """Return what an application registration should look like in the list.
+
+    An expired secret is the thing somebody is most often hunting for, so it is
+    the one that shouts. One about to expire warns. Everything else is an
+    ordinary OAuth application.
+    """
+    states = {credential.state for credential in item.credentials}
+    if "expired" in states:
+        return "danger"
+    if "expiring" in states:
+        return "warning"
+    return "oauth"
+
+
+def tone_for_principal(item: ServicePrincipalSummary) -> Tone:
+    """Return what an enterprise application should look like in the list.
+
+    A managed identity is checked first, because Azure rotates its credentials
+    on its own schedule and an expired one there is not somebody's problem to
+    fix. Anywhere else an expired credential is the loudest thing on the line.
+    """
+    if item.application_type in ("managed-identity", "legacy"):
+        return "quiet"
+    states = {credential.state for credential in item.credentials}
+    if "expired" in states:
+        return "danger"
+    if "expiring" in states:
+        return "warning"
+    if item.saml is not None or item.application_type.startswith("saml"):
+        return "saml"
+    return "oauth"
 
 
 def shorten(name: str, width: int) -> str:
@@ -99,13 +146,29 @@ def shorten(name: str, width: int) -> str:
 
 #: All the chooser needs. Reading whole objects to draw a list of names is the
 #: difference between answering and appearing to hang.
-CHOOSER_FIELDS = ("id", "appId", "displayName")
+CHOOSER_FIELDS = (
+    "id",
+    "appId",
+    "displayName",
+    "createdDateTime",
+    # Small arrays, and they are what makes an expired secret visible in the
+    # list rather than only after opening the application.
+    "passwordCredentials",
+    "keyCredentials",
+)
 PRINCIPAL_CHOOSER_FIELDS = (
     "id",
     "appId",
     "displayName",
+    "createdDateTime",
     "servicePrincipalType",
     "appOwnerOrganizationId",
+    "preferredSingleSignOnMode",
+    "tags",
+    # Small arrays, and they are what makes an expired credential visible in
+    # the list rather than only after opening the application.
+    "passwordCredentials",
+    "keyCredentials",
 )
 
 

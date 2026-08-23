@@ -26,6 +26,7 @@ from entrascope.capabilities import (
 from entrascope.config import (
     Config,
     candidate_directories,
+    effective,
     load_config,
     packaged_config_dir,
     read_text_file,
@@ -69,6 +70,7 @@ from entrascope.models import (
     AuthSource,
     ConfigError,
     CredentialError,
+    EntrascopeError,
     Severity,
 )
 from entrascope.monitor import build_logs_client
@@ -290,6 +292,12 @@ ROUTES = ("graph", "monitor")
 #: are deliberately absent from the help, so that one thing has one name there.
 ALIASES = {"apps": "applications", "sps": "enterprise-apps"}
 
+#: Commands that have been folded into another one. Listing applications and
+#: reading one of them were two commands asking the same question at two
+#: depths, so discover is now inspect. The old name still works, because
+#: breaking somebody's script to tidy up a command list is not a fair trade.
+RENAMED = {"discover": "inspect"}
+
 
 def global_options() -> list[click.Parameter]:
     """Return the options that may be given before or after a subcommand.
@@ -422,27 +430,86 @@ class GuidedGroup(click.Group):
         return offer_commands(self, ctx)
 
 
+#: The key the chooser returns for the way out of a menu. It is not a command
+#: name, and no command can be called this.
+LEAVE = "\x00leave"
+
+
 def offer_commands(group: click.Group, ctx: click.Context) -> Any:
-    """Offer a group's commands and run the one chosen.
+    """Offer a group's commands, run what is chosen, and offer them again.
+
+    A tool somebody is exploring should not put them back at the shell every
+    time they finish reading something. The menu returns after each command,
+    and the way out is offered rather than guessed at. Escape does the same,
+    so a group reached from the main menu comes back to it.
 
     A command that needs an argument asks for it, rather than being run and
-    then complaining that it is missing.
+    then complaining that it is missing. A command that fails says so and the
+    menu returns, because losing a session over a typo is miserable.
     """
     if not available():
         return None
+    root = ctx.find_root().command is group
     lines = [
         Choice(key=name, label=f"{name:<18} {summary(command)}")
         for name, command in sorted(group.commands.items())
         if not command.hidden
     ]
-    emit("")
-    picked = choose(lines, title="Commands")
-    if picked is None:
-        return None
-    command = group.get_command(ctx, picked)
-    if command is None:
-        return None
-    return run_command(command, picked, ctx)
+    lines.append(
+        Choice(
+            key=LEAVE,
+            label=f"{'leave':<18} " + ("close entrascope" if root else "go back"),
+            tone="quiet",
+        )
+    )
+    title = "entrascope" if root else f"entrascope {group.name}"
+    result: Any = None
+    while True:
+        emit("")
+        picked = choose(lines, title=title, **palette(settings_of(ctx).get("config")))
+        if picked is None or picked == LEAVE:
+            return result
+        command = group.get_command(ctx, picked)
+        if command is None:
+            return result
+        result = attempt(command, picked, ctx)
+
+
+def attempt(command: click.Command, name: str, ctx: click.Context) -> Any:
+    """Run a command from a menu, reporting a failure rather than leaving.
+
+    Everything the tool raises deliberately is worth reading and then carrying
+    on from. A failure to authenticate or a mistyped identifier should not end
+    a session that took a moment to start.
+    """
+    try:
+        return run_command(command, name, ctx)
+    except (EntrascopeError, click.ClickException) as error:
+        emit_error(str(error))
+    except click.Abort:
+        emit_error("Cancelled.")
+    return None
+
+
+def palette(config: Config | None) -> dict[str, Any]:
+    """Return the chooser's colours as keyword arguments for the chooser.
+
+    Colour is configuration, so a site that reads a light terminal or a
+    colourblind engineer can change it without a code change.
+    """
+    if config is None:
+        return {}
+    chooser = config.fields.display.chooser
+    return {
+        "scheme": {
+            "background": chooser.background,
+            "foreground": chooser.foreground,
+            "highlight": chooser.highlight,
+            "heading": chooser.heading,
+            "hint": chooser.hint,
+        },
+        "tones": dict(chooser.tones),
+    }
 
 
 def summary(command: click.Command) -> str:
@@ -456,7 +523,17 @@ def run_command(command: click.Command, name: str, ctx: click.Context) -> Any:
     for parameter in command.params:
         if isinstance(parameter, click.Argument) and parameter.required:
             label = (parameter.name or "value").replace("_", " ")
-            answers.append(click.prompt(label.capitalize(), type=str).strip())
+            # Answering nothing goes back. A prompt with no way out but the
+            # interrupt key is a trap, and the menu is one keystroke away.
+            answer = click.prompt(
+                f"{label.capitalize()} (blank to go back)",
+                default="",
+                show_default=False,
+                type=str,
+            ).strip()
+            if not answer:
+                return None
+            answers.append(answer)
     # Everything typed at a prompt is a value, never an option. Without the
     # separator, an error message that happens to begin with a dash, or the
     # word --help, would be parsed rather than answered.
@@ -469,6 +546,10 @@ def run_command(command: click.Command, name: str, ctx: click.Context) -> Any:
 # so improving that message means overriding it. The search is a free function.
 class RootGroup(GuidedGroup):
     """The top level group, which knows where its subcommands live."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        """Return the command, answering to a name it used to be called."""
+        return super().get_command(ctx, RENAMED.get(cmd_name, cmd_name))
 
     def resolve_command(
         self, ctx: click.Context, args: list[str]
@@ -581,14 +662,16 @@ Every command takes --output json or --output yaml, and --auth to choose an
 identity. Run any command with --help for its own options.
 """
 
-DISCOVER_EPILOG = """
+INSPECT_EPILOG = """
 Examples:
 
 
-  entrascope discover applications --expiring
-  entrascope discover applications --type single-page-application
-  entrascope discover enterprise-apps --type managed-identity
-  entrascope discover applications --app my-api --output json
+  entrascope inspect                          choose from the list
+  entrascope inspect saml2                    one application, by name
+  entrascope inspect applications --expiring
+  entrascope inspect applications --type single-page-application
+  entrascope inspect enterprise-apps --type managed-identity
+  entrascope inspect applications --app my-api --output json
 """
 
 LOGS_EPILOG = """
@@ -1013,16 +1096,19 @@ def investigate(
     settings = settings_of(context)
     config, session, token = authenticated_session(settings)
     try:
-        result = run_investigation(
-            session,
-            config,
-            token,
-            target=target,
-            limit=limit,
-            kinds=list(kinds) or None,
-            minimum_severity=cast("Severity | None", severity),
-            include_first_party=include_first_party,
-        )
+        with working(
+            f"Investigating {target}" if target else "Investigating the tenant"
+        ):
+            result = run_investigation(
+                session,
+                config,
+                token,
+                target=target,
+                limit=limit,
+                kinds=list(kinds) or None,
+                minimum_severity=cast("Severity | None", severity),
+                include_first_party=include_first_party,
+            )
     finally:
         session.close()
 
@@ -1172,13 +1258,20 @@ def config_export(
 
 
 @config_group.command("show")
-@click.argument("name", required=True)
+@click.argument("name", required=False)
 @click.pass_context
 @handled
-def config_show(context: click.Context, name: str) -> None:
-    """Print one configuration file, whichever directory is in use."""
+def config_show(context: click.Context, name: str | None = None) -> None:
+    """Show the configuration in use, or one file of it.
+
+    With no file named, this is every setting entrascope is actually running
+    with, together with the full paths it was read from.
+    """
     settings = settings_of(context)
     active: Config = settings["config"]
+    if not name:
+        show_yaml(effective(active), active, settings.get("output", "yaml"))
+        return
     path = (active.root / name).resolve()
     if not path.is_relative_to(active.root.resolve()) or not path.is_file():
         available = sorted(item.name for item in active.root.glob("*.yaml"))
@@ -1186,6 +1279,7 @@ def config_show(context: click.Context, name: str) -> None:
             f"No configuration file named {name}. Available: {available}, and "
             "the KQL templates under kql."
         )
+    emit(f"# {path}")
     emit(read_text_file(path))
 
 
@@ -1319,7 +1413,104 @@ def whoami_command(context: click.Context, no_policies: bool) -> None:
     show_yaml(report, config, output)
 
 
-@cli.command("inspect", cls=GlobalOptionCommand)
+# framework contract: click decides how a token becomes a command through a
+# Group method, so accepting the name of an application where a subcommand is
+# expected means overriding it. No logic beyond the lookup.
+class InspectGroup(AliasGroup):
+    """A group that also answers to the name of an application, with the
+    global options on the group as well as on its subcommands.
+
+    Listing applications and reading one of them are the same question asked
+    at two depths, so they are one command. Anything that is not a subcommand
+    is taken to be the application somebody wants to see, which keeps
+    ``entrascope inspect saml2`` meaning what it has always meant.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # This was a command before it was a group, and it was invoked as
+        # "entrascope inspect --auth file" every day. That must keep working.
+        self.params.extend(global_options())
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Apply any global option given on the group, then run.
+
+        With no subcommand the callback offers the list itself, so unlike other
+        groups this one does not go on to offer its commands.
+        """
+        overrides: dict[str, Any] = {
+            name: ctx.params.pop(name)
+            for name in ("auth", "output", "verbose", "timezone")
+            if name in ctx.params
+        }
+        apply_overrides(ctx, overrides)
+        return click.Group.invoke(self, ctx)
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Resolve a subcommand, or fall back to reading one application."""
+        name = args[0] if args else ""
+        if name and not name.startswith("-") and self.get_command(ctx, name) is None:
+            return "app", self.get_command(ctx, "app"), args
+        return super().resolve_command(ctx, args)
+
+
+@cli.group(
+    "inspect", cls=InspectGroup, epilog=INSPECT_EPILOG, invoke_without_command=True
+)
+@click.option("--type", "kinds", multiple=True, help=TYPE_HELP)
+@click.option("--all", "everything", is_flag=True, help=EVERYTHING_HELP)
+@click.pass_context
+@handled
+def inspect_group(
+    context: click.Context,
+    kinds: tuple[str, ...],
+    everything: bool,
+) -> None:
+    """Look at applications: the whole list, or one of them in full.
+
+    An application registration is the definition you create in Entra. An
+    enterprise application is the service principal, the instance of that
+    definition inside a tenant. A failure can come from either, so both are
+    listed separately and both are shown when one application is read.
+
+    With no subcommand and a terminal to draw on, the list is offered to choose
+    from. Naming an application reads that one: part of a display name, an
+    application id or an object id.
+
+    \b
+        entrascope inspect                          choose from the list
+        entrascope inspect saml2                    by name
+        entrascope inspect d6bdb5c4-1722-4c63-930f-fa264d4778bc
+        entrascope inspect --type managed-identity  narrowed by type
+    """
+    if context.invoked_subcommand is not None:
+        return
+    if not available():
+        # Nothing to draw the list on, so say what the command can do rather
+        # than reading the whole directory and then finding nobody to ask.
+        emit(context.get_help())
+        return
+    settings = settings_of(context)
+    config, session, token = authenticated_session(settings)
+    output: OutputFormat = settings.get("output", "table")
+    try:
+        # Read the directory once and stay in the chooser, because looking at
+        # one application is almost never the whole question.
+        with working("Reading applications"):
+            catalogue = read_catalogue(session, config, token, everything=everything)
+        browse(catalogue, session, config, token, list(kinds), output)
+    finally:
+        session.close()
+
+
+# Every command in this group accepts the global options too, so that nobody
+# has to remember which side of the subcommand they go on.
+inspect_group.command_class = GlobalOptionCommand
+
+
+@inspect_group.command("app")
 @click.argument("target", required=False, default="")
 @click.option("--type", "kinds", multiple=True, help=TYPE_HELP)
 @click.option("--all", "everything", is_flag=True, help=EVERYTHING_HELP)
@@ -1338,14 +1529,6 @@ def inspect_command(
     the roles it defines, what it asked for against what was actually
     consented, every URL it is registered with, its credentials and their
     expiry, and its single sign on configuration.
-
-    Give part of a display name, an application id or an object id. With no
-    argument and a terminal to draw on, it offers the list to choose from.
-
-        entrascope inspect                          choose from the list
-        entrascope inspect saml2                    by name
-        entrascope inspect d6bdb5c4-1722-4c63-930f-fa264d4778bc
-        entrascope inspect --type managed-identity  narrowed by type
     """
     settings = settings_of(context)
     config, session, token = authenticated_session(settings)
@@ -1360,7 +1543,7 @@ def inspect_command(
             return
         # No target. Read the directory once and stay in the chooser, because
         # looking at one application is almost never the whole question.
-        with working("Reading the applications in the tenant"):
+        with working("Reading applications"):
             catalogue = read_catalogue(session, config, token, everything=everything)
         browse(catalogue, session, config, token, list(kinds), output)
     finally:
@@ -1390,21 +1573,23 @@ def browse(
     Reading one application and being dropped back at the shell is rarely what
     somebody wanted. The chooser returns until it is closed.
     """
-    rows = catalogue.choices()
-    if not rows:
+    lines = catalogue.lines()
+    if not lines:
         raise ConfigError("There are no applications this identity can see.")
     if catalogue.hidden:
         emit_error(
             "Kept out of the list: " + ", ".join(catalogue.hidden) + ". Pass --all "
             "to include them."
         )
-    lines = [Choice(key=key, label=label) for key, label in rows]
     opened = 0
     while True:
-        picked = choose(lines, title="Applications, sorted by name")
+        picked = choose(list(lines), title="Applications", **palette(config))
         if picked is None:
-            if opened == 0:
-                raise ConfigError(no_choice_made(len(rows)))
+            # Escape means go back, not stop. With a terminal there is a menu
+            # to go back to, and only without one is there nothing to say but
+            # how the list could have been narrowed.
+            if opened == 0 and not available():
+                raise ConfigError(no_choice_made(len(lines)))
             return
         with working("Reading that application in full"):
             report = run_inspect(
@@ -1414,9 +1599,44 @@ def browse(
         opened += 1
         if not available():
             return
-        emit("")
-        if not click.confirm("Back to the list?", default=True):
+        if after_viewing(report, config) == "quit":
             return
+
+
+#: What somebody might want once an application has been read. A question with
+#: only yes and no for answers cannot offer any of this.
+AFTER_VIEWING: tuple[tuple[str, str], ...] = (
+    ("list", "back to the list"),
+    ("save", "save this application to a YAML file"),
+    ("quit", "leave"),
+)
+
+
+def after_viewing(report: Mapping[str, Any], config: Config) -> str:
+    """Offer what to do next and carry it out, returning what was chosen."""
+    emit("")
+    chosen = choose(
+        [Choice(key=key, label=label) for key, label in AFTER_VIEWING],
+        title="Next",
+        **palette(config),
+    )
+    if chosen == "save":
+        save_report(report, config)
+        return "list"
+    return "quit" if chosen == "quit" else "list"
+
+
+def save_report(report: Mapping[str, Any], config: Config) -> None:
+    """Write one inspection to a YAML file named after the application."""
+    identity = report.get("identity") or {}
+    name = str(identity.get("display_name") or "application").strip()
+    safe = "".join(
+        character if character.isalnum() or character in "-_." else "-"
+        for character in name
+    ).strip("-")
+    path = Path(f"{safe or 'application'}.yaml").resolve()
+    path.write_text(yaml_text(report, config), encoding="utf-8")
+    emit(f"Saved to {path}")
 
 
 def no_choice_made(total: int) -> str:
@@ -1447,23 +1667,7 @@ def doctor(context: click.Context) -> None:
     raise SystemExit(exit_code_for_checks(results))
 
 
-@cli.group(cls=AliasGroup, epilog=DISCOVER_EPILOG, invoke_without_command=True)
-def discover() -> None:
-    """List application registrations and enterprise applications.
-
-    An application registration is the definition you create in Entra. An
-    enterprise application is the service principal, the instance of that
-    definition inside a tenant. A failure can come from either, so both are
-    listed separately.
-    """
-
-
-# Every command in this group accepts the global options too, so that nobody
-# has to remember which side of the subcommand they go on.
-discover.command_class = GlobalOptionCommand
-
-
-@discover.command("applications")
+@inspect_group.command("applications")
 @click.option(
     "--filter",
     "filter_expression",
@@ -1522,7 +1726,7 @@ def discover_apps(
     )
 
 
-@discover.command("enterprise-apps")
+@inspect_group.command("enterprise-apps")
 @click.option(
     "--filter",
     "filter_expression",
@@ -1577,7 +1781,7 @@ def discover_service_principals_command(
     )
 
 
-@discover.command("gallery")
+@inspect_group.command("gallery")
 @click.argument("term", required=False, default="")
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.pass_context

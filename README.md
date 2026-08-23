@@ -145,13 +145,18 @@ the permissions the token actually carries, the directory roles held, the
 administrative units that bound them, and the conditional access policies in
 force.
 
-### Looking at one application
+### Looking at applications
+
+Listing applications and reading one of them are the same question asked at two
+depths, so they are one command.
 
 ```bash
 entrascope inspect                 # choose from a list, with / to search
 entrascope inspect saml2           # by name
 entrascope inspect d6bdb5c4-1722-4c63-930f-fa264d4778bc
 entrascope inspect --type managed-identity
+entrascope inspect applications    # the whole list as a table
+entrascope inspect enterprise-apps
 ```
 
 Shows the registration and the enterprise application together, as YAML,
@@ -161,9 +166,19 @@ registered with, its credentials and their expiry, and its single sign on
 configuration.
 
 With no argument and a terminal to draw on, it offers the list. Move with the
-arrow keys or with j and k, search with `/` as in vi, enter to open, q to stop.
-After showing an application it returns to the list, because looking at one is
-rarely the whole question.
+arrow keys or with j and k, and the arrows keep moving while a search is being
+typed. Search with `/` as in vi, `s` cycles the order between name, name
+reversed, newest and oldest, page up and page down move a screen at a time,
+enter opens, escape goes back.
+
+Colour carries meaning rather than decoration: an application whose credential
+has expired is red, one expiring soon amber, an OAuth or OpenID Connect
+application orange, a SAML application violet. The palette is configuration,
+under `fields.display.chooser`, and it is chosen to be read on a dark terminal.
+
+After showing an application it offers what to do next: back to the list, save
+that application to a YAML file, or leave. Looking at one application is rarely
+the whole question.
 
 The list holds names and identifiers only, so it appears at once on a tenant of
 several hundred applications; everything else is read for the one that is
@@ -173,7 +188,11 @@ hidden. `--all` includes them.
 
 Any command group given no subcommand does the same: it prints its help and
 then offers its commands, asking for whatever the chosen one cannot do without.
-Piped or in a script, it prints the help and exits exactly as before.
+The menu comes back after each command rather than returning you to the shell,
+a command that fails says so and the menu returns, and every menu offers the
+way out rather than leaving you to guess at it. A prompt for an argument takes
+a blank answer as going back. Piped or in a script, the help is printed and
+nothing is offered, exactly as before.
 
 ### Diagnosing a failure
 
@@ -198,10 +217,10 @@ context that explains a result.
 ### Looking at one thing at a time
 
 ```bash
-entrascope discover applications --expiring          # credentials about to expire
-entrascope discover applications --type single-page-application
-entrascope discover enterprise-apps --type managed-identity
-entrascope discover applications --app my-api --output json
+entrascope inspect applications --expiring           # credentials about to expire
+entrascope inspect applications --type single-page-application
+entrascope inspect enterprise-apps --type managed-identity
+entrascope inspect applications --app my-api --output json
 
 entrascope logs audit --failures-only                # failed directory changes
 entrascope logs audit --app my-api
@@ -211,7 +230,7 @@ entrascope logs graph-activity --workspace <workspace-id>
 entrascope logs kinds                                # which sign in kinds exist
 entrascope logs audit --pick                         # number the lines and open one
 
-entrascope discover gallery saml                     # what can be added ready made
+entrascope inspect gallery saml                      # what can be added ready made
 
 entrascope errors explain AADSTS7000215
 entrascope errors explain "AADSTS50011: The redirect URI does not match"
@@ -219,7 +238,8 @@ entrascope errors search consent
 entrascope errors list
 ```
 
-`discover apps` and `discover sps` still work as short forms.
+`inspect apps` and `inspect sps` are short forms, and `discover` is the name
+`inspect` used to have, which still works.
 
 ### The types an application is classified as
 
@@ -265,8 +285,13 @@ documentation link lives in configuration rather than in code.
 entrascope config path                              # which directory is in force
 entrascope config export                            # take a copy you can edit
 entrascope config export --only credentials.yaml    # or just the one file
+entrascope config show                              # every setting in force
 entrascope config show endpoints.yaml               # read one file
 ```
+
+`config show` with nothing named is the configuration entrascope is actually
+running with, as YAML, above the full paths it was read from and the
+directories it searched in order. It is the answer to "which file do I edit".
 
 `config export` writes to `~/.config/entrascope`, which is **outside the
 package, so upgrading never touches it**, and which is used automatically. It
@@ -327,7 +352,7 @@ no OAuth, so credentials come from the environment or the credential file
 exactly as they do for every other command, and the server runs with your
 privileges. Every tool reads. None of them changes the directory.
 
-The tool surface mirrors the commands: `doctor`, `discover_applications`,
+The tool surface mirrors the commands: `doctor`, `inspect`, `discover_applications`,
 `discover_service_principals`, `audit_events`, `sign_ins`, `graph_activity`,
 `explain_error`, `list_error_codes` and `sign_in_kinds`. A tool result and the
 corresponding `--output json` payload are the same bytes, which a test

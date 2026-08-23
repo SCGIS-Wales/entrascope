@@ -297,7 +297,7 @@ def test_project_credentials_ignores_a_malformed_entry(config: Config) -> None:
 
 @responses.activate
 def test_discover_applications_without_details(config: Config) -> None:
-    """With no token, owners and federated credentials are skipped."""
+    """Without details, nothing is expanded and nothing is fetched per object."""
     responses.add(
         responses.GET,
         f"{ROOT}/applications",
@@ -306,7 +306,31 @@ def test_discover_applications_without_details(config: Config) -> None:
     )
     summaries = discover_applications(build_session(config), config, with_details=False)
     assert len(summaries) == 5
-    assert all(summary.owners == () for summary in summaries)
+    assert len(responses.calls) == 1
+    assert "$expand" not in responses.calls[0].request.url
+
+
+@responses.activate
+def test_owners_come_back_with_the_page(config: Config) -> None:
+    """One call per application would be thousands of calls on a real tenant."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json=load_fixture("applications"),
+        status=200,
+    )
+    for payload in load_fixture("applications")["value"]:
+        responses.add(
+            responses.GET,
+            f"{ROOT}/applications/{payload['id']}/federatedIdentityCredentials",
+            json=load_fixture("federated_credentials"),
+            status=200,
+        )
+    summaries = discover_applications(build_session(config), config, lambda: "token")
+    assert all(summary.owners for summary in summaries)
+    asked = responses.calls[0].request.url
+    assert "%24expand=owners" in asked or "$expand=owners" in asked
+    assert not any("/owners" in call.request.url for call in responses.calls)
 
 
 @responses.activate

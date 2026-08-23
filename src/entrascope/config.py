@@ -69,6 +69,7 @@ class GraphEndpoints(_Frozen):
     scope: str
     resource_app_id: str
     paths: dict[str, str]
+    expansions: dict[str, str]
 
 
 class AzureEndpoints(_Frozen):
@@ -203,11 +204,21 @@ class TimestampDisplay(_Frozen):
     zone: str
 
 
+class Chooser(_Frozen):
+    background: str
+    foreground: str
+    highlight: str
+    heading: str
+    hint: str
+    tones: dict[str, str]
+
+
 class Display(_Frozen):
     timestamp: TimestampDisplay
     guest_marker: str
     wrapping_columns: tuple[str, ...]
     colours: dict[str, str]
+    chooser: Chooser
 
 
 class FindingRule(_Frozen):
@@ -436,6 +447,7 @@ class Capabilities(_Frozen):
     capabilities: tuple[Capability, ...]
     provisioning: Provisioning
     licences: Licences
+    lookup_permissions: dict[str, str]
 
 
 class Config(_Frozen):
@@ -662,6 +674,29 @@ def layered_over_defaults(directory: Path) -> Path | None:
     than a replacement.
     """
     return defaults_directory() if directory == user_config_dir() else None
+
+
+def effective(config: Config) -> dict[str, Any]:
+    """Return the configuration in use, and the full paths it was read from.
+
+    Somebody asking what the configuration is wants both halves of the answer:
+    the values the tool is actually using, and where they came from, so that
+    the file to edit is named rather than guessed at.
+    """
+    files = sorted(item.name for item in config.root.glob("*.yaml"))
+    return {
+        "sources": {
+            "in_use": str(config.root.resolve()),
+            "layered_over": (
+                str(config.defaults_root.resolve()) if config.defaults_root else None
+            ),
+            "files": [str((config.root / name).resolve()) for name in files],
+            "searched_in_order": [
+                str(candidate.resolve()) for candidate in candidate_directories()
+            ],
+        },
+        "settings": config.model_dump(mode="json", exclude={"root", "defaults_root"}),
+    }
 
 
 def build_config(directory: Path) -> Config:

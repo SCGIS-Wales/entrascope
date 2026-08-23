@@ -7,6 +7,13 @@ graph:
   beta_version: beta
   scope: https://graph.microsoft.com/.default
   resource_app_id: 00000003-0000-0000-c000-000000000000
+  # Related collections fetched with the page rather than one call per object.
+  # Reading the owners of six hundred applications one at a time is twelve
+  # hundred calls and several minutes; expanded it is a handful of pages.
+  # Graph shrinks the page when it expands, which is the price and it is small.
+  expansions:
+    applications: owners($select=id,displayName)
+    service_principals: owners($select=id,displayName)
   paths:
     applications: /applications
     application_by_id: /applications/{object_id}

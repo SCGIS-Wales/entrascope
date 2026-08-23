@@ -7,7 +7,17 @@ from typing import Any
 
 import pytest
 
-from entrascope.picker import Choice, available, choose, run, visible
+from entrascope.picker import (
+    Choice,
+    Scheme,
+    available,
+    choose,
+    colour_number,
+    draw,
+    run,
+    start_colour,
+    visible,
+)
 
 
 # framework contract: curses passes a window object to the callback, so the
@@ -22,6 +32,8 @@ class Screen:
         #: Everything ever drawn, because erase clears the current frame and a
         #: test about what was shown along the way needs the whole run.
         self.history: list[str] = []
+        #: The background the chooser painted, if it painted one.
+        self.background: tuple[str, int] | None = None
 
     def getmaxyx(self) -> tuple[int, int]:
         return self.size
@@ -38,6 +50,9 @@ class Screen:
 
     def refresh(self) -> None:
         return None
+
+    def bkgd(self, character: str, attribute: int = 0) -> None:
+        self.background = (character, attribute)
 
     def getch(self) -> int:
         # Running out of keys means the chooser did not do what the test
@@ -119,7 +134,7 @@ def test_the_help_line_is_always_drawn() -> None:
     """A chooser nobody can drive is no use."""
     screen = Screen([ord("q")])
     run(screen, choices(), "Choose")
-    assert any("enter to open" in line for line in screen.history)
+    assert any("enter open" in line for line in screen.history)
 
 
 def test_there_is_no_chooser_without_a_terminal(
@@ -174,7 +189,7 @@ def test_the_search_is_shown_as_it_is_typed() -> None:
     screen = Screen([ord("/"), ord("g"), 27, ord("q")])
     run(screen, choices(), "Choose")
     assert any(line.startswith("Search: g") for line in screen.history)
-    assert any("escape to clear" in line for line in screen.history)
+    assert any("escape clears" in line for line in screen.history)
 
 
 def test_the_heading_counts_what_matched() -> None:
@@ -182,3 +197,102 @@ def test_the_heading_counts_what_matched() -> None:
     screen = Screen([ord("/"), ord("z"), 27, ord("q")])
     run(screen, choices(), "Choose")
     assert any("0 of 3 match" in line for line in screen.history)
+
+
+def test_moving_works_while_a_search_is_being_typed() -> None:
+    """Somebody who has narrowed five hundred to two wants to choose one.
+
+    Being made to press enter before the arrows do anything reads as broken,
+    which is exactly how it was reported.
+    """
+    keys = [ord("/"), ord("a"), curses.KEY_DOWN, 10]
+    assert run(Screen(keys), choices(), "Choose") == "b2"
+
+
+def test_enter_while_searching_opens_the_highlighted_line() -> None:
+    """Not merely leaving the search, which is what it used to do."""
+    keys = [ord("/"), ord("g"), ord("a"), 10]
+    assert run(Screen(keys), choices(), "Choose") == "c3"
+
+
+def test_the_order_can_be_changed() -> None:
+    """Alphabetical is one question. The newest is another."""
+    from entrascope.picker import ORDERS, ordered
+
+    rows = [
+        Choice(key="a", label="Alpha", name="Alpha", created="2024-01-01"),
+        Choice(key="b", label="Beta", name="Beta", created="2026-01-01"),
+    ]
+    assert [item.key for item in ordered(rows, "name")] == ["a", "b"]
+    assert [item.key for item in ordered(rows, "name reversed")] == ["b", "a"]
+    assert [item.key for item in ordered(rows, "newest")] == ["b", "a"]
+    assert [item.key for item in ordered(rows, "oldest")] == ["a", "b"]
+    assert ORDERS[0] == "name"
+
+
+def test_pressing_s_cycles_the_order() -> None:
+    """One key, because a chooser is not a form."""
+    screen = Screen([ord("s"), ord("q")])
+    run(screen, choices(), "Choose")
+    assert any("name reversed" in line for line in screen.history)
+
+
+def test_a_line_carries_what_it_means() -> None:
+    """Colour here is meaning, not decoration."""
+    line = Choice(key="a", label="An app", tone="danger")
+    assert line.tone == "danger"
+    assert Choice(key="b", label="Another").tone == ""
+
+
+def test_a_colour_name_becomes_a_curses_colour() -> None:
+    """The palette is written as names, because a number means nothing."""
+    assert colour_number("red") == curses.COLOR_RED
+    assert colour_number("") == -1
+    assert colour_number("terminal") == -1
+    assert colour_number("puce") == -1
+
+
+def test_a_bright_colour_falls_back_when_the_terminal_is_plain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eight colours is the floor, and the chooser still reads on it."""
+    monkeypatch.setattr(curses, "COLORS", 8, raising=False)
+    assert colour_number("bright red") == curses.COLOR_RED
+    assert colour_number("orange") == curses.COLOR_YELLOW
+    monkeypatch.setattr(curses, "COLORS", 256, raising=False)
+    assert colour_number("bright red") == curses.COLOR_RED + 8
+    assert colour_number("orange") == 208
+
+
+def test_the_chooser_paints_its_own_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The palette is chosen for a dark screen, so the screen is made dark."""
+    pairs: dict[int, tuple[int, int]] = {}
+    monkeypatch.setattr(curses, "start_color", lambda: None)
+    monkeypatch.setattr(curses, "use_default_colors", lambda: None)
+    monkeypatch.setattr(
+        curses,
+        "init_pair",
+        lambda index, front, back: pairs.__setitem__(index, (front, back)),
+    )
+    monkeypatch.setattr(curses, "color_pair", lambda index: index * 256)
+    screen = Screen([])
+    scheme = start_colour(screen, {"background": "black"}, {"danger": "red"})
+    assert screen.background is not None
+    assert all(back == curses.COLOR_BLACK for _, back in pairs.values())
+    assert scheme.tones["danger"]
+
+
+def test_a_terminal_without_colour_still_draws() -> None:
+    """Bold, dim and reverse say the same things where colour cannot."""
+    screen = Screen([])
+    draw(screen, choices(), 0, "", "Applications", scheme=Scheme())
+    assert any("Alpha application" in line for line in screen.drawn)
+
+
+def test_a_line_is_padded_so_its_colour_runs_the_width() -> None:
+    """A highlight that stops after the text looks like a drawing fault."""
+    screen = Screen([], width=40)
+    draw(screen, choices(), 0, "", "Applications", scheme=Scheme())
+    assert any(line.endswith(" " * 5) for line in screen.drawn)

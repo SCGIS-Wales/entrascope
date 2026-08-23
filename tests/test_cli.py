@@ -29,7 +29,7 @@ def test_cli_help() -> None:
     """The root help lists the command groups."""
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for group in ("discover", "logs", "errors"):
+    for group in ("inspect", "logs", "errors"):
         assert group in result.output
 
 
@@ -678,13 +678,18 @@ def test_cli_inspect_as_json(authenticated: None) -> None:
 def test_cli_inspect_without_a_target_and_without_a_terminal(
     authenticated: None,
 ) -> None:
-    """With nothing to draw on it explains how to name one instead."""
+    """With nothing to draw the list on, the help is the whole answer.
+
+    Reading the entire directory to then find nobody to offer it to would be a
+    slow way of saying nothing.
+    """
     from tests.test_inspect import register as register_inspect
 
     register_inspect()
     result = run(["--auth", "file", "inspect"])
-    assert result.exit_code == EXIT_CONFIG
+    assert result.exit_code == 0
     assert "part of a display name" in result.output
+    assert "Commands:" in result.output
 
 
 @responses.activate
@@ -922,7 +927,7 @@ def test_upgrade_is_not_offered_as_a_tool() -> None:
 
 def test_a_group_with_no_subcommand_still_prints_its_help_when_piped() -> None:
     """A script or a pipe gets exactly what it always got."""
-    for group in ("errors", "logs", "discover", "config", "serve"):
+    for group in ("errors", "logs", "inspect", "config", "serve"):
         output = run([group]).output
         assert "Commands:" in output, group
         assert "Usage:" in output, group
@@ -960,7 +965,7 @@ def test_a_chosen_command_is_asked_for_the_argument_it_needs(
     )
     with parent:
         cli_module.run_command(explain_command, "explain", parent)
-    assert asked == ["Code"]
+    assert asked == ["Code (blank to go back)"]
 
 
 def test_a_command_needing_nothing_is_run_straight_away() -> None:
@@ -1089,3 +1094,189 @@ def test_a_refusal_naming_no_permission_prints_no_command(
     )
     result = run(["--auth", "file", "logs", "audit"])
     assert "Grant it with:" not in result.output
+
+
+def test_a_blank_answer_goes_back_rather_than_running_the_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt whose only exit is the interrupt key is a trap."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import SETTINGS, build_settings
+
+    monkeypatch.setattr(cli_module.click, "prompt", lambda label, **kwargs: "")
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        assert (
+            cli_module.run_command(errors_group.commands["explain"], "explain", parent)
+            is None
+        )
+
+
+def test_the_menu_returns_after_each_command_until_it_is_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finishing a command should not put somebody back at the shell."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import LEAVE, SETTINGS, build_settings
+
+    picked = iter(["list", "list", LEAVE])
+    monkeypatch.setattr(cli_module, "available", lambda: True)
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: next(picked))
+    ran: list[str] = []
+    monkeypatch.setattr(
+        cli_module, "run_command", lambda command, name, ctx: ran.append(name)
+    )
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        cli_module.offer_commands(errors_group, parent)
+    assert ran == ["list", "list"]
+
+
+def test_the_menu_offers_a_way_out_of_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guessing that escape leaves is not something anybody should have to do."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import LEAVE, SETTINGS, build_settings
+
+    offered: list[list[Any]] = []
+
+    def record(lines: Any, **kwargs: Any) -> str:
+        offered.append(list(lines))
+        return LEAVE
+
+    monkeypatch.setattr(cli_module, "available", lambda: True)
+    monkeypatch.setattr(cli_module, "choose", record)
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        cli_module.offer_commands(errors_group, parent)
+    assert [line.key for line in offered[0]][-1] == LEAVE
+
+
+def test_a_command_that_fails_returns_to_the_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing the session over a mistyped identifier would be miserable."""
+    from entrascope import cli as cli_module
+    from entrascope.cli import SETTINGS, build_settings
+    from entrascope.models import ConfigError
+
+    def explode(command: Any, name: str, ctx: Any) -> None:
+        raise ConfigError("nothing by that name")
+
+    monkeypatch.setattr(cli_module, "run_command", explode)
+    errors_group = cli.commands["errors"]
+    assert isinstance(errors_group, click.Group)
+    parent = click.Context(
+        cli, obj={SETTINGS: build_settings(None, None, "json", False)}
+    )
+    with parent:
+        assert cli_module.attempt(errors_group.commands["list"], "list", parent) is None
+
+
+def test_config_show_names_the_files_it_read() -> None:
+    """Knowing the setting without knowing which file holds it is half an answer."""
+    result = run(["config", "show"])
+    assert result.exit_code == 0
+    assert "sources:" in result.output
+    assert "in_use:" in result.output
+    assert "settings:" in result.output
+    assert "fields.yaml" in result.output
+
+
+def test_config_show_still_prints_one_file_with_its_path() -> None:
+    """Naming a file is still the way to read only that file."""
+    result = run(["config", "show", "fields.yaml"])
+    assert result.exit_code == 0
+    assert "fields.yaml" in result.output.splitlines()[0]
+
+
+def test_after_reading_an_application_the_choice_is_a_menu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A question with only yes and no for answers cannot offer a file."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    config = load_config(None)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: "save")
+    report = {"identity": {"display_name": "Payments API"}, "scopes": []}
+    assert cli_module.after_viewing(report, config) == "list"
+    assert (tmp_path / "Payments-API.yaml").is_file()
+
+
+def test_leaving_after_reading_an_application_is_an_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Going back to the list is the usual answer, not the only one."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: "quit")
+    assert cli_module.after_viewing({}, load_config(None)) == "quit"
+
+
+def test_escape_from_the_menu_goes_back_to_the_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Escape means go back, and going back to the list is one step back."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(cli_module, "choose", lambda *a, **k: None)
+    assert cli_module.after_viewing({}, load_config(None)) == "list"
+
+
+def test_a_saved_application_is_named_after_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A name with a slash in it is still a name, and must not be a path."""
+    from entrascope import cli as cli_module
+    from entrascope.config import load_config
+
+    monkeypatch.chdir(tmp_path)
+    cli_module.save_report(
+        {"identity": {"display_name": "Team A/B testing"}}, load_config(None)
+    )
+    assert (tmp_path / "Team-A-B-testing.yaml").is_file()
+
+
+def test_listing_and_reading_are_one_command() -> None:
+    """Two commands asking the same question at two depths is one command."""
+    inspect_group = cli.commands["inspect"]
+    assert isinstance(inspect_group, click.Group)
+    assert set(inspect_group.commands) >= {
+        "app",
+        "applications",
+        "enterprise-apps",
+        "gallery",
+    }
+
+
+def test_the_old_name_still_reaches_the_command() -> None:
+    """Tidying a command list is not worth breaking somebody's script over."""
+    context = click.Context(cli)
+    assert cli.get_command(context, "discover") is cli.commands["inspect"]
+
+
+def test_a_name_that_is_not_a_subcommand_is_an_application() -> None:
+    """entrascope inspect saml2 has always meant one application."""
+    inspect_group = cli.commands["inspect"]
+    assert isinstance(inspect_group, click.Group)
+    context = click.Context(inspect_group)
+    name, command, _ = inspect_group.resolve_command(context, ["saml2"])
+    assert name == "app"
+    assert command is inspect_group.commands["app"]

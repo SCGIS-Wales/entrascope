@@ -416,6 +416,7 @@ def project_service_principal(
         saml=project_saml(payload, config, credentials, tags),
         owners=owner_names(owners),
         tags=tags,
+        created=text(pluck(payload, mapping["created"])),
         owner_tenant_id=text(pluck(payload, mapping["app_owner_organization_id"])),
     )
 
@@ -431,6 +432,21 @@ def is_first_party(principal: ServicePrincipalSummary, config: Config) -> bool:
     return principal.owner_tenant_id in owners
 
 
+def expansion(config: Config, endpoint: str) -> str:
+    """Return what a collection expands, if configuration says it expands one."""
+    return config.endpoints.graph.expansions.get(endpoint, "")
+
+
+def expanded(
+    payloads: Sequence[Mapping[str, Any]], name: str
+) -> tuple[tuple[dict[str, Any], ...], ...]:
+    """Return one expanded collection per object, in the order they came."""
+    return tuple(
+        tuple(item for item in payload.get(name, ()) if isinstance(item, dict))
+        for payload in payloads
+    )
+
+
 def discover_applications(
     session: Session,
     config: Config,
@@ -438,12 +454,15 @@ def discover_applications(
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
+    with_federated: bool = True,
     limit: int | None = None,
 ) -> tuple[ApplicationSummary, ...]:
     """Enumerate application registrations and project every one.
 
-    Owners and federated identity credentials need one call per application, so
-    they are fetched concurrently and only when details are wanted.
+    Owners come back with the page, expanded, because one call per application
+    is thousands of calls on a real tenant. Federated identity credentials
+    cannot be expanded, so they are fetched concurrently and only when they are
+    wanted.
     """
     payloads = get_collection(
         session,
@@ -452,12 +471,12 @@ def discover_applications(
         select=selected_fields(config.fields.application),
         filter_expression=filter_expression,
         limit=limit,
+        expand=expansion(config, "applications") if with_details else "",
     )
     object_ids = [text(item.get("id")) for item in payloads]
-    owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
+    owners = expanded(payloads, "owners")
     federated: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
-    if with_details and object_ids and token is not None:
-        owners = fan_out_objects(object_ids, config, "application_owners", token)
+    if with_details and with_federated and object_ids and token is not None:
         federated = fan_out_objects(
             object_ids, config, "federated_identity_credentials", token
         )
@@ -479,6 +498,7 @@ def discover_service_principals(
     *,
     filter_expression: str | None = None,
     with_details: bool = True,
+    with_assignments: bool = True,
     limit: int | None = None,
 ) -> tuple[ServicePrincipalSummary, ...]:
     """Enumerate enterprise applications and project every one."""
@@ -489,12 +509,12 @@ def discover_service_principals(
         select=selected_fields(config.fields.service_principal),
         filter_expression=filter_expression,
         limit=limit,
+        expand=expansion(config, "service_principals") if with_details else "",
     )
     object_ids = [text(item.get("id")) for item in payloads]
-    owners: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
+    owners = expanded(payloads, "owners")
     assignments: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
-    if with_details and object_ids and token is not None:
-        owners = fan_out_objects(object_ids, config, "service_principal_owners", token)
+    if with_details and with_assignments and object_ids and token is not None:
         assignments = fan_out_objects(object_ids, config, "app_role_assignments", token)
     log.info("discovered %s enterprise applications", len(payloads))
     return tuple(
