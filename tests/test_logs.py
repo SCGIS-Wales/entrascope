@@ -276,3 +276,18 @@ def test_projection_from_rows_tolerates_missing_columns() -> None:
     assert audit_events_from_rows(empty)[0].timestamp == "now"
     assert sign_in_events_from_rows(empty)[0].error_code == 0
     assert graph_activity_from_rows(empty)[0].status == 0
+
+
+def test_a_row_limit_is_brought_inside_its_ceiling(config: Config) -> None:
+    """Ten million rows is a way to hang a terminal, not a way to read a log."""
+    from entrascope.logs import query_parameters
+
+    parameters = query_parameters(config, row_limit=10_000_000)
+    assert parameters["row_limit"] == config.tables.defaults.max_row_limit
+
+
+def test_a_nonsense_lookback_becomes_a_number_of_something(config: Config) -> None:
+    """A negative lookback is not a question a workspace can answer."""
+    from entrascope.logs import query_parameters
+
+    assert query_parameters(config, lookback_hours=-5)["lookback_hours"] == 1

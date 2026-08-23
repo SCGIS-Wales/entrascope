@@ -12,7 +12,7 @@ import json
 import os
 import shutil
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from azure.core.credentials import TokenCredential
@@ -24,7 +24,7 @@ from azure.identity import (
 
 from entrascope.config import Config, Credentials
 from entrascope.http import verify_setting
-from entrascope.logger import bind_context, get_logger
+from entrascope.logger import also_redact, bind_context, get_logger
 from entrascope.models import (
     AUTH_SOURCE_ORDER,
     AuthContext,
@@ -290,10 +290,11 @@ def read_environment(
     return Credential(client_id=client_id, tenant_id=tenant_id, secret=secret)
 
 
-def azure_cli_available(which: object = None) -> bool:
+def azure_cli_available(
+    which: Callable[[str], str | None] | None = None,
+) -> bool:
     """Return whether the Azure CLI is on PATH."""
     finder = shutil.which if which is None else which
-    assert callable(finder)
     return bool(finder(AZURE_CLI_EXECUTABLE))
 
 
@@ -381,6 +382,10 @@ def try_source(
     settings = config.credentials
     if source == "file":
         credential = read_credential_file(settings, home, named)
+        # Known secrets are redacted as literals as well as by pattern. This is
+        # the one moment the secret is in hand, and a library that echoes what
+        # it was given will not have used a name we recognise.
+        also_redact(credential.secret)
         context = AuthContext(
             source=source,
             identity_kind=identity_kind(settings, source),
@@ -403,6 +408,7 @@ def try_source(
                 "The environment does not carry client credentials. Set "
                 f"{names.client_id}, {names.secret} and {names.tenant_id}."
             )
+        also_redact(from_environment.secret)
         context = AuthContext(
             source=source,
             identity_kind=identity_kind(settings, source),

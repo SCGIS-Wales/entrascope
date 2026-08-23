@@ -89,3 +89,8 @@ defaults:
   # not. Raise it with --limit when you want the lot, or use --output plain and
   # pipe it somewhere that can hold it.
   row_limit: 25
+  # Ceilings, because a row limit reaches a KQL query as a number and a query
+  # for ten million rows is a way to hang a terminal rather than to read a log.
+  # A request above these is brought down to them and says so.
+  max_row_limit: 10000
+  max_lookback_hours: 720

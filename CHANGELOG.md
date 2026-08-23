@@ -7,7 +7,50 @@ versioning.
 
 ## [Unreleased]
 
+### Security
+- A known client secret is now redacted as a literal as well as by pattern. The
+  machinery for it was written and never wired up, so a secret echoed back by
+  some library under a name we do not recognise would have been printed.
+- A package index or proxy address carrying a user name and a password is
+  redacted, as is a secret in a query string. The upgrade command echoes the
+  address the installer was given, and it says so in a comment, but nothing
+  redacted it.
+- The pager will not follow an @odata.nextLink to another host. Every call
+  carries a bearer token, and following a link off the host would hand the
+  token to that host. Microsoft Graph would never send such a link, which is
+  what makes the check free.
+- A correlation id supplied by a caller of the remote server is accepted only
+  when it is a plain identifier. It appears on every log line the request
+  causes, so a newline in it would forge a line.
+- A display name reaches the chooser and the live view with its control
+  characters taken out. It is somebody else's text and both of them draw on a
+  screen.
+- A log line drawn by the live view is redacted again as it is drawn, rather
+  than relying on the handler the view displaces.
+
 ### Fixed
+- A log record arriving from the polling thread could be dropped while the
+  drawing thread emptied the queue, because reading a list and clearing it is
+  two steps. Taking from a deque is one.
+- A session could be closed while a worker thread was still using it when a
+  fan out failed partway through. The pool is now waited for first, except on
+  an interrupt, where stopping quickly is the point.
+- A configuration export that hit a file already there stopped halfway,
+  leaving a directory holding some of one release and some of another.
+  Everything is checked before anything is written.
+- Saving an application or an investigation no longer writes over a file of
+  the same name. The next free number is used.
+- A display name can no longer become a path when a report is saved.
+- A row limit or a lookback reaching a KQL query is brought inside a ceiling.
+  They are numbers, so nothing can be injected through them, but ten million
+  rows is a way to hang a terminal rather than to read a log.
+- The live view polls with a shorter timeout than a report uses, so leaving it
+  cannot keep the process alive waiting on a call nobody will see.
+- --follow with --output json said nothing and reported once. It now says why.
+- The release cache lost the file addresses it had been given, so a cached
+  answer could not name them.
+- investigate --follow authenticated a second time to open the view. The token
+  source outlives the session, so it is reused.
 - A command run from a menu had its output wiped by the menu redrawing over it
   the moment it finished, which is why config show, config path, errors list
   and upgrade all appeared to do nothing. The menu now waits for a keystroke,

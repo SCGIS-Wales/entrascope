@@ -87,7 +87,18 @@ def read_cache(config: Config) -> tuple[Release | None, bool]:
     version = str(payload.get("version", ""))
     if not version:
         return None, fresh
-    return Release(version=version, url=str(payload.get("url", ""))), fresh
+    files = payload.get("files")
+    return (
+        Release(
+            version=version,
+            url=str(payload.get("url", "")),
+            # Remembered with the rest, because the addresses are half of what
+            # somebody asking about a release wants and refetching them would
+            # defeat the point of a cache.
+            files=tuple(str(item) for item in files) if isinstance(files, list) else (),
+        ),
+        fresh,
+    )
 
 
 def write_cache(config: Config, release: Release) -> None:
@@ -100,6 +111,7 @@ def write_cache(config: Config, release: Release) -> None:
                 {
                     "version": release.version,
                     "url": release.url,
+                    "files": list(release.files),
                     "fetched_at": time.time(),
                 }
             ),

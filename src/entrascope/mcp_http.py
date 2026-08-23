@@ -14,6 +14,7 @@ Three rules govern this module, and each is covered by a test:
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +51,11 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 #: Header a proxy uses to pass a correlation id through.
 CORRELATION_HEADER = "x-correlation-id"
+
+#: What a correlation id may look like when somebody else supplies one. Long
+#: enough for a GUID with dashes and for the identifiers the Azure services
+#: use, and nothing in it can forge a log line.
+SAFE_CORRELATION = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 
 
 def negotiated_protocol_version() -> str:
@@ -256,10 +262,18 @@ def register_health(server: FastMCP, config: Config) -> FastMCP:
 
 
 def correlation_from(request: Request) -> str:
-    """Return the correlation id a proxy passed in, or a fresh one."""
+    """Return the correlation id a proxy passed in, or a fresh one.
+
+    What a caller sends is a caller's text, and it goes on to appear on every
+    log line the request causes. A newline in it would forge a line and an
+    escape sequence would move a cursor about in whatever is reading the log,
+    so anything that is not a plain identifier is replaced rather than trusted.
+    """
     supplied = request.headers.get(CORRELATION_HEADER, "").strip()
-    if supplied:
+    if supplied and SAFE_CORRELATION.fullmatch(supplied):
         return supplied
+    if supplied:
+        log.debug("the correlation id supplied was not a plain identifier")
     return new_correlation_id()
 
 
