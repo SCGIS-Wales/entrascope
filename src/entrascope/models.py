@@ -61,6 +61,10 @@ class AuthContext(NamedTuple):
     tenant_id: str | None
     client_id: str | None
     description: str
+    #: What was tried on the way and why it was passed over. A source that was
+    #: expected to work and quietly did not is the commonest confusion there
+    #: is, so the answer carries the reasons with it.
+    skipped: tuple[str, ...] = ()
 
 
 class ApiError(NamedTuple):

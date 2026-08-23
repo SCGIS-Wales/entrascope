@@ -11,6 +11,7 @@ remediation and a documentation link. Nothing here ever prints a secret.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from azure.core.credentials import TokenCredential
@@ -32,7 +33,7 @@ from entrascope.capabilities import (
     sufficient_directory_roles,
 )
 from entrascope.config import Config
-from entrascope.credentials import check_permissions, resolve_auth
+from entrascope.credentials import check_permissions, resolve_auth, resolve_file
 from entrascope.graph import (
     arm_token_provider,
     get_collection,
@@ -75,18 +76,31 @@ def check_network(config: Config) -> CheckResult:
 
 
 def check_credential_storage(
-    config: Config, source: AuthSource | None
+    config: Config,
+    source: AuthSource | None,
+    named: str | None = None,
+    home: Path | None = None,
 ) -> tuple[CheckResult, ...]:
-    """Check the credential file, unless the active source does not use one."""
+    """Check the credential file, and always say which file that is.
+
+    Reporting only that another source was used hides the one thing somebody
+    needs when a credential file is not being picked up, which is the path that
+    was actually looked at.
+    """
+    path = resolve_file(config.credentials, home, named)
     if source is not None and source != "file":
         return (
             CheckResult(
                 check="credential storage",
                 passed=True,
-                detail=f"Not applicable. The {source} source uses no credential file.",
+                detail=(
+                    f"The {source} source was named, so no credential file is "
+                    f"read. The one it would use is {path}, and it "
+                    + ("exists." if path.is_file() else "does not exist.")
+                ),
             ),
         )
-    return check_permissions(config.credentials)
+    return check_permissions(config.credentials, home, named)
 
 
 def check_token(
@@ -295,6 +309,7 @@ def run_checks(
     *,
     requested: AuthSource | None = None,
     session: Session | None = None,
+    named: str | None = None,
 ) -> tuple[CheckResult, ...]:
     """Run every preflight check and return the results in report order."""
     results: list[CheckResult] = [check_network(config)]
@@ -304,7 +319,7 @@ def run_checks(
     # a missing credential file to somebody who signed in with the Azure CLI
     # tells them off for nothing.
     try:
-        context, credential = resolve_auth(config, requested)
+        context, credential = resolve_auth(config, requested, named=named)
     except CredentialError as failure:
         lines = [line.strip() for line in str(failure).splitlines() if line.strip()]
         results.append(
@@ -322,17 +337,24 @@ def run_checks(
         )
         # Only now are the file checks useful, because they say why that source
         # could not answer.
-        results.extend(check_permissions(config.credentials))
+        results.extend(check_permissions(config.credentials, named=named))
         return tuple(results)
 
     results.append(
         CheckResult(
             check="authentication source",
             passed=True,
-            detail=f"Using {context.description}.",
+            detail=(
+                f"Using {context.description}."
+                + (
+                    " Passed over on the way: " + "; ".join(context.skipped) + "."
+                    if context.skipped
+                    else ""
+                )
+            ),
         )
     )
-    results.extend(check_credential_storage(config, context.source))
+    results.extend(check_credential_storage(config, context.source, named))
 
     token_result, token = check_token(config, credential, context)
     results.append(token_result)

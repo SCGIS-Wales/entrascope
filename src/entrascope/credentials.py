@@ -42,6 +42,11 @@ log = get_logger(__name__)
 AZURE_CLI_EXECUTABLE = "az"
 
 
+def first_line(error: Exception) -> str:
+    """Return the first line of an error, which is the part that says what."""
+    return str(error).splitlines()[0] if str(error) else error.__class__.__name__
+
+
 def resolve_directory(settings: Credentials, home: Path | None = None) -> Path:
     """Return the directory that holds the credential file."""
     raw = settings.file.directory
@@ -51,9 +56,48 @@ def resolve_directory(settings: Credentials, home: Path | None = None) -> Path:
     return Path(raw)
 
 
-def resolve_file(settings: Credentials, home: Path | None = None) -> Path:
-    """Return the full path of the credential file."""
-    return resolve_directory(settings, home) / settings.file.filename
+def resolve_file(
+    settings: Credentials,
+    home: Path | None = None,
+    named: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the credential file to read.
+
+    A name given on the command line wins, then the environment variable, then
+    the configured file name. A name with no path in it is taken as a file
+    inside the credential directory, which is what somebody means when they say
+    they have another one next to the first.
+    """
+    source = os.environ if environ is None else environ
+    chosen = named or source.get(settings.file.environment_variable, "").strip()
+    if not chosen:
+        return resolve_directory(settings, home) / settings.file.filename
+    if chosen.startswith("~"):
+        base = home if home is not None else Path.home()
+        return base / chosen.removeprefix("~").lstrip("/")
+    candidate = Path(chosen)
+    if candidate.is_absolute() or len(candidate.parts) > 1:
+        return candidate
+    return resolve_directory(settings, home) / chosen
+
+
+def other_files(settings: Credentials, home: Path | None = None) -> tuple[str, ...]:
+    """Return the other credential files sitting in the directory.
+
+    Somebody who keeps one file per tenant has the answer in front of them, and
+    naming it is more use than repeating what was expected.
+    """
+    directory = resolve_directory(settings, home)
+    if not directory.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            item.name
+            for item in directory.iterdir()
+            if item.is_file() and item.suffix == ".json"
+        )
+    )
 
 
 def permission_bits(path: Path) -> int:
@@ -104,19 +148,34 @@ def check_directory_mode(
     )
 
 
-def check_file_mode(settings: Credentials, home: Path | None = None) -> CheckResult:
+def check_file_mode(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> CheckResult:
     """Check that the credential file is readable only by its owner."""
-    path = resolve_file(settings, home)
+    path = resolve_file(settings, home, named)
     wanted = required_mode(settings.file.required_file_mode)
     if not path.is_file():
+        alternatives = tuple(
+            name for name in other_files(settings, home) if name != path.name
+        )
+        nearby = (
+            f"\nThese are in {resolve_directory(settings, home)}: "
+            f"{', '.join(alternatives)}. Use one with "
+            f"--credentials {alternatives[0]}"
+            if alternatives
+            else ""
+        )
         return CheckResult(
             check="credential file",
             passed=False,
-            detail=f"{path} does not exist.",
+            detail=f"{path} does not exist.{nearby}",
             remediation=(
                 f"Create {path} with the keys "
                 f"{sorted(settings.file.keys.values())} and run "
                 f"chmod {format_mode(wanted)} {path}"
+                if not alternatives
+                else f"Pass --credentials {alternatives[0]}, or set "
+                f"{settings.file.environment_variable}, or create {path}."
             ),
         )
     actual = permission_bits(path)
@@ -138,10 +197,13 @@ def check_file_mode(settings: Credentials, home: Path | None = None) -> CheckRes
 
 
 def check_permissions(
-    settings: Credentials, home: Path | None = None
+    settings: Credentials, home: Path | None = None, named: str | None = None
 ) -> tuple[CheckResult, ...]:
     """Check the credential directory and the credential file together."""
-    return (check_directory_mode(settings, home), check_file_mode(settings, home))
+    return (
+        check_directory_mode(settings, home),
+        check_file_mode(settings, home, named),
+    )
 
 
 def read_checked(path: Path, settings: Credentials) -> str:
@@ -163,17 +225,19 @@ def read_checked(path: Path, settings: Credentials) -> str:
         return handle.read().decode("utf-8")
 
 
-def read_credential_file(settings: Credentials, home: Path | None = None) -> Credential:
+def read_credential_file(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> Credential:
     """Read and validate the credential file.
 
     Refuses to run when the file or its directory is group or world accessible.
     The remediation names the exact chmod and never reveals the secret.
     """
-    for result in check_permissions(settings, home):
+    for result in check_permissions(settings, home, named):
         if not result.passed:
             raise CredentialError(f"{result.detail} Fix it with: {result.remediation}")
 
-    path = resolve_file(settings, home)
+    path = resolve_file(settings, home, named)
     try:
         payload = json.loads(read_checked(path, settings))
     except (OSError, json.JSONDecodeError) as error:
@@ -294,17 +358,21 @@ def try_source(
     config: Config,
     home: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    named: str | None = None,
 ) -> tuple[AuthContext, TokenCredential]:
     """Build a token source for one authentication source, or fail loudly."""
     settings = config.credentials
     if source == "file":
-        credential = read_credential_file(settings, home)
+        credential = read_credential_file(settings, home, named)
         context = AuthContext(
             source=source,
             identity_kind=identity_kind(settings, source),
             tenant_id=credential.tenant_id,
             client_id=credential.client_id,
-            description=describe(source, credential),
+            description=(
+                "client credentials from "
+                f"{resolve_file(settings, home, named, environ)}"
+            ),
         )
         return context, build_client_secret_credential(
             credential, verify_setting(config, environ)
@@ -359,18 +427,22 @@ def resolve_auth(
     requested: AuthSource | None = None,
     home: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    named: str | None = None,
 ) -> tuple[AuthContext, TokenCredential]:
     """Return the identity to authenticate as, and the token source for it.
 
     Naming a source explicitly selects it whether or not it is enabled for
     automatic resolution, so an engineer who has run az login can pass
-    --auth azure-cli with no configuration change. Without an explicit choice
-    the enabled sources are tried in the configured order and the first that
-    works wins.
+    --auth azure-cli with no configuration change. Naming a credential file
+    means the file source, because there is nothing else it could mean.
+    Without an explicit choice the enabled sources are tried in the configured
+    order and the first that works wins.
     """
     settings = config.credentials
+    if named and requested is None:
+        requested = "file"
     if requested is not None:
-        context, credential = try_source(requested, config, home, environ)
+        context, credential = try_source(requested, config, home, environ, named)
         bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
         log.debug("authenticated using %s", context.description)
         return context, credential
@@ -378,15 +450,21 @@ def resolve_auth(
     failures: list[str] = []
     for source in resolution_order(settings):
         if not source_enabled(settings, source):
+            failures.append(f"{source}: not enabled for automatic resolution")
             continue
         try:
-            context, credential = try_source(source, config, home, environ)
+            context, credential = try_source(source, config, home, environ, named)
         except (CredentialError, AuthSourceUnavailableError) as error:
-            failures.append(f"{source}: {error}")
+            failures.append(f"{source}: {first_line(error)}")
             continue
         bind_context(auth_source=context.source, tenant_id=context.tenant_id or "")
         log.debug("authenticated using %s", context.description)
-        return context, credential
+        # What was passed over on the way is worth saying. A source that was
+        # expected to answer and quietly did not is the commonest confusion
+        # there is, and nothing else reports it.
+        for skipped in failures:
+            log.info("passed over %s", skipped)
+        return context._replace(skipped=tuple(failures)), credential
 
     tried = ", ".join(
         source

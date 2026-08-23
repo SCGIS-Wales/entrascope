@@ -90,19 +90,38 @@ never assembled by concatenation in code.
 
 ## Where it comes from at run time
 
-Searched in this order, and the first that holds `endpoints.yaml` wins:
+Searched in this order:
 
-1. A directory named with `--config-dir`. This one is required rather than
-   preferred, so a typo fails instead of quietly using another.
-2. `ENTRASCOPE_CONFIG_DIR`.
-3. `entrascope/_config` inside the installed package, which the wheel carries
+1. A directory named with `--config-dir`. Required rather than preferred, so a
+   typo fails instead of quietly using another, and used as it stands.
+2. `ENTRASCOPE_CONFIG_DIR`, the same.
+3. `~/.config/entrascope`, the engineer's own. Used when it holds any YAML file
+   at all, and **layered over the shipped defaults**.
+4. `entrascope/_config` inside the installed package, which the wheel carries
    by mapping the repository `config` directory into it.
-4. The repository `config` directory, which is what a development checkout uses.
+5. The repository `config` directory, which is what a development checkout uses.
 
-Because an installed copy sits inside the package and is replaced on upgrade,
-`entrascope config export` takes a copy to edit and `entrascope config path`
-says which directory is in force. A test asserts the wheel still carries the
-configuration, because that mapping is easy to lose in a packaging change.
+## Why the engineer's directory is layered
+
+Everything inside a package is replaced when it is upgraded, so an edit made
+there is lost without anybody being told. The engineer's directory sits outside
+the package and is never touched.
+
+Layering rather than replacing is what makes that workable. A file there holds
+only what was changed; every other setting comes from the defaults underneath.
+So a release that adds a setting is picked up without anybody doing anything,
+and a file written two releases ago keeps working. A mapping is merged key by
+key and a list is replaced whole, because half of somebody's list of endpoints
+merged with half of ours would be nobody's list.
+
+A directory named explicitly is not layered. Naming one means that one.
+
+`entrascope config export` writes there by default, and `--only` copies a
+single file, which is the shape most changes take. `entrascope config path`
+says which directory is in force and whether it is the packaged copy, which is
+the question somebody has when an edit appears to do nothing. A test asserts
+the wheel still carries the defaults, because that mapping is easy to lose in a
+packaging change.
 
 ## Rules
 

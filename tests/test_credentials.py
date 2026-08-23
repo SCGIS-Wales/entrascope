@@ -307,3 +307,85 @@ def test_the_file_that_was_opened_is_the_file_that_was_checked(
     path.chmod(0o644)
     with pytest.raises(CredentialError, match="chmod 0600"):
         read_checked(path, config.credentials)
+
+
+def test_a_bare_name_is_a_file_in_the_credential_directory(
+    tmp_path: Path, config: Config
+) -> None:
+    """Somebody with one file per tenant means the one next to the first."""
+    resolved = resolve_file(
+        config.credentials, tmp_path, "provisioner-credentials-stage.json", {}
+    )
+    assert resolved == tmp_path / ".entra" / "provisioner-credentials-stage.json"
+
+
+def test_a_path_is_used_as_it_stands(tmp_path: Path, config: Config) -> None:
+    """A path is a path, wherever it points."""
+    absolute = tmp_path / "elsewhere" / "creds.json"
+    assert resolve_file(config.credentials, tmp_path, str(absolute), {}) == absolute
+    assert resolve_file(config.credentials, tmp_path, "sub/creds.json", {}) == Path(
+        "sub/creds.json"
+    )
+    assert resolve_file(config.credentials, tmp_path, "~/creds.json", {}) == (
+        tmp_path / "creds.json"
+    )
+
+
+def test_the_environment_can_name_the_file(tmp_path: Path, config: Config) -> None:
+    """A shell that already knows which tenant it is for should not be retyped."""
+    variable = config.credentials.file.environment_variable
+    resolved = resolve_file(
+        config.credentials, tmp_path, None, {variable: "other.json"}
+    )
+    assert resolved.name == "other.json"
+
+
+def test_a_name_on_the_command_line_beats_the_environment(
+    tmp_path: Path, config: Config
+) -> None:
+    """The more deliberate of the two wins."""
+    variable = config.credentials.file.environment_variable
+    resolved = resolve_file(
+        config.credentials, tmp_path, "chosen.json", {variable: "other.json"}
+    )
+    assert resolved.name == "chosen.json"
+
+
+def test_a_missing_file_names_the_ones_that_are_there(
+    tmp_path: Path, config: Config
+) -> None:
+    """The answer is usually in front of them.
+
+    Repeating the name that was expected helps nobody who keeps one file per
+    tenant under a different name.
+    """
+    write_credentials(tmp_path, config=config)
+    default = resolve_file(config.credentials, tmp_path)
+    default.rename(default.with_name("provisioner-credentials-stage.json"))
+    result = check_file_mode(config.credentials, tmp_path)
+    assert not result.passed
+    assert "provisioner-credentials-stage.json" in result.detail
+    assert "--credentials provisioner-credentials-stage.json" in result.remediation
+
+
+def test_naming_a_file_means_the_file_source(tmp_path: Path, config: Config) -> None:
+    """There is nothing else naming a credential file could mean."""
+    write_credentials(tmp_path, config=config)
+    default = resolve_file(config.credentials, tmp_path)
+    default.rename(default.with_name("stage.json"))
+    context, _ = resolve_auth(config, home=tmp_path, environ={}, named="stage.json")
+    assert context.source == "file"
+    assert "stage.json" in context.description
+
+
+def test_the_answer_says_what_was_passed_over(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source that was expected to work and quietly did not is the commonest
+    confusion there is."""
+    monkeypatch.setattr("entrascope.credentials.shutil.which", lambda _: "/usr/bin/az")
+    context, _ = resolve_auth(config, home=tmp_path, environ={})
+    assert context.source == "azure-cli"
+    assert any("file:" in reason for reason in context.skipped)
+    assert any("does not exist" in reason for reason in context.skipped)
+    assert any("env: not enabled" in reason for reason in context.skipped)
