@@ -157,6 +157,12 @@ display:
     poll_events: 50
     # How many lines the view keeps. Older ones fall off the bottom.
     maximum_rows: 2000
+    # Sign in kinds the live view leaves out unless it is asked for one by
+    # name. Azure signs its managed identities in constantly and none of it is
+    # anybody's authentication problem. Pass --kind managed-identity to watch
+    # them anyway.
+    skip_kinds:
+      - managed-identity
     # What each kind of line means, and so what colour it is drawn in.
     severity_tones:
       error: danger

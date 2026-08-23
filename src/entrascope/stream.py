@@ -199,6 +199,7 @@ def read_events(
     """
     limit = config.fields.display.stream.poll_events
     rows: list[Row] = []
+    refusals: list[tuple[str, str]] = []
 
     def read(session: Session, source: str) -> tuple[Row, ...]:
         if source == "audit":
@@ -211,17 +212,32 @@ def read_events(
 
     session = build_session(config, token)
     try:
-        # One line per refusal, said here with the source named, rather than
-        # one from the transport and one from here for every poll.
+        # One line per reason, said here with the sources named, rather than
+        # one from the transport and one from here for every source of every
+        # poll. A tenant missing one permission refuses every source for the
+        # same reason, and five identical lines say nothing one does not.
         with refusal_reported_by_caller():
             for source in ("audit", *kinds):
                 try:
                     rows.extend(read(session, source))
                 except ApiCallError as failure:
-                    log.warning("%s unavailable: %s", source, failure.error.summary())
+                    refusals.append((source, failure.error.summary()))
     finally:
         session.close()
+    for note in collapse(refusals):
+        log.warning("%s", note)
     return tuple(rows)
+
+
+def collapse(refusals: Sequence[tuple[str, str]]) -> tuple[str, ...]:
+    """Turn one refusal per source into one line per reason."""
+    by_reason: dict[str, list[str]] = {}
+    for source, reason in refusals:
+        by_reason.setdefault(reason, []).append(source)
+    return tuple(
+        f"Unavailable for {', '.join(sorted(sources))}: {reason}"
+        for reason, sources in by_reason.items()
+    )
 
 
 def combine(older: Row, newer: Row) -> Row:
@@ -544,7 +560,12 @@ def follow(
     initial: Sequence[Row] = (),
 ) -> None:
     """Open the live view, and return to the caller when it is left."""
-    wanted = tuple(kinds) if kinds else sign_in_kinds(config)
+    skipped = config.fields.display.stream.skip_kinds
+    wanted = (
+        tuple(kinds)
+        if kinds
+        else tuple(kind for kind in sign_in_kinds(config) if kind not in skipped)
+    )
     try:
         # framework contract: curses takes over the terminal through a wrapper
         # that restores it afterwards, whatever happens.

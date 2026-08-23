@@ -176,6 +176,12 @@ class NetworkSettings(_Frozen):
     ca_directory_variables: tuple[str, ...]
 
 
+class UpgradeSettings(_Frozen):
+    attempts: int
+    wait_seconds: float
+    timeout_seconds: float
+
+
 class ConcurrencySettings(_Frozen):
     max_workers: int
 
@@ -191,6 +197,7 @@ class Retry(_Frozen):
     http: HttpSettings
     retry: RetrySettings
     network: NetworkSettings
+    upgrade: UpgradeSettings
     concurrency: ConcurrencySettings
     paging: PagingSettings
 
@@ -217,6 +224,7 @@ class Stream(_Frozen):
     interval_seconds: int
     poll_events: int
     maximum_rows: int
+    skip_kinds: tuple[str, ...]
     severity_tones: dict[str, str]
 
 
@@ -338,6 +346,7 @@ class TransportSettings(_Frozen):
     port: int
     path: str
     base_url: str
+    local_base_url: str
 
 
 class CorsSettings(_Frozen):
@@ -485,6 +494,29 @@ def user_config_dir(home: Path | None = None) -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
     root = Path(base) if base else (home or Path.home()) / ".config"
     return root / USER_CONFIG_DIRNAME
+
+
+#: Where a browser on this platform puts what somebody downloads. Windows and
+#: the desktop Linuxes agree with macOS on the name, and XDG_DOWNLOAD_DIR wins
+#: where a desktop has been set up to disagree.
+DOWNLOADS_DIRNAME = "Downloads"
+DOWNLOADS_VARIABLE = "XDG_DOWNLOAD_DIR"
+
+
+def downloads_dir(home: Path | None = None) -> Path:
+    """Return where to put a copy somebody is meant to open and read.
+
+    A configuration directory is the right place for a file that is meant to
+    take effect and the wrong place for one somebody wants to look at. Where
+    there is no downloads directory, the home directory is where a file is
+    still findable.
+    """
+    named = os.environ.get(DOWNLOADS_VARIABLE)
+    if named:
+        return Path(named).expanduser()
+    base = home or Path.home()
+    candidate = base / DOWNLOADS_DIRNAME
+    return candidate if candidate.is_dir() else base
 
 
 def packaged_config_dir() -> Path:

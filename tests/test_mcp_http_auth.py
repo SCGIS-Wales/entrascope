@@ -147,10 +147,14 @@ def test_a_missing_identity_is_explained(config: Config) -> None:
         server_identity(config, {"HOME": "/nowhere"})
 
 
-def test_a_missing_base_url_is_explained(config: Config) -> None:
-    """The canonical URI is required, because clients bind their tokens to it."""
-    with pytest.raises(ConfigError, match="canonical URI"):
-        base_url(config, {})
+def test_a_missing_base_url_falls_back_to_this_machine(config: Config) -> None:
+    """Refusing to start helps nobody trying the server out locally.
+
+    The loopback address is only ever right on this machine, which is why it
+    is safe to assume and why the server says out loud that it assumed it.
+    """
+    assumed = base_url(config, {})
+    assert assumed == f"http://localhost:{config.server.transport.port}"
 
 
 def test_the_base_url_loses_a_trailing_slash(config: Config) -> None:

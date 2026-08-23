@@ -11,6 +11,11 @@ transport:
   # and must be https, because it appears in the protected resource metadata
   # and clients bind their tokens to it.
   base_url: ""
+  # Where the server assumes it is reachable when no canonical URI is set, so
+  # that a local run works without any setting up. It is a loopback address,
+  # which is never right for anything but this machine, and the server says so
+  # when it falls back to it.
+  local_base_url: "http://localhost:{port}"
 
 health_path: /healthz
 
