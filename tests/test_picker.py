@@ -296,3 +296,55 @@ def test_a_line_is_padded_so_its_colour_runs_the_width() -> None:
     screen = Screen([], width=40)
     draw(screen, choices(), 0, "", "Applications", scheme=Scheme())
     assert any(line.endswith(" " * 5) for line in screen.drawn)
+
+
+def test_typing_builds_a_search_term() -> None:
+    """The rule the chooser and the live view both follow, in one place."""
+    from entrascope.picker import typed
+
+    assert typed(ord("a"), "").term == "a"
+    assert typed(ord("b"), "a").term == "ab"
+    # Every change to the term sends the selection back to the top, because a
+    # different term means a different list.
+    assert typed(ord("b"), "a").reset is True
+
+
+def test_backspace_shortens_the_term_and_never_underflows() -> None:
+    """Backspacing an empty term is somebody pressing it once too often."""
+    from entrascope.picker import BACKSPACE_KEYS, typed
+
+    for key in BACKSPACE_KEYS:
+        assert typed(key, "abc").term == "ab"
+        assert typed(key, "").term == ""
+        assert typed(key, "").searching is True
+
+
+def test_escape_leaves_the_search_rather_than_adding_to_it() -> None:
+    """A search with no way out but the interrupt key is a trap."""
+    from entrascope.picker import typed
+
+    outcome = typed(27, "payroll")
+    assert outcome.term == ""
+    assert outcome.searching is False
+
+
+def test_a_second_slash_is_not_searched_for() -> None:
+    """Somebody presses it twice because nothing told them the first one worked."""
+    from entrascope.picker import typed
+
+    assert typed(ord("/"), "").term == ""
+    # Once there is a term, a slash is a character like any other: a redirect
+    # URI is full of them and searching for one is a fair thing to want.
+    assert typed(ord("/"), "https:").term == "https:/"
+
+
+def test_a_key_that_is_not_a_character_leaves_the_term_alone() -> None:
+    """A function key pressed mid search must not append anything."""
+    import curses
+
+    from entrascope.picker import typed
+
+    outcome = typed(curses.KEY_F1, "payroll")
+    assert outcome.term == "payroll"
+    assert outcome.searching is True
+    assert outcome.reset is False

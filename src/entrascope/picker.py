@@ -37,6 +37,51 @@ SELECT_KEYS = (10, 13, curses.KEY_ENTER)
 SEARCH_KEYS = (ord("/"),)
 BACKSPACE_KEYS = (curses.KEY_BACKSPACE, 127, 8)
 
+
+class Search(NamedTuple):
+    """What one keystroke did to a search term."""
+
+    term: str
+    searching: bool
+    #: Whether the selection should go back to the top. A term that changed
+    #: means a different list, and staying on line forty of a list that now has
+    #: three lines is not where anybody wants to be.
+    reset: bool = False
+
+
+def typed(key: int, term: str) -> Search:
+    """Apply one keystroke to a search term, while a search is being typed.
+
+    The chooser and the live view both let somebody search with a slash, and
+    both used to work this out for themselves. Two copies of a rule is one copy
+    that gets corrected and one that does not.
+    """
+    if key in BACKSPACE_KEYS:
+        return Search(term[:-1], True, reset=True)
+    if key == ESCAPE_KEY:
+        return Search("", False)
+    if PRINTABLE_FLOOR <= key < PRINTABLE_CEILING:
+        character = chr(key)
+        # A slash typed as the first character is somebody pressing it twice
+        # because nothing told them the first one worked. It can only have been
+        # meant as the search key, so it is not part of what they are searching
+        # for.
+        if character in SEARCH_CHARACTERS and not term:
+            return Search(term, True, reset=True)
+        return Search(term + character, True, reset=True)
+    return Search(term, True)
+
+
+#: Escape, which leaves a search rather than adding to it.
+ESCAPE_KEY = 27
+
+#: The printable range. Anything outside it is a key rather than a character.
+PRINTABLE_FLOOR = 32
+PRINTABLE_CEILING = 127
+
+#: Characters that mean "start searching" rather than "search for this".
+SEARCH_CHARACTERS = frozenset(chr(key) for key in SEARCH_KEYS)
+
 #: Shown along the bottom, because a chooser nobody can drive is no use.
 HELP_LINE = (
     "  up and down or j k to move, page up and down, / search, s sort, "
@@ -335,17 +380,9 @@ def run(
             continue
 
         if searching:
-            if key in BACKSPACE_KEYS:
-                term = term[:-1]
-            elif key == 27:
-                term, searching = "", False
-            elif 32 <= key < 127:
-                character = chr(key)
-                # A slash typed as the first character is somebody pressing it
-                # twice because nothing told them the first one worked. It can
-                # only have been meant as the search key.
-                if not (character == "/" and not term):
-                    term += character
+            outcome = typed(key, term)
+            term, searching = outcome.term, outcome.searching
+            if outcome.reset:
                 selected = 0
             continue
 

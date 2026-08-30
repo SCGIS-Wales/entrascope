@@ -7,6 +7,49 @@ versioning.
 
 ## [Unreleased]
 
+### Security
+- A display name from the directory could forge a log line. The human log
+  format wrote the message straight out, so a newline in somebody else's text
+  produced a whole second line, and a convincing one, because a reader has no
+  way to tell a forged line from a real one. An escape sequence in one was
+  obeyed by the terminal printing it. The JSON format escapes both on its own,
+  which is why only one of the two was wrong.
+- The rules for making somebody else's text safe live in one module. Three
+  modules held a control character class of their own, and one of them kept a
+  newline the other two stripped. A seventh structural guard refuses a fourth
+  copy.
+
+### Fixed
+- `discover_service_principals` on the tool surface returned every Microsoft
+  first party enterprise application. The command has always excluded them, so
+  an assistant was handed several hundred objects that are Microsoft's to
+  manage rather than the tenant's. It now takes `include_first_party` like the
+  command.
+- `gallery_applications` discarded the note saying an answer was only a near
+  match, so an assistant presented near matches as though they were the answer.
+  It returns the applications, the note and whether the match was exact.
+- Neither discovery tool took an application selector, and `investigate` could
+  not be told which sign in kinds to read.
+
+### Added
+- `inspect enterprise-apps --expiring`, which the registrations listing has had
+  all along. A SAML signing certificate is a credential, and when it expires
+  single sign on stops for everybody at once.
+- The fan out interrupt test no longer depends on timing. Fifty trivial items
+  and one worker meant the queue was sometimes drained before the interrupt was
+  noticed, so it failed about once a run for reasons unrelated to the behaviour
+  it describes. The worker is held on the second item instead.
+- Tests for the paths a break would hide in: the pick prompt and the chooser
+  loop on the command line, and the investigate, whoami and gallery tools.
+  Coverage went from 85 to 91 per cent on the command line and 81 to 93 on the
+  tool surface.
+
+### Changed
+- `narrowed` moved to discovery, where both surfaces reach it, and the search
+  keystroke rule moved to the picker, where the chooser and the live view share
+  it rather than each working it out. The tool surface uses the same session
+  context manager the command line does.
+
 ### Fixed
 - Every sign in kind shared one KQL template, and that template named
   SigninLogs. Azure Monitor exports each kind to a table of its own, so

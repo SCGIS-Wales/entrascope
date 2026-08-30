@@ -649,6 +649,31 @@ def project_service_principal(
     )
 
 
+def narrowed[Row](
+    rows: Sequence[Row],
+    app_selector: str,
+    application_type: str | None,
+    matcher: Callable[[Row, str], bool],
+) -> tuple[Row, ...]:
+    """Narrow a listing by the selector and the type, the way every listing does.
+
+    Both listings take the same two options and mean the same thing by them,
+    on the command line and on the tool surface alike. The only difference is
+    how an application is matched, because a registration and an enterprise
+    application are matched on different fields.
+    """
+    found = tuple(rows)
+    if app_selector:
+        found = tuple(row for row in found if matcher(row, app_selector))
+    if application_type:
+        found = tuple(
+            row
+            for row in found
+            if getattr(row, "application_type", None) == application_type
+        )
+    return found
+
+
 def is_first_party(principal: ServicePrincipalSummary, config: Config) -> bool:
     """Return whether an enterprise application belongs to Microsoft.
 

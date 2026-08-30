@@ -177,6 +177,137 @@ async def test_mcp_audit_categories_tool(server: Any) -> None:
 
 
 @responses.activate
+async def test_the_gallery_tool_says_when_a_match_is_only_near(server: Any) -> None:
+    """The endpoint filters on a prefix, so it often answers with the nearest.
+
+    The command says so. The tool used to return the rows alone, which left an
+    assistant presenting near matches as though they were the answer.
+    """
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applicationTemplates",
+        json={"value": [{"displayName": "Amazon SageMaker", "publisher": "Amazon"}]},
+        status=200,
+    )
+    result = await call(server, "gallery_applications", {"term": "amazon web"})
+    assert result["applications"][0]["display_name"] == "Amazon SageMaker"
+    assert result["exact"] is False
+    assert "Nothing matched" in result["note"]
+
+
+@responses.activate
+async def test_the_enterprise_tool_excludes_microsoft_by_default(
+    server: Any,
+) -> None:
+    """The command excludes them and the tool returned every one of them.
+
+    A tenant carries hundreds of Microsoft first party service principals. They
+    are Microsoft's to manage, and an assistant handed all of them is an
+    assistant reading several hundred objects to find none of the answer.
+    """
+    responses.add(
+        responses.GET,
+        f"{ROOT}/servicePrincipals",
+        json={
+            "value": [
+                {
+                    "id": "sp-1",
+                    "appId": "app-1",
+                    "displayName": "Ours",
+                    "servicePrincipalType": "Application",
+                },
+                {
+                    "id": "sp-2",
+                    "appId": "app-2",
+                    "displayName": "Microsoft Graph",
+                    "servicePrincipalType": "Application",
+                    "appOwnerOrganizationId": ("f8cdef31-a31e-4b4a-93e4-5f571e91255a"),
+                },
+            ]
+        },
+        status=200,
+    )
+    rows = await call(server, "discover_service_principals", {"with_details": False})
+    assert [row["display_name"] for row in rows] == ["Ours"]
+    everything = await call(
+        server,
+        "discover_service_principals",
+        {"with_details": False, "include_first_party": True},
+    )
+    assert len(everything) == 2
+
+
+@responses.activate
+async def test_the_discovery_tools_narrow_to_one_application(server: Any) -> None:
+    """The command takes a selector, so the tool must mean the same by one."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json=load_fixture("applications"),
+        status=200,
+    )
+    rows = await call(
+        server,
+        "discover_applications",
+        {"with_details": False, "app": "Single page"},
+    )
+    assert [row["display_name"] for row in rows] == ["Single page application"]
+
+
+@responses.activate
+async def test_mcp_investigate_tool(server: Any) -> None:
+    """The investigation is the command people reach for, and nothing ran it."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = await call(server, "investigate", {"limit": 10})
+    assert result["scope"] == "tenant"
+    assert result["findings"]
+    assert {"severity", "area", "subject"} <= set(result["findings"][0])
+
+
+@responses.activate
+async def test_mcp_investigate_tool_narrows_to_one_application(server: Any) -> None:
+    """A target narrows the sweep, the same way the command does."""
+    from tests.test_investigate import register_graph
+
+    register_graph()
+    result = await call(
+        server, "investigate", {"target": "Confidential web", "limit": 10}
+    )
+    assert result["scope"] == "application"
+    assert result["target"] == "Confidential web"
+
+
+@responses.activate
+async def test_mcp_whoami_tool(server: Any) -> None:
+    """The first question in every diagnosis, and nothing exercised it."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/organization",
+        json={"value": [{"id": "tenant-1", "displayName": "Example"}]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals\(appId="),
+        json={"value": []},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://management.azure.com/tenants",
+        json={"value": []},
+        status=200,
+    )
+    report = await call(server, "whoami", {"with_policies": False})
+    assert report["authentication"]["source"] == "file"
+    assert report["tenant"]["display_name"] == "Example"
+    # Asking for no policies must not read them anyway.
+    assert "conditional_access" not in report
+
+
+@responses.activate
 async def test_mcp_doctor_tool(server: Any) -> None:
     """The doctor tool returns the same checks the command renders."""
     responses.add(
@@ -335,10 +466,17 @@ async def test_every_mapped_tool_is_registered(server: Any) -> None:
 async def test_the_tools_take_the_arguments_the_commands_take(server: Any) -> None:
     """A tool that cannot be told what the command can be told is not parity."""
     expected = {
-        "investigate": {"target", "severity", "limit"},
+        "investigate": {"target", "severity", "limit", "kinds"},
         "inspect": {"target", "application_type"},
-        "discover_applications": {"application_type", "expiring_only"},
-        "sign_ins": {"kind", "app_id", "failures_only", "limit"},
+        "discover_applications": {"app", "application_type", "expiring_only"},
+        "discover_service_principals": {
+            "app",
+            "application_type",
+            "expiring_only",
+            "include_first_party",
+        },
+        "sign_ins": {"kind", "app_id", "failures_only", "limit", "lookback_hours"},
+        "audit_events": {"category", "target", "failures_only", "limit"},
         "gallery_applications": {"term", "limit"},
         "whoami": {"with_policies"},
     }

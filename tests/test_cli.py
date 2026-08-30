@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from entrascope import __version__
 from entrascope.cli import cli
 from entrascope.config import Config
+from entrascope.models import ConfigError
 from entrascope.render import (
     EXIT_API,
     EXIT_CHECKS_FAILED,
@@ -266,10 +267,15 @@ def test_cli_logs_kinds_lists_the_sign_in_kinds() -> None:
 
 def test_cli_errors_explain_a_known_code() -> None:
     """Explaining a code needs no credentials, because the mapping is configuration."""
+    from entrascope.config import load_config
+    from entrascope.errors import explain
+
     result = run(["errors", "explain", "AADSTS7000215"])
     assert result.exit_code == 0
     assert "client secret" in result.output.lower()
-    assert "learn.microsoft.com" in result.output
+    # The whole address the mapping carries, rather than the host somewhere in
+    # the output: an address that merely mentions the host would pass that.
+    assert explain("AADSTS7000215", load_config()).docs_url in result.output
 
 
 def test_cli_errors_explain_a_message_carrying_a_code() -> None:
@@ -281,9 +287,13 @@ def test_cli_errors_explain_a_message_carrying_a_code() -> None:
 
 def test_cli_errors_explain_an_unknown_code_exits_non_zero() -> None:
     """An unrecognised code still yields guidance, and a non zero exit code."""
+    from entrascope.config import load_config
+
     result = run(["errors", "explain", "AADSTS999999"])
     assert result.exit_code == EXIT_CHECKS_FAILED
-    assert "learn.microsoft.com" in result.output
+    # An unknown code falls back to the documented default, which is the one
+    # address configuration names for exactly this case.
+    assert load_config().error_codes.defaults.docs_url in result.output
 
 
 def test_cli_errors_list_and_search() -> None:
@@ -1600,3 +1610,254 @@ def test_follow_with_machine_output_says_it_cannot(authenticated: None) -> None:
     register_graph()
     result = run(["--auth", "file", "--output", "json", "investigate", "--follow"])
     assert "cannot be combined" in result.output
+
+
+def pick_rows() -> list[Any]:
+    """Return two sign in events to pick between."""
+    from entrascope.models import SignInEvent
+
+    return [
+        SignInEvent(
+            id="one",
+            timestamp="2026-08-30T10:00:00Z",
+            identity="ada@example.invalid",
+            app_id="aaaaaaaa-1111-1111-1111-111111111111",
+            app_display_name="Payroll",
+            resource="Microsoft Graph",
+            client_app="Browser",
+            ip_address="203.0.113.1",
+            error_code=50011,
+            failure_reason="The redirect URI does not match.",
+        ),
+        SignInEvent(
+            id="two",
+            timestamp="2026-08-30T09:00:00Z",
+            identity="grace@example.invalid",
+            app_id="aaaaaaaa-2222-2222-2222-222222222222",
+            app_display_name="Reporting",
+            resource="Microsoft Graph",
+            client_app="Browser",
+            ip_address="203.0.113.2",
+            error_code=0,
+            failure_reason="",
+        ),
+    ]
+
+
+def test_picking_a_line_shows_that_record_whole(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A listing answers what happened; picking answers what happened to one."""
+    from entrascope.cli import pick_one
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(click, "prompt", lambda *args, **kwargs: "1")
+    config = load_config()
+    pick_one(pick_rows(), {"config": config, "output": "table"}, ("timestamp", "id"))
+    written = capsys.readouterr().out
+    assert "The whole record" in written
+    assert "ada@example.invalid" in written
+    # The explanation for the code is the point of opening the line.
+    assert "AADSTS50011" in written
+    # The whole address, built the way the tool builds it. Looking for the host
+    # somewhere in the output would pass on an address that merely mentions it.
+    expected = config.endpoints.portal.application.format(
+        app_id="aaaaaaaa-1111-1111-1111-111111111111"
+    )
+    assert expected in written
+
+
+def test_picking_the_second_line_opens_the_second_record(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Off by one here opens the wrong record and says nothing about it."""
+    from entrascope.cli import pick_one
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(click, "prompt", lambda *args, **kwargs: "2")
+    pick_one(pick_rows(), {"config": load_config()}, ("timestamp",))
+    assert "grace@example.invalid" in capsys.readouterr().out
+
+
+def test_picking_nothing_stops_without_complaint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A prompt with no way out but the interrupt key is a trap."""
+    from entrascope.cli import pick_one
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(click, "prompt", lambda *args, **kwargs: "  ")
+    pick_one(pick_rows(), {"config": load_config()}, ("timestamp",))
+    assert "The whole record" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", ["0", "3", "-1", "one"])
+def test_picking_a_line_that_is_not_there_says_so(
+    answer: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every answer outside the list is refused rather than wrapping round."""
+    from entrascope.cli import pick_one
+    from entrascope.config import load_config
+
+    monkeypatch.setattr(click, "prompt", lambda *args, **kwargs: answer)
+    with pytest.raises(SystemExit) as raised:
+        pick_one(pick_rows(), {"config": load_config()}, ("timestamp",))
+    assert raised.value.code == EXIT_CONFIG
+
+
+def test_picking_from_nothing_does_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty listing must not prompt for a line that cannot exist."""
+    from entrascope.cli import pick_one
+    from entrascope.config import load_config
+
+    def refuse(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("nothing to pick from, so nothing should be asked")
+
+    monkeypatch.setattr(click, "prompt", refuse)
+    pick_one([], {"config": load_config()}, ("timestamp",))
+
+
+@responses.activate
+def test_browsing_opens_a_choice_and_returns_to_the_list(
+    monkeypatch: pytest.MonkeyPatch, config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The chooser returns until it is closed, because one application is rarely all."""
+    import entrascope.cli as module
+    from entrascope.http import build_session
+    from entrascope.inspect import read_catalogue
+    from tests.test_inspect import register
+
+    register()
+    session = build_session(config)
+    catalogue = read_catalogue(session, config)
+
+    picks = iter([catalogue.lines()[0].key, None])
+    monkeypatch.setattr(module, "choose", lambda *a, **k: next(picks))
+    monkeypatch.setattr(module, "available", lambda: True)
+    monkeypatch.setattr(module, "after_viewing", lambda report, config: "list")
+
+    module.browse(catalogue, session, config, lambda: "token", [], "yaml")
+    written = capsys.readouterr().out
+    assert "display_name" in written
+    # Escape came second, and it means go back rather than an error.
+    assert "Traceback" not in written
+
+
+@responses.activate
+def test_browsing_an_empty_directory_says_so(config: Config) -> None:
+    """An identity that can see nothing must be told that, not shown a blank list."""
+    import entrascope.cli as module
+    from entrascope.http import build_session
+    from entrascope.inspect import Catalogue
+
+    with pytest.raises(ConfigError, match="no applications this identity can see"):
+        module.browse(
+            Catalogue(applications=(), principals=()),
+            build_session(config),
+            config,
+            lambda: "token",
+            [],
+            "yaml",
+        )
+
+
+@responses.activate
+def test_browsing_says_what_was_kept_out_of_the_list(
+    monkeypatch: pytest.MonkeyPatch, config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hiding things silently is worse than showing too many."""
+    import entrascope.cli as module
+    from entrascope.http import build_session
+    from entrascope.inspect import read_catalogue
+    from tests.test_inspect import register
+
+    register()
+    catalogue = read_catalogue(build_session(config), config)
+    assert catalogue.hidden, "the fixtures should carry something worth hiding"
+    monkeypatch.setattr(module, "choose", lambda *a, **k: None)
+    monkeypatch.setattr(module, "available", lambda: True)
+    module.browse(catalogue, build_session(config), config, lambda: "token", [], "yaml")
+    assert "Kept out of the list" in capsys.readouterr().err
+
+
+def test_leaving_a_list_without_a_terminal_says_how_to_narrow_it(
+    monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """Without a terminal there is no menu to go back to, so say what to type."""
+    import entrascope.cli as module
+    from entrascope.http import build_session
+    from entrascope.inspect import Catalogue
+    from entrascope.models import ApplicationSummary, RedirectUris
+
+    catalogue = Catalogue(
+        applications=(
+            ApplicationSummary(
+                object_id="a",
+                app_id="b",
+                display_name="Payroll",
+                application_type="web-client",
+                sign_in_audience="AzureADMyOrg",
+                audience_label="this tenant only",
+                redirect_uris=RedirectUris(),
+                identifier_uris=(),
+                requested_permissions=(),
+                credentials=(),
+                federated_credentials=(),
+                owners=(),
+                requested_access_token_version=None,
+                created="",
+            ),
+        ),
+        principals=(),
+    )
+    monkeypatch.setattr(module, "choose", lambda *a, **k: None)
+    monkeypatch.setattr(module, "available", lambda: False)
+    with pytest.raises(ConfigError, match="Nothing chosen"):
+        module.browse(
+            catalogue, build_session(config), config, lambda: "token", [], "yaml"
+        )
+
+
+@responses.activate
+def test_expiring_narrows_enterprise_applications_too(authenticated: None) -> None:
+    """A SAML signing certificate is a credential, and when it goes sign on stops."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/servicePrincipals",
+        json={
+            "value": [
+                {
+                    "id": "sp-1",
+                    "appId": "app-1",
+                    "displayName": "Expiring SAML",
+                    "servicePrincipalType": "Application",
+                    "preferredSingleSignOnMode": "saml",
+                    "keyCredentials": [
+                        {"keyId": "k", "endDateTime": "2020-01-01T00:00:00Z"}
+                    ],
+                },
+                {
+                    "id": "sp-2",
+                    "appId": "app-2",
+                    "displayName": "Healthy",
+                    "servicePrincipalType": "Application",
+                    "keyCredentials": [
+                        {"keyId": "k2", "endDateTime": "2099-01-01T00:00:00Z"}
+                    ],
+                },
+            ]
+        },
+        status=200,
+    )
+    result = run(
+        [
+            "--auth",
+            "file",
+            "inspect",
+            "enterprise-apps",
+            "--no-details",
+            "--expiring",
+        ]
+    )
+    assert "Expiring SAML" in result.output
+    assert "Healthy" not in result.output

@@ -310,6 +310,7 @@ context that explains a result.
 
 ```bash
 entrascope inspect applications --expiring           # credentials about to expire
+entrascope inspect enterprise-apps --expiring        # including SAML signing certificates
 entrascope inspect applications --type single-page-application
 entrascope inspect enterprise-apps --type managed-identity
 entrascope inspect applications --app my-api --output json
