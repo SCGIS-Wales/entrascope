@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -350,15 +351,20 @@ def test_the_azure_clients_take_the_same_verification_setting(
 def test_an_interrupted_fan_out_abandons_its_queue(config: Config) -> None:
     """Control C means stop, not finish everything already queued.
 
-    The pool is driven by hand rather than through its context manager, because
-    that manager drains the queue on the way out.
+    The one worker is held on the second item so that it cannot race ahead of
+    the main thread and drain the queue before the interrupt is noticed. Timing
+    is what decided this test before, which made it fail about once a run for
+    reasons that had nothing to do with the behaviour it describes.
     """
     started: list[int] = []
+    gate = threading.Event()
 
     def work(session: requests.Session, item: int) -> int:
         started.append(item)
         if item == 0:
             raise KeyboardInterrupt
+        # Held until the assertions are done, so no third item can start.
+        gate.wait(timeout=10)
         return item
 
     single = config.model_copy(
@@ -372,9 +378,14 @@ def test_an_interrupted_fan_out_abandons_its_queue(config: Config) -> None:
             )
         }
     )
-    with pytest.raises(KeyboardInterrupt):
-        fan_out(list(range(50)), work, single)
-    assert len(started) < 50
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            fan_out(list(range(50)), work, single)
+        # The first raised and the second is held. Everything after them was
+        # queued and must have been abandoned rather than run.
+        assert started in ([0], [0, 1])
+    finally:
+        gate.set()
 
 
 def test_a_session_is_never_shared_between_two_running_tasks(config: Config) -> None:

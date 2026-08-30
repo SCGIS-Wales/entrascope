@@ -35,6 +35,10 @@ versioning.
 - `inspect enterprise-apps --expiring`, which the registrations listing has had
   all along. A SAML signing certificate is a credential, and when it expires
   single sign on stops for everybody at once.
+- The fan out interrupt test no longer depends on timing. Fifty trivial items
+  and one worker meant the queue was sometimes drained before the interrupt was
+  noticed, so it failed about once a run for reasons unrelated to the behaviour
+  it describes. The worker is held on the second item instead.
 - Tests for the paths a break would hide in: the pick prompt and the chooser
   loop on the command line, and the investigate, whoami and gallery tools.
   Coverage went from 85 to 91 per cent on the command line and 81 to 93 on the
