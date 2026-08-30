@@ -24,6 +24,7 @@ EXPECTED_FILES = (
     "logging.yaml",
     "credentials.yaml",
     "server.yaml",
+    "oauth.yaml",
 )
 
 EXPECTED_KQL = (

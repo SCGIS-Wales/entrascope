@@ -331,7 +331,7 @@ def test_network_trust_is_describable(tmp_path: Path, config: Config) -> None:
         },
     )
     assert trust.verify_enabled
-    assert "proxy.example.invalid" in trust.summary()
+    assert "http=http://proxy.example.invalid:3128" in trust.summary()
     assert str(bundle) in trust.summary()
     assert network_trust(config, {}).summary().endswith("default certificate bundle")
 

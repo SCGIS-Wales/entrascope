@@ -1861,3 +1861,270 @@ def test_expiring_narrows_enterprise_applications_too(authenticated: None) -> No
     )
     assert "Expiring SAML" in result.output
     assert "Healthy" not in result.output
+
+
+ATTEMPT_APP = {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "appId": "aaaaaaaa-1111-1111-1111-111111111111",
+    "displayName": "Desktop client",
+    "publicClient": {"redirectUris": ["http://127.0.0.1:47820/callback"]},
+}
+ATTEMPT_NOWHERE = {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "appId": "aaaaaaaa-2222-2222-2222-222222222222",
+    "displayName": "Web only",
+    "web": {"redirectUris": ["https://app.example.invalid/callback"]},
+}
+
+
+def register_attempt(*applications: dict[str, Any]) -> None:
+    """Register the directory read that choosing an application does."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={"value": list(applications)},
+        status=200,
+    )
+    responses.add(
+        responses.GET, f"{ROOT}/servicePrincipals", json={"value": []}, status=200
+    )
+
+
+def drive_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    query: str,
+    tokens: dict[str, Any] | None = None,
+) -> Any:
+    """Run the command with the browser and the redirect stood in for.
+
+    The sign in itself is a person in a browser, which no test has. What is
+    driven here is everything either side of it: choosing the application,
+    building the address, reading the redirect and reporting the token.
+    """
+    import entrascope.attempt as flow
+    import entrascope.cli as module
+
+    monkeypatch.setattr(module, "open_browser", lambda prepared, config: True)
+
+    def answered(prepared: Any, config: Any) -> Any:
+        filled = query.replace("{state}", prepared.state)
+        return flow.answer_from_query(filled)
+
+    monkeypatch.setattr(module, "listen", answered)
+    responses.add(
+        responses.POST,
+        "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
+        json=tokens if tokens is not None else {"scope": "User.Read"},
+        status=200,
+    )
+    return run(
+        [
+            "--auth",
+            "file",
+            "--output",
+            "yaml",
+            "attempt",
+            "Desktop client",
+            "--tenant",
+            "tenant-1",
+        ]
+    )
+
+
+@responses.activate
+def test_attempt_signs_in_and_reports_what_the_token_carries(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole command, with the person in the browser stood in for."""
+    register_attempt(ATTEMPT_APP)
+    result = drive_attempt(
+        monkeypatch,
+        query="code=the-code&state={state}",
+        tokens={"scope": "User.Read", "token_type": "Bearer", "expires_in": 3599},
+    )
+    assert result.exit_code == 0
+    assert "signed in" in result.output
+    assert "Desktop client" in result.output
+    assert "S256" in result.output
+    # The scopes asked for against the scopes granted is the point of it.
+    assert "not_granted" in result.output
+
+
+@responses.activate
+def test_attempt_refuses_a_redirect_carrying_the_wrong_state(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The only safe thing to do with a code under somebody else's state is nothing."""
+    register_attempt(ATTEMPT_APP)
+    result = drive_attempt(monkeypatch, query="code=the-code&state=somebody-elses")
+    assert result.exit_code == EXIT_CONFIG
+    assert "wrong state" in result.output
+    assert "Nothing has been exchanged" in result.output
+
+
+@responses.activate
+def test_attempt_explains_a_refusal_from_entra(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal arrives on the redirect and carries a code this tool explains."""
+    register_attempt(ATTEMPT_APP)
+    result = drive_attempt(
+        monkeypatch,
+        query="error=access_denied&error_description=AADSTS65004%3A+declined&state={state}",
+    )
+    assert result.exit_code == EXIT_API
+    assert "access_denied" in result.output
+    assert "AADSTS65004" in result.output
+
+
+@responses.activate
+def test_attempt_says_what_to_register_when_there_is_nowhere_to_come_back_to(
+    authenticated: None,
+) -> None:
+    """Naming an application that cannot work explains why, and how to fix it."""
+    register_attempt(ATTEMPT_NOWHERE)
+    result = run(["--auth", "file", "attempt", "Web only"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "no redirect URI on this machine" in result.output
+    assert "az ad app update" in result.output
+
+
+@responses.activate
+def test_attempt_on_a_name_that_matches_nothing_says_how_to_name_one(
+    authenticated: None,
+) -> None:
+    """A mistyped name says how to find the right one."""
+    register_attempt(ATTEMPT_APP)
+    result = run(["--auth", "file", "attempt", "no such application"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "part of a display name" in result.output
+
+
+@responses.activate
+def test_attempt_with_nothing_to_sign_in_to_says_so(authenticated: None) -> None:
+    """A tenant where nothing redirects here cannot be signed into from here."""
+    register_attempt(ATTEMPT_NOWHERE)
+    result = run(["--auth", "file", "attempt"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "No application registration has a redirect URI on this machine" in (
+        result.output
+    )
+
+
+@responses.activate
+def test_attempt_without_a_terminal_lists_what_can_be_signed_into(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a chooser to draw, naming the candidates is the next best thing."""
+    import entrascope.cli as module
+
+    monkeypatch.setattr(module, "available", lambda: False)
+    register_attempt(ATTEMPT_APP, ATTEMPT_NOWHERE)
+    result = run(["--auth", "file", "attempt"])
+    assert result.exit_code == EXIT_CONFIG
+    assert "Name the application to sign in to" in result.output
+    assert "Desktop client" in result.output
+    # The one that cannot be signed into is not offered as though it could.
+    assert "Web only" not in result.output
+
+
+@responses.activate
+def test_attempt_prints_the_address_when_it_cannot_open_a_browser(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session over SSH has no browser, and the flow still works."""
+    import entrascope.attempt as flow
+    import entrascope.cli as module
+
+    register_attempt(ATTEMPT_APP)
+    monkeypatch.setattr(
+        module,
+        "listen",
+        lambda prepared, config: flow.Answer(code="c", state=prepared.state),
+    )
+    responses.add(
+        responses.POST,
+        "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
+        json={"scope": ""},
+        status=200,
+    )
+    result = run(
+        [
+            "--auth",
+            "file",
+            "attempt",
+            "Desktop client",
+            "--no-browser",
+            "--tenant",
+            "tenant-1",
+        ]
+    )
+    assert result.exit_code == 0
+    # The whole endpoint, built the way the tool builds it. Looking for the
+    # host somewhere in the output would pass on an address that merely
+    # mentions it, and the address is the one thing the person has to trust.
+    from entrascope.config import load_config
+
+    endpoint = load_config().endpoints.authority.v2.authorize_endpoint_template.format(
+        tenant_id="tenant-1"
+    )
+    assert endpoint in result.output
+    assert "code_challenge" in result.output
+
+
+@responses.activate
+def test_attempt_prompts_for_a_secret_and_never_shows_it(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A secret given at the prompt reaches the token endpoint and nothing else."""
+    import entrascope.attempt as flow
+    import entrascope.cli as module
+
+    register_attempt(ATTEMPT_APP)
+    monkeypatch.setattr(module, "open_browser", lambda prepared, config: True)
+    monkeypatch.setattr(
+        module,
+        "listen",
+        lambda prepared, config: flow.Answer(code="c", state=prepared.state),
+    )
+    monkeypatch.setattr(click, "prompt", lambda *a, **k: "the-secret")
+    responses.add(
+        responses.POST,
+        "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
+        json={"scope": ""},
+        status=200,
+    )
+    result = run(
+        [
+            "--auth",
+            "file",
+            "attempt",
+            "Desktop client",
+            "--secret",
+            "--tenant",
+            "tenant-1",
+        ]
+    )
+    assert result.exit_code == 0
+    sent = responses.calls[-1].request.body or ""
+    assert "client_secret=the-secret" in sent
+    # It reached the token endpoint and appears nowhere a person would read.
+    assert "the-secret" not in result.output
+
+
+@responses.activate
+def test_the_attempt_report_is_the_same_bytes_as_the_json_output(
+    authenticated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One renderer, so a report is a report whichever format asked for it."""
+    register_attempt(ATTEMPT_APP)
+    result = drive_attempt(monkeypatch, query="code=c&state={state}")
+    assert result.exit_code == 0
+    # The progress lines are written while the flow runs; the report is the
+    # document that follows them, and it is what a caller parses.
+    document = result.output[result.output.index("result:") :]
+    parsed = yaml.safe_load(document)
+    assert parsed["result"] == "signed in"
+    assert parsed["flow"]["platform"] == "public_client"
+    assert parsed["application"]["application_id"] == ATTEMPT_APP["appId"]

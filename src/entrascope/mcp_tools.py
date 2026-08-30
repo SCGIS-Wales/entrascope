@@ -544,6 +544,12 @@ COMMAND_TOOLS: dict[str, str] = {
 #: nothing it could learn by doing so that the configuration tool cannot tell
 #: it by reading.
 NOT_EXPOSED: dict[str, str] = {
+    "attempt": (
+        "Opens a browser and waits for a person to sign in to it. There is "
+        "nobody at a keyboard on this surface, so the flow could only ever "
+        "time out, and a tool that opens a browser on somebody's machine is "
+        "not one an assistant should be able to call."
+    ),
     "upgrade": (
         "Installs software on the machine. Upgrading is a decision for the "
         "person at the keyboard, not for an assistant."

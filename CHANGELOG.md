@@ -7,6 +7,30 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- `entrascope attempt`, which signs in to one application for real rather than
+  reading what the tenant has recorded about it. An OAuth 2.0 authorization
+  code flow with PKCE, the shape RFC 8252 specifies for a native application:
+  your own browser rather than an embedded one, a redirect to the loopback
+  address, a high entropy state, and a proof key so an intercepted code cannot
+  be spent. The report says what the token actually carries, and in particular
+  which scopes were asked for and not granted, which is the difference between
+  a sign in that works and an integration that works.
+- No secret is needed, because PKCE is what replaced it. `--secret` prompts for
+  one, without echoing it, for an application whose redirect URI is registered
+  under the web platform, which Entra refuses to let a public client use.
+  Nothing is created in the directory and nothing is left behind: where a
+  redirect URI is missing, the address to register and the command that
+  registers it are printed rather than run.
+
+### Security
+- A literal secret handed to `also_redact` was redacted in logs and not in
+  rendered output, because it told the log handlers and nothing else. Both
+  layers are told now, so a secret cannot be hidden in a log line and printed
+  in a report. This applies to the credential file secret as much as to one
+  given to `attempt`.
+
+
 ### Security
 - A display name from the directory could forge a log line. The human log
   format wrote the message straight out, so a newline in somebody else's text

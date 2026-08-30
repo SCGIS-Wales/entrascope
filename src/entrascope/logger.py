@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from entrascope.config import Config, Logging
-from entrascope.redaction import redact, register_secret
+from entrascope.redaction import redact, register_secret, remember_secret
 from entrascope.sanitise import one_line
 
 #: The logger namespace. Every logger is a child of this one.
@@ -227,6 +227,9 @@ def also_redact(secret: str) -> None:
     """
     if not secret:
         return
+    # Told to the renderer as well as to the handlers. A secret redacted in a
+    # log line and printed in a report is a secret that leaked.
+    remember_secret(secret)
     for handler in logging.getLogger(ROOT_NAME).handlers:
         for existing in handler.filters:
             if isinstance(existing, _RedactionFilter):

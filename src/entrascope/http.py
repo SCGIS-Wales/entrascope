@@ -313,6 +313,7 @@ def request(
     *,
     params: Mapping[str, Any] | None = None,
     json_body: Any = None,
+    form_body: Mapping[str, str] | None = None,
     source: str = "graph",
 ) -> requests.Response:
     """Perform one HTTP call, logging it and raising on a failure status.
@@ -320,6 +321,11 @@ def request(
     Retry and backoff are handled by the adapter. What is left here is the
     timeout, the access log line and the conversion of a failure into the one
     structured error the whole tool uses.
+
+    A form body is here because the token endpoint takes one rather than JSON,
+    and adding it to the one transport is better than a second way to make a
+    call. The values are never logged: the access log records the method, the
+    address and the status, and a token request body carries a secret.
     """
     started = time.monotonic()
     try:
@@ -328,6 +334,7 @@ def request(
             url,
             params=dict(params) if params else None,
             json=json_body,
+            data=dict(form_body) if form_body else None,
             timeout=timeouts(config),
         )
     except requests.RequestException as error:
