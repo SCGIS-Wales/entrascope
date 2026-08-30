@@ -267,10 +267,15 @@ def test_cli_logs_kinds_lists_the_sign_in_kinds() -> None:
 
 def test_cli_errors_explain_a_known_code() -> None:
     """Explaining a code needs no credentials, because the mapping is configuration."""
+    from entrascope.config import load_config
+    from entrascope.errors import explain
+
     result = run(["errors", "explain", "AADSTS7000215"])
     assert result.exit_code == 0
     assert "client secret" in result.output.lower()
-    assert "learn.microsoft.com" in result.output
+    # The whole address the mapping carries, rather than the host somewhere in
+    # the output: an address that merely mentions the host would pass that.
+    assert explain("AADSTS7000215", load_config()).docs_url in result.output
 
 
 def test_cli_errors_explain_a_message_carrying_a_code() -> None:
@@ -282,9 +287,13 @@ def test_cli_errors_explain_a_message_carrying_a_code() -> None:
 
 def test_cli_errors_explain_an_unknown_code_exits_non_zero() -> None:
     """An unrecognised code still yields guidance, and a non zero exit code."""
+    from entrascope.config import load_config
+
     result = run(["errors", "explain", "AADSTS999999"])
     assert result.exit_code == EXIT_CHECKS_FAILED
-    assert "learn.microsoft.com" in result.output
+    # An unknown code falls back to the documented default, which is the one
+    # address configuration names for exactly this case.
+    assert load_config().error_codes.defaults.docs_url in result.output
 
 
 def test_cli_errors_list_and_search() -> None:
@@ -1643,14 +1652,19 @@ def test_picking_a_line_shows_that_record_whole(
     from entrascope.config import load_config
 
     monkeypatch.setattr(click, "prompt", lambda *args, **kwargs: "1")
-    settings = {"config": load_config(), "output": "table"}
-    pick_one(pick_rows(), settings, ("timestamp", "identity"))
+    config = load_config()
+    pick_one(pick_rows(), {"config": config, "output": "table"}, ("timestamp", "id"))
     written = capsys.readouterr().out
     assert "The whole record" in written
     assert "ada@example.invalid" in written
     # The explanation for the code is the point of opening the line.
     assert "AADSTS50011" in written
-    assert "portal.azure.com" in written
+    # The whole address, built the way the tool builds it. Looking for the host
+    # somewhere in the output would pass on an address that merely mentions it.
+    expected = config.endpoints.portal.application.format(
+        app_id="aaaaaaaa-1111-1111-1111-111111111111"
+    )
+    assert expected in written
 
 
 def test_picking_the_second_line_opens_the_second_record(
