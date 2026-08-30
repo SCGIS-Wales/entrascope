@@ -94,9 +94,9 @@ entrascope doctor
 ```
 
 For unattended use, place client credentials at
-`~/.entra/provisioner-credentials.json` with the keys `ClientID`, `Secret` and
-`TenantID`. The file must be mode 0600 inside a directory of mode 0700, and
-entrascope refuses to run otherwise.
+`~/.entra/provisioner-credentials.json` with the keys `ClientID`, `TenantID`
+and then either `Secret` or `CertificatePath`. The file must be mode 0600
+inside a directory of mode 0700, and entrascope refuses to run otherwise.
 
 One file per tenant is ordinary, so the file can be named:
 
@@ -106,9 +106,70 @@ export ENTRASCOPE_CREDENTIAL_FILE=provisioner-credentials-stage.json
 ```
 
 A bare name is a file inside `~/.entra`; a path is used as given. Naming one
-means the file source, so `--auth` is not needed as well. When the expected
-file is absent, entrascope lists the ones that are there rather than repeating
-the name it wanted.
+means the file source, so `--auth` is not needed as well.
+
+### Where the credentials live
+
+The directory and the file name are settings rather than facts, so a machine
+that keeps them somewhere else needs no environment variable on every command:
+
+```bash
+entrascope config credentials                            what is in force now
+entrascope config credentials --directory ~/.entra-prod  keep them elsewhere
+entrascope config credentials --file staging.json        another tenant
+entrascope config credentials --choose                   pick from what is there
+entrascope config credentials --forget                   back to the defaults
+```
+
+Anything set there is written to your own configuration directory, layered over
+the shipped defaults, and is never touched when entrascope is upgraded.
+
+When the expected file is absent and other credential files are sitting beside
+it, entrascope offers them rather than repeating the name it wanted, and
+remembers the one you pick so that the next run does not ask. With no terminal
+it does not ask at all: an unattended run fails with the message it always had.
+
+### A certificate instead of a secret
+
+Entra accepts either for an application, and a certificate is the better of the
+two: it is never transmitted, so it cannot be read out of a log or a proxy.
+Point the credential file at one and leave `Secret` out:
+
+```json
+{
+  "ClientID": "...",
+  "TenantID": "...",
+  "CertificatePath": "app.pem"
+}
+```
+
+A bare name is a file beside the credential file; a path is used as given. PEM
+and PKCS12 both work, `CertificatePassword` unlocks a PKCS12 that has one, and
+`SendCertificateChain` turns on subject name and issuer authentication. The
+certificate must be mode 0600 as well, because the private key in it is exactly
+as sensitive as a secret, and entrascope refuses to run rather than use one
+anybody else can read.
+
+`ARM_CLIENT_CERTIFICATE_PATH` and `ARM_CLIENT_CERTIFICATE_PASSWORD` do the same
+through the environment, under the names the Azure provider for Terraform
+already uses. `entrascope config credentials --certificate app.pem` sets one
+for every credential file that names none of its own.
+
+### What it says it is using
+
+Every run ends with one line in red naming the credential kind in force and the
+files it came from:
+
+```
+credentials: client certificate through file  file /home/ada/.entra/prod.json  certificate /home/ada/.entra/app.pem
+```
+
+It goes to standard error, so redirecting output to a file leaves the file
+holding the answer alone. It is never printed for `--output json`, `yaml` or
+`plain`, never without a terminal, and `NO_COLOR` drops the colour. Switch it
+off entirely under `banner` in `credentials.yaml`. Running a diagnosis against
+the wrong tenant is the most expensive mistake this tool can help you make, and
+it is the one mistake nothing else here reports.
 
 A credential file that is present but unsafe stops the command rather than
 being worked around, and prints the exact `chmod`. Leaving it readable by

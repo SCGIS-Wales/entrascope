@@ -39,17 +39,44 @@ class AuthSourceUnavailableError(CredentialError):
 
 
 class Credential(NamedTuple):
-    """Client credentials read from the credential file or the environment."""
+    """Client credentials read from the credential file or the environment.
+
+    Entra accepts either a secret or a certificate for an application, so this
+    carries both and :meth:`kind` says which one is in hand. A credential with
+    neither cannot authenticate and is refused where it is read.
+    """
 
     client_id: str
     tenant_id: str
-    secret: str
+    secret: str = ""
+    #: A PEM or PKCS12 file holding the certificate and its private key.
+    certificate_path: str = ""
+    certificate_password: str = ""
+    #: Sends the public certificate chain, which subject name and issuer
+    #: authentication requires and nothing else does.
+    send_certificate_chain: bool = False
+
+    def kind(self) -> str:
+        """Return whether this authenticates with a certificate or a secret.
+
+        A file carrying both prefers the certificate. It is the stronger of the
+        two, and somebody who has put one in place has said which they mean.
+        """
+        if self.certificate_path:
+            return "certificate"
+        return "secret" if self.secret else "none"
 
     def __repr__(self) -> str:
-        """Return a representation that cannot leak the secret."""
+        """Return a representation that cannot leak the secret or the password.
+
+        The certificate path is a path and is worth seeing. What it protects is
+        the private key in that file, which never enters this process.
+        """
         return (
             f"Credential(client_id={self.client_id!r}, "
-            f"tenant_id={self.tenant_id!r}, secret='[redacted]')"
+            f"tenant_id={self.tenant_id!r}, secret='[redacted]', "
+            f"certificate_path={self.certificate_path!r}, "
+            f"certificate_password='[redacted]')"
         )
 
 
@@ -65,6 +92,32 @@ class AuthContext(NamedTuple):
     #: expected to work and quietly did not is the commonest confusion there
     #: is, so the answer carries the reasons with it.
     skipped: tuple[str, ...] = ()
+
+
+class CredentialPosture(NamedTuple):
+    """What a run would authenticate as, worked out without authenticating.
+
+    Reported at the start of a run and by ``entrascope config credentials``.
+    Nothing here costs a token request, so it can be shown before every command
+    without slowing one down, and it names files rather than describing them so
+    that the one to look at is never a guess.
+    """
+
+    #: The source that would answer, or None when none of them would.
+    source: AuthSource | None
+    #: The key of the entry in the configured kind labels: secret,
+    #: certificate, session, chain or none.
+    kind: str
+    #: The credential file in force, whether or not it is there.
+    file_path: str
+    file_present: bool
+    #: The certificate in force, when one is.
+    certificate_path: str = ""
+    #: Why the credential file cannot be used, when it cannot. A posture that
+    #: reports a problem is worth showing loudly.
+    problem: str = ""
+    #: Other credential files sitting beside the one in force.
+    alternatives: tuple[str, ...] = ()
 
 
 class ApiError(NamedTuple):

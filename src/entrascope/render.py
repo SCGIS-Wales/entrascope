@@ -581,6 +581,53 @@ def emit_error(text: str) -> None:
     click.echo(text.rstrip("\n"), err=True)
 
 
+def credential_banner(posture: Any, config: Config) -> str:
+    """Return the line naming what a run is about to authenticate as.
+
+    Two questions, answered before the answer arrives rather than after it:
+    which kind of credential is in force, and which files it came from. Running
+    a diagnosis against the wrong tenant is the most expensive mistake this
+    tool can help somebody make, and it is the one mistake nothing else here
+    reports.
+    """
+    settings = config.credentials
+    kind = settings.kinds.get(posture.kind, posture.kind)
+    where = posture.source or "nothing"
+    parts = [f"{settings.banner.prefix} {kind} through {where}"]
+    # Always, even where another source answered. A run using the Azure CLI
+    # session because the credential file is not where it was looked for is
+    # exactly the case somebody needs the path for.
+    seen = "" if posture.file_present else ", not there"
+    parts.append(f"file {posture.file_path}{seen}")
+    if posture.certificate_path:
+        parts.append(f"certificate {posture.certificate_path}")
+    if posture.problem:
+        parts.append(one_line(posture.problem))
+    return "  ".join(parts)
+
+
+def emit_notice(text: str, config: Config, *, colour: str = "") -> None:
+    """Write one coloured line that is not the answer to anything.
+
+    Standard error, so that redirecting the answer to a file still leaves this
+    on the screen and still leaves the file holding the answer alone. rich
+    drops the colour on its own where there is no terminal to colour, and
+    honours NO_COLOR, so neither is asked about here.
+    """
+    console = console_for(sys.stderr)
+    console.print(Text(redact_line(text, config), style=colour), soft_wrap=True)
+
+
+def redact_line(text: str, config: Config) -> str:
+    """Reduce a notice to one redacted line.
+
+    A path comes from configuration and a problem comes from the filesystem,
+    and neither is trusted with a newline: a second line here would read as a
+    line this tool wrote.
+    """
+    return one_line(str(redact_with_config(text, config)))
+
+
 def mark(passed: bool) -> str:
     """Render a check outcome."""
     return PASS_MARK if passed else FAIL_MARK

@@ -63,7 +63,7 @@ def application_context(
         identity_kind="application",
         tenant_id="22222222-2222-2222-2222-222222222222",
         client_id=client_id,
-        description="client credentials from the credential file",
+        description="a client secret from the credential file",
     )
 
 

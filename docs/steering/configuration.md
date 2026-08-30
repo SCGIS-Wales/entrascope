@@ -123,6 +123,15 @@ the question somebody has when an edit appears to do nothing. A test asserts
 the wheel still carries the defaults, because that mapping is easy to lose in a
 packaging change.
 
+`config.write_user_config` is the one thing that writes there rather than
+reading, and `entrascope config credentials` is the one command that uses it.
+It merges into whatever is already in the file rather than replacing it, so
+setting the directory does not drop the file name set last week. A file
+carrying comments is copied to `.bak` first, because comments do not survive
+being parsed and written back and losing somebody's notes silently is worse
+than the extra file. Writing configuration lives here for the same reason
+reading it does: nothing else in `src` opens a YAML file.
+
 ## Rules
 
 - A new endpoint means a new entry in `endpoints.yaml`, not a literal.

@@ -1125,7 +1125,7 @@ def test_a_failure_says_which_identity_it_used(authenticated: None) -> None:
     )
     result = run(["--auth", "file", "discover", "applications", "--no-details"])
     assert result.exit_code == EXIT_API
-    assert "Authenticated as: client credentials from" in result.output
+    assert "Authenticated as: a client secret from" in result.output
 
 
 def test_an_unsafe_credential_file_stops_the_command(
