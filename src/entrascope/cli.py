@@ -64,6 +64,7 @@ from entrascope.logger import (
     new_correlation_id,
 )
 from entrascope.logs import (
+    looks_like_identifier,
     query_audit_graph,
     query_audit_monitor,
     query_graph_activity,
@@ -2157,6 +2158,18 @@ def logs_audit(
         "audit events",
         table_columns,
     )
+    if app_selector and route == "graph" and not looks_like_identifier(app_selector):
+        # Graph can match an audit event against an object id and not against a
+        # name, so a name is matched here, over the rows that arrived. Somebody
+        # seeing nothing should know whether that means nothing happened or
+        # only that nothing among the newest rows did.
+        emit_error(
+            f"{app_selector!r} is a name, and Microsoft Graph can only narrow "
+            "an audit query by object id, so the name was matched over the "
+            f"newest {limit or config.tables.defaults.row_limit} events rather "
+            "than over the whole period. Pass the object id to narrow at the "
+            "service, or raise --limit."
+        )
     if anything_failed and not failures_only:
         emit_error(
             "Something failed above. Narrow with --failures-only, open one "

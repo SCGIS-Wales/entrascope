@@ -235,7 +235,17 @@ def test_signin_query_narrows_at_graph_rather_than_afterwards(
     asked = asked_url()
     assert "appId eq 'aaaaaaaa-1111-1111-1111-111111111111'" in asked
     assert "createdDateTime ge" in asked
-    assert "orderby" in asked.lower()
+
+
+def test_sign_ins_ask_for_no_order_by_default(config: Config) -> None:
+    """The endpoint already answers newest first, and asking can be refused.
+
+    Microsoft Graph rejects $orderby combined with a $filter on a different
+    property on several reporting collections, so asking for an order the
+    endpoint already gives would trade a correct answer for a refusal. The
+    setting is configuration, so a tenant that wants it stated can say so.
+    """
+    assert config.tables.sign_in_filters.graph_order_by == ""
 
 
 @responses.activate

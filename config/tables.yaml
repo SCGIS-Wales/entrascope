@@ -67,9 +67,12 @@ sign_in_filters:
   graph_since_template: "createdDateTime ge {since}"
   # Keeps only the sign ins that failed. Status zero is success.
   graph_failures_filter: "status/errorCode ne 0"
-  # Newest first. A log read without an order is a log read in whatever order
-  # the service felt like.
-  graph_order_by: "createdDateTime desc"
+  # Left empty deliberately. The signIns endpoint already returns newest first,
+  # and Microsoft Graph refuses $orderby combined with a $filter on a different
+  # property on several of its reporting collections. Asking for an order we
+  # already have would trade a correct answer for a Request_UnsupportedQuery.
+  # Set it to "createdDateTime desc" if a tenant wants it stated.
+  graph_order_by: ""
 
 sign_in_kinds:
   # OData filters for the Graph reporting API, and the KQL template that
