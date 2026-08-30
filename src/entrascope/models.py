@@ -244,13 +244,68 @@ class FederatedCredential(NamedTuple):
 
 
 class SamlConfiguration(NamedTuple):
-    """Single sign on configuration for a SAML enterprise application."""
+    """Single sign on configuration for a SAML enterprise application.
+
+    The identifier and the reply URL are compared byte for byte by the service
+    provider, and the signing certificate is what the assertion is trusted by,
+    so all three are the first things to check when a SAML integration stops
+    working. Which certificate signs is decided by a thumbprint rather than by
+    which is newest, and nobody is warned of an expiry unless an address is
+    registered to warn.
+    """
 
     identifier_uris: tuple[str, ...]
     reply_urls: tuple[str, ...]
     preferred_single_sign_on_mode: str
     signing_certificates: tuple[CredentialSummary, ...]
     is_gallery: bool
+    #: Names the certificate that actually signs. With more than one on the
+    #: object this is the only thing that says which.
+    preferred_signing_key_thumbprint: str = ""
+    #: Where Entra warns that the signing certificate is about to expire. Empty
+    #: is why a SAML integration stops working with no warning at all.
+    notification_email_addresses: tuple[str, ...] = ()
+    #: Where the service provider sends somebody to begin sign in, which is
+    #: what makes an identity provider initiated flow work.
+    login_url: str = ""
+    logout_url: str = ""
+    #: The key issued assertions are encrypted with, where the service provider
+    #: requires encryption.
+    token_encryption_key_id: str = ""
+    relay_state: str = ""
+
+
+class PreAuthorizedApplication(NamedTuple):
+    """A client allowed to ask for this resource's scopes without a prompt.
+
+    This is what makes an on behalf of chain work without the person consenting
+    to the middle tier separately. A client absent here, or present without the
+    scope it asks for, produces a consent prompt in a flow that has no user
+    present to answer one.
+    """
+
+    app_id: str
+    #: The scopes this client may ask for, named where the resource could be
+    #: read to name them.
+    permissions: tuple[str, ...] = ()
+    display_name: str = ""
+
+
+class AssignedPolicy(NamedTuple):
+    """One policy assigned to an enterprise application.
+
+    A claims mapping policy changes what a token carries, a home realm
+    discovery policy changes where the person is sent to authenticate, and a
+    token lifetime policy changes how long the result is good for. None of it
+    is recorded on the application, so a registration compared against a token
+    it produced explains none of the difference.
+    """
+
+    object_id: str
+    display_name: str
+    kind: str
+    definition: tuple[str, ...] = ()
+    is_organization_default: bool | None = None
 
 
 class ApplicationSummary(NamedTuple):
@@ -271,6 +326,17 @@ class ApplicationSummary(NamedTuple):
     requested_access_token_version: int | None
     created: str
     exposes_api: bool = False
+    #: Whether Entra treats this as a public client when a token request does
+    #: not say which it is. A confidential client with this true is refused
+    #: when it presents a secret; a native one with it false is refused when it
+    #: does not.
+    is_fallback_public_client: bool = False
+    #: Whether the application accepts claims a policy mapped. A claims mapping
+    #: policy assigned without this is ignored rather than refused.
+    accepts_mapped_claims: bool = False
+    #: The clients allowed to ask for this resource's scopes without a consent
+    #: prompt, which is what makes an on behalf of chain work.
+    pre_authorized_applications: tuple[PreAuthorizedApplication, ...] = ()
 
     def expiring(self) -> tuple[CredentialSummary, ...]:
         """Return the credentials that are expiring or already expired."""
@@ -305,6 +371,10 @@ class ServicePrincipalSummary(NamedTuple):
     #: The groups, directory roles and administrative units this application's
     #: own identity belongs to.
     member_of: tuple[DirectoryMembership, ...] = ()
+    #: The claims mapping, home realm discovery and token lifetime policies
+    #: assigned to it, each of which changes a token without the registration
+    #: recording that it does.
+    policies: tuple[AssignedPolicy, ...] = ()
 
     def expiring(self) -> tuple[CredentialSummary, ...]:
         """Return the credentials that are expiring or already expired."""

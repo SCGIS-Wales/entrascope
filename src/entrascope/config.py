@@ -279,6 +279,10 @@ class FindingRules(_Frozen):
     missing_admin_consent: FindingRule
     user_consent_only: FindingRule
     assignment_without_group: FindingRule
+    confidential_client_marked_public: FindingRule
+    public_client_not_marked_public: FindingRule
+    saml_without_expiry_notification: FindingRule
+    claims_policy_without_accept_mapped_claims: FindingRule
 
 
 class Classification(_Frozen):
@@ -296,6 +300,7 @@ class Classification(_Frozen):
     principal_types: dict[str, str]
     membership_types: dict[str, str]
     access_bearing_membership: str
+    claims_mapping_policy_kind: str
     default_access_app_role_id: str
     hidden_from_the_chooser: tuple[str, ...] = ()
 
@@ -303,6 +308,7 @@ class Classification(_Frozen):
 class Fields(_Frozen):
     application: dict[str, str]
     service_principal: dict[str, str]
+    pre_authorized_application: dict[str, str]
     app_role_assignment: dict[str, str]
     oauth2_permission_grant: dict[str, str]
     membership: dict[str, str]

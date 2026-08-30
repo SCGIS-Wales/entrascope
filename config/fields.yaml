@@ -28,6 +28,28 @@ application:
   publisher_domain: publisherDomain
   verified_publisher: verifiedPublisher.displayName
   disabled_by_microsoft: disabledByMicrosoftStatus
+  # Whether Entra treats this as a public client when the request does not say.
+  # A confidential client with this set true is refused with AADSTS700025 when
+  # it presents a secret, and a native client with it false is refused with
+  # AADSTS7000218 when it does not.
+  is_fallback_public_client: isFallbackPublicClient
+  # Set on a resource that accepts a claims mapping policy. A policy assigned
+  # without this is ignored, which looks exactly like a policy that does not
+  # work.
+  accept_mapped_claims: api.acceptMappedClaims
+  # Applications allowed to ask for this resource's scopes without a consent
+  # prompt of their own. This is what makes an on behalf of chain work without
+  # the user consenting to the middle tier separately.
+  pre_authorized_applications: api.preAuthorizedApplications
+  certification: certification
+  application_template_id: applicationTemplateId
+  service_principal_lock: servicePrincipalLockConfiguration
+
+# One entry of preAuthorizedApplications: a client, and the scopes of this
+# resource it may ask for without prompting.
+pre_authorized_application:
+  app_id: appId
+  delegated_permission_ids: delegatedPermissionIds
 
 service_principal:
   object_id: id
@@ -47,6 +69,22 @@ service_principal:
   tags: tags
   account_enabled: accountEnabled
   app_owner_organization_id: appOwnerOrganizationId
+  # Which certificate signs the SAML responses. With more than one signing
+  # certificate on the object, this is the only thing that says which is in use.
+  preferred_token_signing_key_thumbprint: preferredTokenSigningKeyThumbprint
+  # Where Entra sends warning that the signing certificate is about to expire.
+  # Empty here is why a SAML integration stops working with no warning at all.
+  notification_email_addresses: notificationEmailAddresses
+  # Where the service provider sends somebody to start sign in, which is what
+  # makes an identity provider initiated flow work.
+  login_url: loginUrl
+  logout_url: logoutUrl
+  # The public key issued tokens are encrypted with, where the application
+  # requires encrypted assertions.
+  token_encryption_key_id: tokenEncryptionKeyId
+  saml_single_sign_on_settings: samlSingleSignOnSettings
+  application_template_id: applicationTemplateId
+  disabled_by_microsoft: disabledByMicrosoftStatus
 
 # An app role assignment, which is one principal granted access to an
 # enterprise application. Graph reports the same shape whether the principal is
@@ -287,6 +325,51 @@ findings:
       Assign a security group instead, so that joining and leaving the group
       grants and revokes access.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal
+  confidential_client_marked_public:
+    severity: error
+    detail: >
+      The application holds a credential and is also marked as a fallback
+      public client. Entra then treats a token request that does not say which
+      it is as coming from a public client and refuses the secret, which is
+      AADSTS700025.
+    remediation: >
+      Set isFallbackPublicClient to false in the manifest, under Authentication,
+      Allow public client flows, unless the application really does sign in
+      without a secret.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/msal-client-application-configuration
+  public_client_not_marked_public:
+    severity: warning
+    detail: >
+      The application registers only public client redirect URIs, holds no
+      credential, and is not marked as a fallback public client. A native or
+      mobile client that cannot keep a secret is then refused for not sending
+      one, which is AADSTS7000218.
+    remediation: >
+      Set isFallbackPublicClient to true in the manifest, under Authentication,
+      Allow public client flows.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/msal-client-application-configuration
+  saml_without_expiry_notification:
+    severity: warning
+    detail: >
+      The enterprise application signs SAML assertions and no address is
+      registered for expiry notification, so nobody is warned before the
+      signing certificate expires and single sign on stops for everybody at
+      once.
+    remediation: >
+      Add an address under Single sign on, SAML signing certificate,
+      Notification Email Addresses.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/tutorial-manage-certificates-for-federated-single-sign-on
+  claims_policy_without_accept_mapped_claims:
+    severity: error
+    detail: >
+      A claims mapping policy is assigned and the application does not accept
+      mapped claims, so Entra ignores the policy entirely. The token is issued
+      without the mapped claims and nothing reports an error, which looks
+      exactly like a policy that does not work.
+    remediation: >
+      Set acceptMappedClaims to true in the application manifest, or sign the
+      token with a custom signing key.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity-platform/saml-claims-customization
   token_version_one:
     severity: note
     detail: >
@@ -330,6 +413,10 @@ classification:
   # Which of those carries access, and so which one is worth pulling out of a
   # membership list on its own.
   access_bearing_membership: group
+  # What this tool calls the policy that rewrites the claims in a token. It is
+  # the one that is silently ignored unless the application accepts mapped
+  # claims, which is worth saying out loud.
+  claims_mapping_policy_kind: claims mapping
   # An app role assignment carrying this identifier grants no permission at
   # all. It records that the principal may use the application, nothing more,
   # which is how a user or a group is assigned to an enterprise application

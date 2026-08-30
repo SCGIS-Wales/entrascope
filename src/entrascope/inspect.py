@@ -26,6 +26,8 @@ from entrascope.discovery import (
     pluck,
     project_application,
     project_federated_credentials,
+    project_policies,
+    project_pre_authorized,
     project_service_principal,
     security_groups,
     strings,
@@ -37,6 +39,7 @@ from entrascope.logger import get_logger
 from entrascope.models import (
     ApiCallError,
     ApplicationSummary,
+    AssignedPolicy,
     PermissionGrant,
     ServicePrincipalSummary,
 )
@@ -638,18 +641,43 @@ def as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def exposed_api(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Project what an application exposes to other applications."""
+def exposed_api(
+    payload: Mapping[str, Any],
+    config: Config | None = None,
+    catalogue: PermissionCatalogue | None = None,
+) -> dict[str, Any]:
+    """Project what an application exposes to other applications.
+
+    A pre authorised client carries the identifiers of the scopes it may ask
+    for. They are this application's own scopes, so they are named from the
+    same payload without another call, and naming them is the difference
+    between seeing that a client is pre authorised and seeing what for.
+    """
     api = as_mapping(payload.get("api"))
     scopes = api.get("oauth2PermissionScopes") or []
     roles = payload.get("appRoles") or []
+    own_scopes = {
+        text(scope.get("id")): text(scope.get("value"))
+        for scope in scopes
+        if isinstance(scope, Mapping) and scope.get("id")
+    }
+    pre_authorized = (
+        project_pre_authorized(payload, config) if config is not None else ()
+    )
     return {
         "identifier_uris": payload.get("identifierUris") or [],
         "requested_access_token_version": api.get("requestedAccessTokenVersion"),
+        # A claims mapping policy assigned to a resource that does not accept
+        # mapped claims is ignored, which looks exactly like one that does not
+        # work.
+        "accept_mapped_claims": api.get("acceptMappedClaims"),
         "delegated_scopes": [
             {
                 "value": scope.get("value"),
                 "consent": scope.get("type"),
+                "admin_consent_required": (
+                    text(scope.get("type")) == admin_scope_type(config)
+                ),
                 "enabled": scope.get("isEnabled"),
                 "admin_description": scope.get("adminConsentDescription"),
             }
@@ -667,11 +695,28 @@ def exposed_api(payload: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(role, Mapping)
         ],
         "pre_authorized_applications": [
-            entry.get("appId")
-            for entry in (api.get("preAuthorizedApplications") or [])
-            if isinstance(entry, Mapping)
+            {
+                "app_id": entry.app_id,
+                "display_name": (
+                    catalogue.resource_names.get(entry.app_id, "")
+                    if catalogue is not None
+                    else ""
+                ),
+                "permissions": [
+                    own_scopes.get(identifier, identifier)
+                    for identifier in entry.permissions
+                ],
+            }
+            for entry in pre_authorized
         ],
     }
+
+
+def admin_scope_type(config: Config | None) -> str:
+    """Return the scope type that means only an administrator may consent."""
+    if config is None:
+        return ""
+    return config.fields.classification.admin_consent_scope_type
 
 
 def urls(
@@ -891,8 +936,9 @@ def inspect(
                 principal.saml.is_gallery if principal and principal.saml else None
             ),
         },
+        "single_sign_on": single_sign_on_view(principal, payload, config),
         "urls": urls(application, principal, payload),
-        "exposes": exposed_api(payload),
+        "exposes": exposed_api(payload, config, permissions),
         "permissions": {
             "requested": named_permissions(
                 application,
@@ -1023,6 +1069,100 @@ def access_view(
     }
 
 
+def single_sign_on_view(
+    principal: ServicePrincipalSummary | None,
+    payload: Mapping[str, Any],
+    config: Config,
+) -> dict[str, Any]:
+    """Report the single sign on configuration and what silently rewrites a token.
+
+    A SAML integration breaks on the parts a registration does not show: which
+    of several certificates actually signs, whether anybody is warned before it
+    expires, and whether a policy is rewriting the token on the way out. All
+    three are here whichever protocol the application uses, because a claims
+    mapping policy applies to an OpenID Connect token just as it does to a SAML
+    assertion.
+    """
+    saml = principal.saml if principal else None
+    policies = principal.policies if principal else ()
+    mapping = config.fields.application
+    view: dict[str, Any] = {
+        "mode": (
+            principal.saml.preferred_single_sign_on_mode
+            if principal and principal.saml
+            else text(
+                pluck(
+                    payload,
+                    config.fields.service_principal["preferred_single_sign_on_mode"],
+                )
+            )
+        ),
+        "accept_mapped_claims": pluck(payload, mapping["accept_mapped_claims"]),
+        "policies": [to_payload(item) for item in policies],
+        "policy_note": policy_note(policies, payload, config),
+    }
+    if saml is None:
+        return view
+    view["saml"] = {
+        **to_payload(saml),
+        "signing_note": signing_note(saml),
+    }
+    return view
+
+
+def policy_note(
+    policies: Sequence[AssignedPolicy],
+    payload: Mapping[str, Any],
+    config: Config,
+) -> str:
+    """Say what the policies assigned to an application actually do."""
+    if not policies:
+        return (
+            "No policy is assigned, so the token carries what the registration "
+            "says it carries."
+        )
+    kinds = ", ".join(sorted({item.kind for item in policies}))
+    note = (
+        f"{len(policies)} policy assignment(s): {kinds}. None of this is "
+        "recorded on the registration, so a token that does not match the "
+        "registration is explained here."
+    )
+    claims = config.fields.classification.claims_mapping_policy_kind
+    accepts = pluck(payload, config.fields.application["accept_mapped_claims"])
+    if any(item.kind == claims for item in policies) and not accepts:
+        note = (
+            f"{note} A claims mapping policy is assigned and the application "
+            "does not accept mapped claims, so the policy is ignored, which "
+            "looks exactly like a policy that does not work. Set "
+            "acceptMappedClaims, or sign the token with a custom key."
+        )
+    return note
+
+
+def signing_note(saml: Any) -> str:
+    """Say which certificate signs, and whether anybody is warned before it goes."""
+    parts: list[str] = []
+    certificates = saml.signing_certificates
+    if saml.preferred_signing_key_thumbprint:
+        parts.append(
+            "The certificate signing assertions is the one with thumbprint "
+            f"{saml.preferred_signing_key_thumbprint}."
+        )
+    elif len(certificates) > 1:
+        parts.append(
+            f"There are {len(certificates)} signing certificates and no "
+            "preferred thumbprint, so which one signs is Entra's choice rather "
+            "than a recorded decision."
+        )
+    if not saml.notification_email_addresses:
+        parts.append(
+            "No address is registered for expiry notification, so nobody is "
+            "warned before the signing certificate expires and single sign on "
+            "stops."
+        )
+    return " ".join(parts)
+
+
 def _not_found(target: str) -> Any:
     """Return the error raised when nothing matched."""
     from entrascope.models import ApiError
@@ -1100,7 +1240,33 @@ def read_one_principal(
         member_of=read_collection(
             session, config, "service_principal_member_of", parameters
         ),
+        policies=read_policies(session, config, parameters),
     )
+
+
+#: The policies that can be assigned to an enterprise application, and what
+#: this tool calls each. Every one changes a token without the registration
+#: recording that it does.
+POLICY_ENDPOINTS: tuple[tuple[str, str], ...] = (
+    ("claims_mapping_policies", "claims mapping"),
+    ("home_realm_discovery_policies", "home realm discovery"),
+    ("token_lifetime_policies", "token lifetime"),
+)
+
+
+def read_policies(
+    session: Session, config: Config, parameters: Mapping[str, str]
+) -> tuple[AssignedPolicy, ...]:
+    """Read every policy assigned to one enterprise application.
+
+    Each kind is its own collection and each may be refused on its own, so a
+    tenant that grants one and not another still reports the one it granted.
+    """
+    found: list[AssignedPolicy] = []
+    for endpoint, kind in POLICY_ENDPOINTS:
+        rows = read_collection(session, config, endpoint, parameters)
+        found.extend(project_policies(rows, kind))
+    return tuple(found)
 
 
 def read_grants(
@@ -1199,7 +1365,7 @@ def platform_facts(
     credentials = application.credentials if application else ()
     kinds = {item.kind for item in credentials}
     known = pluck(payload, mapping["known_client_applications"]) or []
-    exposed = exposed_api(payload)
+    exposed = exposed_api(payload, config)
     platform = "none"
     if redirects and redirects.single_page:
         platform = "spa"
@@ -1207,8 +1373,14 @@ def platform_facts(
         platform = "web"
     elif redirects and redirects.public_client:
         platform = "publicClient"
+    fallback_public = pluck(payload, mapping["is_fallback_public_client"])
     return {
         "platform": platform,
+        # Whether Entra treats this as a public client when the token request
+        # does not say. A confidential client with this true is refused when it
+        # presents a secret; a native client with it false is refused when it
+        # does not.
+        "fallback_public_client": bool(fallback_public),
         "credentials": (
             "certificate"
             if kinds == {"certificate"}
@@ -1295,7 +1467,7 @@ def provisioning_view(
     mapping = config.fields.application
     redirects = application.redirect_uris if application else None
     web = as_mapping(payload.get("web"))
-    exposed = exposed_api(payload)
+    exposed = exposed_api(payload, config)
     facts = platform_facts(application, principal, payload, config)
     outside = config.capabilities.provisioning.outside_the_vocabulary
     kind = (
@@ -1333,6 +1505,7 @@ def provisioning_view(
                 pluck(payload, mapping["known_client_applications"]) or []
             ),
         },
+        "isFallbackPublicClient": pluck(payload, mapping["is_fallback_public_client"]),
         "signInAudience": application.sign_in_audience if application else None,
         "tokenVersion": application.requested_access_token_version
         if application

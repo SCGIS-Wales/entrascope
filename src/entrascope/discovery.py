@@ -21,12 +21,14 @@ from entrascope.models import (
     ApplicationSummary,
     ApplicationType,
     AppRoleAssignment,
+    AssignedPolicy,
     CredentialState,
     CredentialSummary,
     DirectoryMembership,
     FederatedCredential,
     PermissionGrant,
     PermissionRequest,
+    PreAuthorizedApplication,
     RedirectUris,
     SamlConfiguration,
     ServicePrincipalSummary,
@@ -322,6 +324,11 @@ def project_application(
         else None,
         created=text(pluck(payload, mapping["created"])),
         exposes_api=exposes,
+        is_fallback_public_client=bool(
+            pluck(payload, mapping["is_fallback_public_client"])
+        ),
+        accepts_mapped_claims=bool(pluck(payload, mapping["accept_mapped_claims"])),
+        pre_authorized_applications=project_pre_authorized(payload, config),
     )
 
 
@@ -340,12 +347,19 @@ def project_saml(
     credentials: Sequence[CredentialSummary],
     tags: Sequence[str],
 ) -> SamlConfiguration | None:
-    """Project the SAML configuration, or None when the application is not SAML."""
+    """Project the SAML configuration, or None when the application is not SAML.
+
+    Everything a SAML integration is diagnosed from is here, because the parts
+    that break it are rarely the parts a registration shows: which of several
+    certificates actually signs, whether anybody is warned before one expires,
+    and where the service provider sends somebody to begin.
+    """
     rules = config.fields.classification
     mapping = config.fields.service_principal
     mode = text(pluck(payload, mapping["preferred_single_sign_on_mode"]))
     if mode != rules.single_sign_on_modes["saml"]:
         return None
+    settings = pluck(payload, mapping["saml_single_sign_on_settings"])
     return SamlConfiguration(
         identifier_uris=strings(pluck(payload, mapping["identifier_uris"])),
         reply_urls=strings(pluck(payload, mapping["reply_urls"])),
@@ -354,6 +368,62 @@ def project_saml(
             item for item in credentials if item.kind == "certificate"
         ),
         is_gallery=any(tag in set(rules.gallery_tags) for tag in tags),
+        preferred_signing_key_thumbprint=text(
+            pluck(payload, mapping["preferred_token_signing_key_thumbprint"])
+        ),
+        notification_email_addresses=strings(
+            pluck(payload, mapping["notification_email_addresses"])
+        ),
+        login_url=text(pluck(payload, mapping["login_url"])),
+        logout_url=text(pluck(payload, mapping["logout_url"])),
+        token_encryption_key_id=text(
+            pluck(payload, mapping["token_encryption_key_id"])
+        ),
+        relay_state=text(
+            settings.get("relayState") if isinstance(settings, Mapping) else ""
+        ),
+    )
+
+
+def project_pre_authorized(
+    payload: Mapping[str, Any], config: Config
+) -> tuple[PreAuthorizedApplication, ...]:
+    """Project the clients allowed to ask for this resource without a prompt.
+
+    An on behalf of chain runs with no user present to answer a consent prompt,
+    so a client that is not here, or is here without the scope it asks for, is
+    the usual reason one fails.
+    """
+    mapping = config.fields.pre_authorized_application
+    entries = pluck(payload, config.fields.application["pre_authorized_applications"])
+    return tuple(
+        PreAuthorizedApplication(
+            app_id=text(pluck(entry, mapping["app_id"])),
+            permissions=strings(pluck(entry, mapping["delegated_permission_ids"])),
+        )
+        for entry in (entries or [])
+        if isinstance(entry, Mapping)
+    )
+
+
+def project_policies(
+    payloads: Sequence[Mapping[str, Any]], kind: str
+) -> tuple[AssignedPolicy, ...]:
+    """Project the policies of one kind assigned to an enterprise application."""
+    return tuple(
+        AssignedPolicy(
+            object_id=text(item.get("id")),
+            display_name=text(item.get("displayName")),
+            kind=kind,
+            definition=strings(item.get("definition")),
+            is_organization_default=(
+                None
+                if item.get("isOrganizationDefault") is None
+                else bool(item.get("isOrganizationDefault"))
+            ),
+        )
+        for item in payloads
+        if isinstance(item, Mapping)
     )
 
 
@@ -537,6 +607,7 @@ def project_service_principal(
     assignments: Sequence[Mapping[str, Any]] = (),
     assigned_to: Sequence[Mapping[str, Any]] = (),
     member_of: Sequence[Mapping[str, Any]] = (),
+    policies: Sequence[AssignedPolicy] = (),
     now: datetime | None = None,
 ) -> ServicePrincipalSummary:
     """Project one enterprise application into its immutable summary.
@@ -573,6 +644,7 @@ def project_service_principal(
         owner_tenant_id=text(pluck(payload, mapping["app_owner_organization_id"])),
         assignments=project_app_role_assignments(assigned_to, config),
         member_of=project_memberships(member_of, config),
+        policies=tuple(policies or ()),
     )
 
 

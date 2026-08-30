@@ -364,6 +364,123 @@ def register_graph(
         )
 
 
+def test_a_confidential_client_marked_public_is_an_error(config: Config) -> None:
+    """It presents its secret and Entra refuses it, which reads as a bad secret."""
+    from entrascope.discovery import project_application
+
+    payload = {
+        "id": "a",
+        "appId": "b",
+        "displayName": "Web app",
+        "isFallbackPublicClient": True,
+        "passwordCredentials": [{"keyId": "k", "endDateTime": "2099-01-01T00:00:00Z"}],
+        "web": {"redirectUris": ["https://app.example.invalid/callback"]},
+    }
+    findings = configuration_findings(project_application(payload, config), config)
+    client_type = [item for item in findings if item.area == "client type"]
+    assert client_type and client_type[0].severity == "error"
+    assert "AADSTS700025" in client_type[0].detail
+
+
+def test_a_native_client_not_marked_public_is_a_warning(config: Config) -> None:
+    """It cannot hold a secret and is refused for not sending one."""
+    from entrascope.discovery import project_application
+
+    payload = {
+        "id": "a",
+        "appId": "b",
+        "displayName": "Desktop client",
+        "isFallbackPublicClient": False,
+        "publicClient": {"redirectUris": ["http://localhost"]},
+    }
+    findings = configuration_findings(project_application(payload, config), config)
+    client_type = [item for item in findings if item.area == "client type"]
+    assert client_type and client_type[0].severity == "warning"
+    assert "AADSTS7000218" in client_type[0].detail
+
+
+def test_a_correctly_marked_public_client_is_not_flagged(config: Config) -> None:
+    """The rule must not fire on the configuration it is asking people to use."""
+    from entrascope.discovery import project_application
+
+    payload = {
+        "id": "a",
+        "appId": "b",
+        "displayName": "Desktop client",
+        "isFallbackPublicClient": True,
+        "publicClient": {"redirectUris": ["http://localhost"]},
+    }
+    findings = configuration_findings(project_application(payload, config), config)
+    assert not [item for item in findings if item.area == "client type"]
+
+
+def test_a_claims_policy_without_accept_mapped_claims_is_an_error(
+    config: Config,
+) -> None:
+    """Entra ignores the policy, so nothing anywhere reports an error."""
+    from entrascope.discovery import project_application, project_service_principal
+    from entrascope.investigate import token_shaping_findings
+    from entrascope.models import AssignedPolicy
+
+    application = project_application(
+        {"id": "a", "appId": "b", "displayName": "Web app"}, config
+    )
+    principal = project_service_principal(
+        {"id": "sp", "appId": "b", "displayName": "Web app"}, config
+    )._replace(
+        policies=(
+            AssignedPolicy(
+                object_id="p1", display_name="Map the claims", kind="claims mapping"
+            ),
+        )
+    )
+    findings = token_shaping_findings(application, principal, config)
+    claims = [item for item in findings if item.area == "claims"]
+    assert claims and claims[0].severity == "error"
+    assert "acceptMappedClaims" in claims[0].remediation
+
+
+def test_a_saml_application_with_nobody_to_warn_is_flagged(config: Config) -> None:
+    """The certificate expires on a date nobody is watching and sign on stops."""
+    from entrascope.discovery import project_service_principal
+    from entrascope.investigate import token_shaping_findings
+
+    principal = project_service_principal(
+        {
+            "id": "sp",
+            "appId": "b",
+            "displayName": "SAML app",
+            "preferredSingleSignOnMode": "saml",
+            "keyCredentials": [{"keyId": "k", "endDateTime": "2027-01-01T00:00:00Z"}],
+        },
+        config,
+    )
+    findings = token_shaping_findings(None, principal, config)
+    saml = [item for item in findings if item.area == "single sign on"]
+    assert saml and saml[0].severity == "warning"
+    assert saml[0].when == "2027-01-01T00:00:00Z"
+
+
+def test_a_saml_application_with_a_notification_address_is_not_flagged(
+    config: Config,
+) -> None:
+    """Somebody is warned, so there is nothing to say."""
+    from entrascope.discovery import project_service_principal
+    from entrascope.investigate import token_shaping_findings
+
+    principal = project_service_principal(
+        {
+            "id": "sp",
+            "appId": "b",
+            "displayName": "SAML app",
+            "preferredSingleSignOnMode": "saml",
+            "notificationEmailAddresses": ["platform@example.invalid"],
+        },
+        config,
+    )
+    assert not token_shaping_findings(None, principal, config)
+
+
 @responses.activate
 def test_a_permission_never_admin_consented_becomes_an_error(
     config: Config,
