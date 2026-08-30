@@ -748,9 +748,17 @@ def test_cli_gallery(authenticated: None) -> None:
     assert "saml" in result.output
 
 
-def test_the_monitor_route_explains_itself_without_a_workspace() -> None:
-    """Being told to pass a flag is no use to somebody who has no workspace."""
-    result = run(["logs", "graph-activity"])
+def test_the_monitor_route_explains_itself_without_a_workspace(
+    authenticated: None,
+) -> None:
+    """Being told to pass a flag is no use to somebody who has no workspace.
+
+    The authentication source is pinned, because without one the command fails
+    on the identity before it ever reaches the workspace, and the test would
+    then pass or fail on whether the machine running it happens to have the
+    Azure CLI installed.
+    """
+    result = run(["--auth", "file", "logs", "graph-activity"])
     assert result.exit_code == EXIT_CONFIG
     assert "only through Azure Monitor" in result.output
     assert "logs audit" in result.output

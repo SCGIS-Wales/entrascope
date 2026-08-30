@@ -165,12 +165,73 @@ class PermissionRequest(NamedTuple):
 
 
 class PermissionGrant(NamedTuple):
-    """A permission actually granted, which is what consent produces."""
+    """A permission actually granted, which is what consent produces.
+
+    The consent type is the part that decides whether a permission works for
+    everybody or for one person. A delegated permission consented tenant wide
+    needed an administrator; the same permission consented by one person for
+    themselves works for them and is refused for everybody else.
+    """
 
     resource_app_id: str
     kind: Literal["delegated", "application"]
     value: str
     principal: str = ""
+    #: AllPrincipals or Principal for a delegated grant, empty for an
+    #: application permission, which is always tenant wide.
+    consent_type: str = ""
+    #: The object id of the person a single user grant belongs to, where there
+    #: is one. Empty on a tenant wide grant, which belongs to nobody.
+    principal_id: str = ""
+    resource_display_name: str = ""
+    #: Whether only an administrator may consent to this permission. None when
+    #: the resource could not be read to find out.
+    admin_consent_required: bool | None = None
+    #: Whether consent for it was in fact recorded by an administrator.
+    admin_consent_recorded: bool = False
+
+
+class AppRoleAssignment(NamedTuple):
+    """One principal granted access to an enterprise application.
+
+    This is the other half of authorisation and the half that is usually
+    missing: a user, a security group or another application assigned to the
+    enterprise application. Where assignment is required, an identity that is
+    not here cannot sign in whatever has been consented.
+    """
+
+    principal_id: str
+    principal_display_name: str
+    #: User, Group or ServicePrincipal, as Microsoft Graph reports it.
+    principal_type: str
+    app_role_id: str
+    #: The name of the role, where the enterprise application defines one.
+    #: Empty when the assignment carries only access and no role.
+    app_role_value: str = ""
+    #: Said in words, because the null identifier means access and not a role.
+    meaning: str = ""
+    resource_display_name: str = ""
+    created: str = ""
+
+
+class DirectoryMembership(NamedTuple):
+    """One group, directory role or administrative unit an object belongs to.
+
+    A security group is the one that carries access. Whether a group is
+    security enabled, and whether its membership is a rule rather than a list,
+    both change what adding somebody to it actually does.
+    """
+
+    object_id: str
+    display_name: str
+    #: group, directory role or administrative unit.
+    kind: str
+    security_enabled: bool | None = None
+    mail_enabled: bool | None = None
+    #: The rule of a dynamic group. Empty when membership is assigned.
+    membership_rule: str = ""
+    on_premises_sync_enabled: bool | None = None
+    description: str = ""
 
 
 class FederatedCredential(NamedTuple):
@@ -238,6 +299,12 @@ class ServicePrincipalSummary(NamedTuple):
     tags: tuple[str, ...]
     created: str = ""
     owner_tenant_id: str = ""
+    #: Who may use this enterprise application: the users, security groups and
+    #: applications assigned to it.
+    assignments: tuple[AppRoleAssignment, ...] = ()
+    #: The groups, directory roles and administrative units this application's
+    #: own identity belongs to.
+    member_of: tuple[DirectoryMembership, ...] = ()
 
     def expiring(self) -> tuple[CredentialSummary, ...]:
         """Return the credentials that are expiring or already expired."""

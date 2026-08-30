@@ -30,12 +30,21 @@ ROOT = "https://graph.microsoft.com/v1.0"
 GRAPH_APP = "00000003-0000-0000-c000-000000000000"
 
 
-def register(*, templates: list[dict[str, Any]] | None = None) -> None:
+def register(
+    *,
+    templates: list[dict[str, Any]] | None = None,
+    assigned_to: list[dict[str, Any]] | None = None,
+    grants: list[dict[str, Any]] | None = None,
+    held_roles: list[dict[str, Any]] | None = None,
+    member_of: list[dict[str, Any]] | None = None,
+) -> None:
     """Register the calls an inspection makes.
 
     Discovery fetches owners and federated credentials one object at a time
     when a token is supplied, which the command line does, so those are matched
-    by pattern.
+    by pattern. The four collections that say what an application may do and
+    who may use it are registered separately, because reading the wrong one of
+    them is the mistake these tests exist to catch.
     """
     responses.add(
         responses.GET,
@@ -58,14 +67,37 @@ def register(*, templates: list[dict[str, Any]] | None = None) -> None:
         (rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/owners", {"value": []}),
         (
             rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/appRoleAssignedTo",
-            {"value": []},
+            {"value": assigned_to or []},
+        ),
+        (
+            rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/appRoleAssignments",
+            {"value": held_roles or []},
+        ),
+        (
+            rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/memberOf",
+            {"value": member_of or []},
         ),
     ):
         responses.add(responses.GET, re.compile(pattern), json=body, status=200)
     responses.add(
         responses.GET,
+        f"{ROOT}/oauth2PermissionGrants",
+        json={"value": grants or []},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
         re.compile(rf"{re.escape(ROOT)}/applications/[0-9a-f-]+"),
         json=load_fixture("applications")["value"][0],
+        status=200,
+    )
+    # The enterprise application read on its own. Without this the read is
+    # refused, every collection hanging off it is skipped, and a report full of
+    # empty sections looks exactly like an application with nothing granted.
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals/[0-9a-f-]+$"),
+        json=load_fixture("service_principals")["value"][0],
         status=200,
     )
     responses.add(
@@ -153,7 +185,8 @@ def test_consent_state_names_the_gap(
     assert state["requested_delegated"] == 1
     assert state["requested_application"] == 1
     assert state["admin_consent_granted"] is False
-    assert "never recorded" in state["admin_consent_note"]
+    assert state["admin_consent_complete"] is False
+    assert "no consent of any kind" in state["not_consented"][0]["why"]
 
 
 def test_consent_state_recognises_a_grant(config: Config) -> None:
@@ -168,10 +201,78 @@ def test_consent_state_recognises_a_grant(config: Config) -> None:
                 kind="delegated",
                 value="User.Read",
                 principal="all users",
+                consent_type="AllPrincipals",
+                admin_consent_recorded=True,
             ),
         )
     )
     assert consent_state(None, principal)["admin_consent_granted"] is True
+
+
+def test_a_permission_needing_admin_consent_is_named_when_it_lacks_it(
+    config: Config, applications: list[dict[str, Any]]
+) -> None:
+    """The whole point: an engineer must be able to see which one is missing."""
+    from entrascope.discovery import project_application, project_service_principal
+    from entrascope.inspect import PermissionCatalogue, PermissionFact
+
+    application = project_application(applications[0], config)
+    requested = application.requested_permissions[0]
+    catalogue = PermissionCatalogue(
+        by_id={
+            requested.delegated[0]: PermissionFact(
+                value="User.Read",
+                kind="delegated",
+                admin_consent_required=False,
+                resource="Microsoft Graph",
+            ),
+            requested.application[0]: PermissionFact(
+                value="Application.Read.All",
+                kind="application",
+                admin_consent_required=True,
+                resource="Microsoft Graph",
+            ),
+        },
+        by_value={},
+        resource_names={requested.resource_app_id: "Microsoft Graph"},
+    )
+    state = consent_state(
+        application, project_service_principal({"id": "x"}, config), catalogue
+    )
+    outstanding = state["without_admin_consent"]
+    assert [row["permission"] for row in outstanding] == ["Application.Read.All"]
+    assert outstanding[0]["resource"] == "Microsoft Graph"
+    assert "Application.Read.All" in state["admin_consent_note"]
+    # User.Read needs no administrator, so it is missing consent but is not an
+    # admin consent problem, and saying otherwise sends somebody to the wrong
+    # place.
+    assert [row["permission"] for row in state["not_consented"]] == [
+        "User.Read",
+        "Application.Read.All",
+    ]
+
+
+def test_a_permission_consented_by_one_person_is_told_apart(config: Config) -> None:
+    """It works for them and is refused for everybody else, and nothing says so."""
+    from entrascope.discovery import project_service_principal
+    from entrascope.models import PermissionGrant
+
+    principal = project_service_principal({"id": "x"}, config)._replace(
+        granted_permissions=(
+            PermissionGrant(
+                resource_app_id="r",
+                kind="delegated",
+                value="Mail.Read",
+                principal="person-1",
+                consent_type="Principal",
+                principal_id="person-1",
+                admin_consent_recorded=False,
+            ),
+        )
+    )
+    state = consent_state(None, principal)
+    assert state["user_consented_only"][0]["value"] == "Mail.Read"
+    assert "individual rather than for the tenant" in state["admin_consent_note"]
 
 
 def test_urls_are_shown_exactly_as_registered(
@@ -230,6 +331,122 @@ def test_inspecting_one_application(config: Config) -> None:
     assert report["permissions"]["requested"][0]["delegated"] == ["User.Read"]
     assert report["credentials"]
     assert report["portal"]["registration"].startswith("https://portal.azure.com")
+
+
+@responses.activate
+def test_inspecting_reads_consent_rather_than_who_is_assigned(
+    config: Config,
+) -> None:
+    """The two app role collections are different things and were confused.
+
+    appRoleAssignedTo lists who may use the application. appRoleAssignments
+    lists the application permissions the application holds. Reading the first
+    where the second was meant reported the wrong objects as granted
+    permissions and left delegated consent empty, so both are asserted here.
+    """
+    register(
+        grants=[
+            {
+                "clientId": "sp-1",
+                "resourceId": GRAPH_APP,
+                "consentType": "AllPrincipals",
+                "principalId": None,
+                "scope": "User.Read",
+            }
+        ],
+        held_roles=[
+            {
+                "appRoleId": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+                "resourceId": GRAPH_APP,
+                "resourceDisplayName": "Microsoft Graph",
+                "principalDisplayName": "Confidential web application",
+            }
+        ],
+        assigned_to=[
+            {
+                "principalId": "group-1",
+                "principalDisplayName": "Platform engineers",
+                "principalType": "Group",
+                "appRoleId": "00000000-0000-0000-0000-000000000000",
+            }
+        ],
+    )
+    report = inspect(build_session(config), config, target="Confidential web")
+    consent = report["permissions"]["consent"]
+    assert consent["granted_delegated"] == ["User.Read"]
+    assert consent["granted_application"] == ["Application.Read.All"]
+    assert consent["admin_consent_complete"] is True
+    assert consent["without_admin_consent"] == []
+    # The group is an assignment, not a permission. It must not appear as one.
+    assert "Platform engineers" not in str(consent["granted"])
+    assert report["access"]["security_groups"][0]["principal_display_name"] == (
+        "Platform engineers"
+    )
+
+
+@responses.activate
+def test_inspecting_names_the_permission_nobody_consented_to(
+    config: Config,
+) -> None:
+    """A missing admin consent must be readable off the output, not inferred."""
+    register()
+    report = inspect(build_session(config), config, target="Confidential web")
+    consent = report["permissions"]["consent"]
+    assert consent["admin_consent_complete"] is False
+    assert [row["permission"] for row in consent["without_admin_consent"]] == [
+        "Application.Read.All"
+    ]
+    assert "Application.Read.All" in consent["admin_consent_note"]
+    assert "refused" in consent["admin_consent_note"]
+
+
+@responses.activate
+def test_inspecting_tells_a_personal_consent_from_a_tenant_one(
+    config: Config,
+) -> None:
+    """One person consenting for themselves is not consent for the tenant."""
+    register(
+        grants=[
+            {
+                "clientId": "sp-1",
+                "resourceId": GRAPH_APP,
+                "consentType": "Principal",
+                "principalId": "person-1",
+                "scope": "User.Read",
+            }
+        ]
+    )
+    report = inspect(build_session(config), config, target="Confidential web")
+    consent = report["permissions"]["consent"]
+    assert consent["granted_delegated"] == ["User.Read"]
+    assert consent["user_consented_only"][0]["principal_id"] == "person-1"
+    assert "individual rather than for the tenant" in consent["admin_consent_note"]
+
+
+@responses.activate
+def test_inspecting_shows_the_groups_an_application_belongs_to(
+    config: Config,
+) -> None:
+    """Access held through a group is recorded nowhere on the application."""
+    register(
+        member_of=[
+            {
+                "@odata.type": "#microsoft.graph.group",
+                "id": "group-9",
+                "displayName": "Log readers",
+                "securityEnabled": True,
+            },
+            {
+                "@odata.type": "#microsoft.graph.directoryRole",
+                "id": "role-9",
+                "displayName": "Global Reader",
+            },
+        ]
+    )
+    report = inspect(build_session(config), config, target="Confidential web")
+    member_of = report["access"]["member_of"]
+    assert member_of["security_groups"][0]["display_name"] == "Log readers"
+    assert member_of["directory_roles"][0]["display_name"] == "Global Reader"
 
 
 @responses.activate
@@ -320,10 +537,24 @@ def test_the_chooser_asks_for_only_the_fields_it_shows(config: Config) -> None:
 
 @responses.activate
 def test_inspecting_one_application_is_a_handful_of_calls(config: Config) -> None:
-    """Two to find it, then one each for the things that need their own call."""
+    """Two to find it, then one each for the things that need their own call.
+
+    The ceiling is a constant rather than a function of how large the tenant
+    is, which is the property that matters: nothing here may become a call per
+    object in the directory.
+    """
     register()
     inspect(build_session(config), config, target="Confidential web")
-    assert len(responses.calls) <= 8, [call.request.url for call in responses.calls]
+    assert len(responses.calls) <= 12, [call.request.url for call in responses.calls]
+
+
+@responses.activate
+def test_inspecting_reads_no_object_twice(config: Config) -> None:
+    """The application used to be fetched once to project and once again whole."""
+    register()
+    inspect(build_session(config), config, target="Confidential web")
+    urls = [call.request.url or "" for call in responses.calls]
+    assert len(urls) == len(set(urls)), sorted(urls)
 
 
 @responses.activate

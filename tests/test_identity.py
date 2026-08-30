@@ -10,11 +10,10 @@ import responses
 from entrascope.config import Config
 from entrascope.http import build_session
 from entrascope.identity import (
-    GROUP_TYPE,
-    NO_APP_ROLE,
-    ROLE_TYPE,
-    UNIT_TYPE,
+    ROLE_KIND,
+    UNIT_KIND,
     conditional_access,
+    group_details,
     membership,
     reachable_tenants,
     safely,
@@ -24,6 +23,15 @@ from entrascope.identity import (
     whoami,
 )
 from entrascope.models import ApiCallError, ApiError, AuthContext
+
+#: The OData types Microsoft Graph reports for each kind of membership, and the
+#: null app role identifier. Both live in config/fields.yaml; they are repeated
+#: here so the fixtures look like what Graph actually sends.
+GROUP_TYPE = "#microsoft.graph.group"
+ROLE_TYPE = "#microsoft.graph.directoryRole"
+UNIT_TYPE = "#microsoft.graph.administrativeUnit"
+NO_APP_ROLE = "00000000-0000-0000-0000-000000000000"
+GROUP_KIND = "group"
 
 ROOT = "https://graph.microsoft.com/v1.0"
 ARM = "https://management.azure.com/tenants"
@@ -101,17 +109,49 @@ def test_safely_records_a_refusal_rather_than_failing() -> None:
     assert len(notes) == 1
 
 
-def test_membership_separates_the_kinds() -> None:
+def test_membership_separates_the_kinds(config: Config) -> None:
     """Roles, groups and administrative units arrive from one call together."""
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"@odata.type": ROLE_TYPE, "displayName": "Global Reader"},
         {"@odata.type": GROUP_TYPE, "displayName": "Engineers"},
         {"@odata.type": UNIT_TYPE, "displayName": "Northern region"},
         {"@odata.type": GROUP_TYPE, "id": "no-name"},
     ]
-    assert membership(rows, ROLE_TYPE) == ["Global Reader"]
-    assert membership(rows, UNIT_TYPE) == ["Northern region"]
-    assert membership(rows, GROUP_TYPE) == ["Engineers", "no-name"]
+    assert membership(rows, ROLE_KIND, config) == ["Global Reader"]
+    assert membership(rows, UNIT_KIND, config) == ["Northern region"]
+    assert membership(rows, GROUP_KIND, config) == ["Engineers", "no-name"]
+
+
+def test_security_groups_are_named_rather_than_counted(config: Config) -> None:
+    """A count of groups tells nobody which group carries the access."""
+    rows: list[dict[str, Any]] = [
+        {
+            "@odata.type": GROUP_TYPE,
+            "id": "group-1",
+            "displayName": "Platform engineers",
+            "securityEnabled": True,
+        },
+        {
+            "@odata.type": GROUP_TYPE,
+            "id": "group-2",
+            "displayName": "Everyone",
+            "securityEnabled": False,
+        },
+        {
+            "@odata.type": GROUP_TYPE,
+            "id": "group-3",
+            "displayName": "Joiners",
+            "securityEnabled": True,
+            "membershipRule": 'user.department -eq "Platform"',
+        },
+    ]
+    groups = group_details(rows, config)
+    assert [item["display_name"] for item in groups] == [
+        "Platform engineers",
+        "Joiners",
+    ]
+    assert groups[0]["dynamic"] is False
+    assert groups[1]["dynamic"] is True
 
 
 @responses.activate
