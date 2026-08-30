@@ -13,14 +13,17 @@ from datetime import UTC, datetime
 from typing import Any
 
 from entrascope.config import Config
-from entrascope.graph import fan_out_objects, get_collection
+from entrascope.graph import fan_out_objects, get_collection, odata_literal
 from entrascope.http import Session
 from entrascope.logger import get_logger
 from entrascope.models import (
+    ApiCallError,
     ApplicationSummary,
     ApplicationType,
+    AppRoleAssignment,
     CredentialState,
     CredentialSummary,
+    DirectoryMembership,
     FederatedCredential,
     PermissionGrant,
     PermissionRequest,
@@ -31,14 +34,16 @@ from entrascope.models import (
 
 log = get_logger(__name__)
 
-#: Graph reports a delegated permission as Scope and an application permission
-#: as Role inside requiredResourceAccess.
-DELEGATED_MARKER = "Scope"
-APPLICATION_MARKER = "Role"
-
 
 def pluck(payload: Mapping[str, Any], path: str) -> Any:
-    """Return a value from a payload by dotted path, or None if absent."""
+    """Return a value from a payload by dotted path, or None if absent.
+
+    A key present verbatim wins over walking the path, because Microsoft Graph
+    annotates a polymorphic collection with keys such as ``@odata.type`` that
+    hold a dot and are not paths at all.
+    """
+    if path in payload:
+        return payload[path]
     current: Any = payload
     for part in path.split("."):
         if not isinstance(current, Mapping):
@@ -147,6 +152,7 @@ def project_requested_permissions(
 ) -> tuple[PermissionRequest, ...]:
     """Project requiredResourceAccess into one entry per resource."""
     mapping = config.fields.application
+    markers = config.fields.classification.resource_access_types
     requested = pluck(payload, mapping["requested_permissions"]) or []
     results: list[PermissionRequest] = []
     for resource in requested:
@@ -156,12 +162,12 @@ def project_requested_permissions(
         delegated = tuple(
             text(item.get("id"))
             for item in access
-            if isinstance(item, Mapping) and item.get("type") == DELEGATED_MARKER
+            if isinstance(item, Mapping) and item.get("type") == markers["delegated"]
         )
         application = tuple(
             text(item.get("id"))
             for item in access
-            if isinstance(item, Mapping) and item.get("type") == APPLICATION_MARKER
+            if isinstance(item, Mapping) and item.get("type") == markers["application"]
         )
         results.append(
             PermissionRequest(
@@ -354,35 +360,172 @@ def project_saml(
 def project_granted_permissions(
     grants: Sequence[Mapping[str, Any]],
     assignments: Sequence[Mapping[str, Any]],
+    config: Config,
 ) -> tuple[PermissionGrant, ...]:
     """Project consent into the permissions actually granted.
 
-    Delegated permissions come from the OAuth2 permission grants and are a
-    space separated scope string. Application permissions come from the app
-    role assignments.
+    Delegated permissions come from the OAuth2 permission grants, where the
+    scope is a space separated string and the consent type says whether an
+    administrator recorded it for the tenant or one person recorded it for
+    themselves. Application permissions come from the app role assignments the
+    enterprise application holds against a resource, and there is no such thing
+    as one of those without admin consent.
     """
+    grant_fields = config.fields.oauth2_permission_grant
+    role_fields = config.fields.app_role_assignment
+    tenant_wide = config.fields.classification.consent_types["tenant_wide"]
     delegated = tuple(
         PermissionGrant(
-            resource_app_id=text(grant.get("resourceId")),
+            resource_app_id=text(pluck(grant, grant_fields["resource_id"])),
             kind="delegated",
             value=scope,
-            principal=text(grant.get("principalId")) or "all users",
+            principal=(text(pluck(grant, grant_fields["principal_id"])) or "all users"),
+            consent_type=text(pluck(grant, grant_fields["consent_type"])),
+            principal_id=text(pluck(grant, grant_fields["principal_id"])),
+            admin_consent_recorded=(
+                text(pluck(grant, grant_fields["consent_type"])) == tenant_wide
+            ),
         )
         for grant in grants
         if isinstance(grant, Mapping)
-        for scope in text(grant.get("scope")).split()
+        for scope in text(pluck(grant, grant_fields["scope"])).split()
     )
     application = tuple(
         PermissionGrant(
             resource_app_id=text(assignment.get("resourceId")),
             kind="application",
-            value=text(assignment.get("appRoleId")),
-            principal=text(assignment.get("principalDisplayName")),
+            value=text(pluck(assignment, role_fields["app_role_id"])),
+            principal=text(pluck(assignment, role_fields["principal_display_name"])),
+            resource_display_name=text(
+                pluck(assignment, role_fields["resource_display_name"])
+            ),
+            # An application permission cannot be granted any other way, so
+            # holding one is itself the record that an administrator consented.
+            admin_consent_required=True,
+            admin_consent_recorded=True,
         )
         for assignment in assignments
         if isinstance(assignment, Mapping)
     )
     return delegated + application
+
+
+def project_app_role_assignments(
+    payloads: Sequence[Mapping[str, Any]], config: Config
+) -> tuple[AppRoleAssignment, ...]:
+    """Project who has been assigned to an enterprise application.
+
+    A principal here is a person, a security group or another application. The
+    null app role identifier means the assignment carries access and no role,
+    which is what assigning a group to an application without roles produces,
+    so it is said in words rather than left as a row of zeroes.
+    """
+    mapping = config.fields.app_role_assignment
+    rules = config.fields.classification
+    empty = rules.default_access_app_role_id
+    return tuple(
+        AppRoleAssignment(
+            principal_id=text(pluck(item, mapping["principal_id"])),
+            principal_display_name=text(pluck(item, mapping["principal_display_name"])),
+            principal_type=text(pluck(item, mapping["principal_type"])),
+            app_role_id=text(pluck(item, mapping["app_role_id"])),
+            meaning=(
+                "access to the application, carrying no role"
+                if text(pluck(item, mapping["app_role_id"])) in ("", empty)
+                else "an application role"
+            ),
+            resource_display_name=text(pluck(item, mapping["resource_display_name"])),
+            created=text(pluck(item, mapping["created"])),
+        )
+        for item in payloads
+        if isinstance(item, Mapping)
+    )
+
+
+def named_app_role_assignments(
+    assignments: Sequence[AppRoleAssignment], names: Mapping[str, str]
+) -> tuple[AppRoleAssignment, ...]:
+    """Fill in the name of each assigned role, where the resource defines one."""
+    return tuple(
+        item._replace(app_role_value=names.get(item.app_role_id, ""))
+        for item in assignments
+    )
+
+
+def project_memberships(
+    payloads: Sequence[Mapping[str, Any]], config: Config
+) -> tuple[DirectoryMembership, ...]:
+    """Project the groups, roles and units an object belongs to.
+
+    A memberOf collection is polymorphic, so what each row is comes from its
+    OData type. A row of an unrecognised type is kept and named by its type
+    rather than dropped, because silently losing a membership is worse than
+    showing one this tool has no word for.
+    """
+    mapping = config.fields.membership
+    kinds = {
+        odata_type: name
+        for name, odata_type in config.fields.classification.membership_types.items()
+    }
+    return tuple(
+        project_membership(item, mapping, kinds)
+        for item in payloads
+        if isinstance(item, Mapping)
+    )
+
+
+def project_membership(
+    item: Mapping[str, Any], mapping: Mapping[str, str], kinds: Mapping[str, str]
+) -> DirectoryMembership:
+    """Project one row of a memberOf collection."""
+    odata_type = text(pluck(item, mapping["odata_type"]))
+    return DirectoryMembership(
+        object_id=text(pluck(item, mapping["object_id"])),
+        display_name=text(pluck(item, mapping["display_name"])),
+        kind=kinds.get(odata_type, odata_type or "unknown"),
+        security_enabled=boolean(pluck(item, mapping["security_enabled"])),
+        mail_enabled=boolean(pluck(item, mapping["mail_enabled"])),
+        membership_rule=text(pluck(item, mapping["membership_rule"])),
+        on_premises_sync_enabled=boolean(
+            pluck(item, mapping["on_premises_sync_enabled"])
+        ),
+        description=text(pluck(item, mapping["description"])),
+    )
+
+
+def boolean(value: Any) -> bool | None:
+    """Return a Graph flag, keeping absence apart from false.
+
+    A group that is not security enabled and a group whose flag was not read
+    are different answers, and reporting both as false would say the first
+    where the second is true.
+    """
+    return None if value is None else bool(value)
+
+
+def security_groups(
+    memberships: Sequence[DirectoryMembership], config: Config
+) -> tuple[DirectoryMembership, ...]:
+    """Return only the security groups out of a set of memberships.
+
+    A distribution list carries no access. Filtering to the groups that do is
+    what makes the answer to "what can this reach through a group" readable. A
+    group whose flag was not read is kept, because leaving out a group that may
+    carry access is the worse of the two mistakes.
+    """
+    wanted = config.fields.classification.access_bearing_membership
+    return tuple(
+        item
+        for item in memberships
+        if item.kind == wanted and item.security_enabled is not False
+    )
+
+
+def memberships_of_kind(
+    memberships: Sequence[DirectoryMembership], kind: str
+) -> tuple[DirectoryMembership, ...]:
+    """Return the memberships of one kind."""
+    return tuple(item for item in memberships if item.kind == kind)
 
 
 def project_service_principal(
@@ -392,9 +535,19 @@ def project_service_principal(
     owners: Sequence[Mapping[str, Any]] = (),
     grants: Sequence[Mapping[str, Any]] = (),
     assignments: Sequence[Mapping[str, Any]] = (),
+    assigned_to: Sequence[Mapping[str, Any]] = (),
+    member_of: Sequence[Mapping[str, Any]] = (),
     now: datetime | None = None,
 ) -> ServicePrincipalSummary:
-    """Project one enterprise application into its immutable summary."""
+    """Project one enterprise application into its immutable summary.
+
+    The two kinds of app role assignment are different things and are read from
+    different endpoints. ``assignments`` are the application permissions this
+    application holds against other resources, from appRoleAssignments.
+    ``assigned_to`` are the people and groups allowed to use this application,
+    from appRoleAssignedTo. Conflating them is the mistake this signature
+    exists to make hard.
+    """
     mapping = config.fields.service_principal
     tags = strings(pluck(payload, mapping["tags"]))
     credentials = project_credentials(payload, config, mapping, now)
@@ -412,12 +565,14 @@ def project_service_principal(
         reply_urls=strings(pluck(payload, mapping["reply_urls"])),
         service_principal_names=strings(pluck(payload, mapping["identifier_uris"])),
         credentials=credentials,
-        granted_permissions=project_granted_permissions(grants, assignments),
+        granted_permissions=project_granted_permissions(grants, assignments, config),
         saml=project_saml(payload, config, credentials, tags),
         owners=owner_names(owners),
         tags=tags,
         created=text(pluck(payload, mapping["created"])),
         owner_tenant_id=text(pluck(payload, mapping["app_owner_organization_id"])),
+        assignments=project_app_role_assignments(assigned_to, config),
+        member_of=project_memberships(member_of, config),
     )
 
 
@@ -491,6 +646,41 @@ def discover_applications(
     )
 
 
+def delegated_grants_by_client(
+    session: Session, config: Config
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Read every delegated permission grant in the tenant, keyed by client.
+
+    One paged call answers this for the whole directory. Asking per application
+    would be a call each, and consent is the thing most often missing, so it is
+    read for every application rather than only for the one being looked at.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    field = config.fields.oauth2_permission_grant["client_id"]
+    for row in get_collection(session, config, "oauth2_permission_grants"):
+        grouped.setdefault(text(pluck(row, field)), []).append(row)
+    return {key: tuple(value) for key, value in grouped.items()}
+
+
+def grants_for_client(
+    session: Session, config: Config, object_id: str
+) -> tuple[dict[str, Any], ...]:
+    """Read the delegated permission grants of one enterprise application.
+
+    Filtered at Graph rather than read whole and sifted here, because a tenant
+    holds a grant for every application anybody has ever consented to.
+    """
+    if not object_id:
+        return ()
+    field = config.fields.oauth2_permission_grant["client_id"]
+    return get_collection(
+        session,
+        config,
+        "oauth2_permission_grants",
+        filter_expression=f"{field} eq '{odata_literal(object_id)}'",
+    )
+
+
 def discover_service_principals(
     session: Session,
     config: Config,
@@ -499,9 +689,15 @@ def discover_service_principals(
     filter_expression: str | None = None,
     with_details: bool = True,
     with_assignments: bool = True,
+    with_consent: bool = True,
     limit: int | None = None,
 ) -> tuple[ServicePrincipalSummary, ...]:
-    """Enumerate enterprise applications and project every one."""
+    """Enumerate enterprise applications and project every one.
+
+    Application permissions are read from appRoleAssignments, which is what the
+    application holds. Delegated consent is read once for the whole tenant and
+    matched up here, because that is one call rather than one per application.
+    """
     payloads = get_collection(
         session,
         config,
@@ -515,13 +711,27 @@ def discover_service_principals(
     owners = expanded(payloads, "owners")
     assignments: tuple[tuple[dict[str, Any], ...], ...] = ((),) * len(payloads)
     if with_details and with_assignments and object_ids and token is not None:
-        assignments = fan_out_objects(object_ids, config, "app_role_assignments", token)
+        assignments = fan_out_objects(object_ids, config, "granted_app_roles", token)
+    grants: dict[str, tuple[dict[str, Any], ...]] = {}
+    # Consent is read whether or not the per object details are wanted, because
+    # it is one paged call for the whole tenant rather than a call each, and it
+    # is the thing most often missing.
+    if with_consent and object_ids:
+        try:
+            grants = delegated_grants_by_client(session, config)
+        except ApiCallError as error:
+            # Consent is worth having and is not worth failing a listing for.
+            log.warning("could not read delegated consent: %s", error.error.summary())
     log.info("discovered %s enterprise applications", len(payloads))
     return tuple(
         project_service_principal(
-            payload, config, owners=owner_rows, assignments=assignment_rows
+            payload,
+            config,
+            owners=owner_rows,
+            grants=grants.get(object_id, ()),
+            assignments=assignment_rows,
         )
-        for payload, owner_rows, assignment_rows in zip(
-            payloads, owners, assignments, strict=True
+        for payload, object_id, owner_rows, assignment_rows in zip(
+            payloads, object_ids, owners, assignments, strict=True
         )
     )

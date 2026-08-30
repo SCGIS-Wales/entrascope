@@ -48,6 +48,40 @@ service_principal:
   account_enabled: accountEnabled
   app_owner_organization_id: appOwnerOrganizationId
 
+# An app role assignment, which is one principal granted access to an
+# enterprise application. Graph reports the same shape whether the principal is
+# a user, a group or another service principal.
+app_role_assignment:
+  assignment_id: id
+  principal_id: principalId
+  principal_display_name: principalDisplayName
+  principal_type: principalType
+  app_role_id: appRoleId
+  resource_display_name: resourceDisplayName
+  created: createdDateTime
+
+# A delegated permission grant, which is what recording consent produces.
+oauth2_permission_grant:
+  grant_id: id
+  client_id: clientId
+  resource_id: resourceId
+  consent_type: consentType
+  principal_id: principalId
+  scope: scope
+
+# A directory object an application or a person belongs to. A security group is
+# the one that carries access, so its two flags are projected as well.
+membership:
+  object_id: id
+  display_name: displayName
+  odata_type: "@odata.type"
+  description: description
+  security_enabled: securityEnabled
+  mail_enabled: mailEnabled
+  membership_rule: membershipRule
+  role_template_id: roleTemplateId
+  on_premises_sync_enabled: onPremisesSyncEnabled
+
 credential:
   key_id: keyId
   display_name: displayName
@@ -219,6 +253,38 @@ findings:
     remediation: >
       Enable the service principal, or remove the application if it is retired.
     docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/disable-user-sign-in-portal
+  missing_admin_consent:
+    severity: error
+    detail: >
+      The application registration asks for permissions that only an
+      administrator may consent to, and no consent has been recorded for them.
+      Every call that needs one of them is refused, whatever else is configured.
+    remediation: >
+      Record admin consent for the permissions named, with az ad app permission
+      admin-consent, or from Enterprise applications, Permissions, Grant admin
+      consent in the portal.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent
+  user_consent_only:
+    severity: warning
+    detail: >
+      A delegated permission was consented by one person for themselves rather
+      than for the tenant. It works for them and is refused for everybody else,
+      which is what a failure that only one engineer cannot reproduce looks
+      like.
+    remediation: >
+      Record admin consent for the tenant if everyone should have the
+      permission, or leave it as it is if consenting individually is deliberate.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-user-consent
+  assignment_without_group:
+    severity: note
+    detail: >
+      The enterprise application requires assignment and every assignment is to
+      an individual person rather than to a group, so access has to be granted
+      and revoked one person at a time.
+    remediation: >
+      Assign a security group instead, so that joining and leaving the group
+      grants and revokes access.
+    docs_url: https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal
   token_version_one:
     severity: note
     detail: >
@@ -231,6 +297,42 @@ findings:
 classification:
   # Values Microsoft Graph reports, used to classify an application or an
   # enterprise application. Nothing here is hardcoded in src.
+
+  # How requiredResourceAccess names the two kinds of permission. A Scope is a
+  # delegated permission and a Role is an application permission.
+  resource_access_types:
+    delegated: Scope
+    application: Role
+  # How a delegated permission grant records who consented. AllPrincipals is
+  # the whole tenant, which only an administrator can record. Principal is one
+  # person consenting for themselves.
+  consent_types:
+    tenant_wide: AllPrincipals
+    single_user: Principal
+  # The value oauth2PermissionScopes carries when only an administrator may
+  # consent to that scope. Anything else the signed in person may consent to
+  # for themselves.
+  admin_consent_scope_type: Admin
+  # What Microsoft Graph calls a principal in an app role assignment.
+  principal_types:
+    user: User
+    group: Group
+    service_principal: ServicePrincipal
+  # The object types a memberOf call returns. The key on the left is what this
+  # tool calls each of them and appears in the output; the value is the OData
+  # type Microsoft Graph reports.
+  membership_types:
+    group: "#microsoft.graph.group"
+    directory-role: "#microsoft.graph.directoryRole"
+    administrative-unit: "#microsoft.graph.administrativeUnit"
+  # Which of those carries access, and so which one is worth pulling out of a
+  # membership list on its own.
+  access_bearing_membership: group
+  # An app role assignment carrying this identifier grants no permission at
+  # all. It records that the principal may use the application, nothing more,
+  # which is how a user or a group is assigned to an enterprise application
+  # that exposes no roles of its own.
+  default_access_app_role_id: 00000000-0000-0000-0000-000000000000
   service_principal_types:
     managed_identity: ManagedIdentity
     application: Application

@@ -256,7 +256,13 @@ def test_first_party_applications_are_recognised(
     )
 
 
-def register_graph(*, audit: bool = True, details: bool = True) -> None:
+def register_graph(
+    *,
+    audit: bool = True,
+    details: bool = True,
+    grants: list[dict[str, Any]] | None = None,
+    resources: dict[str, Any] | None = None,
+) -> None:
     """Register the Graph responses an investigation makes.
 
     Discovery fetches owners, federated credentials and role assignments one
@@ -288,6 +294,35 @@ def register_graph(*, audit: bool = True, details: bool = True) -> None:
             json={"error": {"code": "Authorization_RequestDenied", "message": "no"}},
             status=403,
         )
+    responses.add(
+        responses.GET,
+        f"{ROOT}/oauth2PermissionGrants",
+        json={"value": grants or []},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals\(appId="),
+        json=resources
+        if resources is not None
+        else {
+            "displayName": "Microsoft Graph",
+            "oauth2PermissionScopes": [
+                {
+                    "id": "eeee1111-1111-1111-1111-111111111111",
+                    "value": "User.Read",
+                    "type": "User",
+                }
+            ],
+            "appRoles": [
+                {
+                    "id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+                    "value": "Application.Read.All",
+                }
+            ],
+        },
+        status=200,
+    )
     responses.add(
         responses.GET,
         f"{ROOT}/auditLogs/signIns",
@@ -327,6 +362,44 @@ def register_graph(*, audit: bool = True, details: bool = True) -> None:
             json={"value": []},
             status=200,
         )
+
+
+@responses.activate
+def test_a_permission_never_admin_consented_becomes_an_error(
+    config: Config,
+) -> None:
+    """The commonest cause of a permission failure should be the loudest finding."""
+    register_graph()
+    result = investigate(build_session(config), config, limit=10)
+    consent = [item for item in result.findings if item.area == "consent"]
+    assert consent, [item.area for item in result.findings]
+    assert consent[0].severity == "error"
+    assert "Application.Read.All" in consent[0].detail
+    assert "admin-consent" in consent[0].remediation
+
+
+@responses.activate
+def test_a_personal_consent_is_reported_separately(config: Config) -> None:
+    """It works for one person, so it is a warning rather than a plain refusal."""
+    register_graph(
+        grants=[
+            {
+                "clientId": "66666666-6666-6666-6666-666666666666",
+                "resourceId": "00000003-0000-0000-c000-000000000000",
+                "consentType": "Principal",
+                "principalId": "person-1",
+                "scope": "User.Read",
+            }
+        ]
+    )
+    result = investigate(build_session(config), config, limit=10)
+    personal = [
+        item
+        for item in result.findings
+        if item.area == "consent" and item.severity == "warning"
+    ]
+    assert personal
+    assert "User.Read" in personal[0].detail
 
 
 @responses.activate

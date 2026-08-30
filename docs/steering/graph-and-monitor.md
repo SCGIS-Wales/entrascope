@@ -13,8 +13,8 @@ projects the attributes that explain a failure:
   public client platforms, because AADSTS50011 compares byte for byte and is
   sensitive to case and to a trailing slash.
 - **Permissions**, both sides of the relationship. Requested, from
-  `requiredResourceAccess`. Granted, from the application role assignments and
-  the OAuth2 permission grants on the service principal. The difference between
+  `requiredResourceAccess`. Granted, from `appRoleAssignments` and
+  `oauth2PermissionGrants` on the service principal. The difference between
   requested and granted is where missing admin consent shows up.
 - **Owners**, because ownership determines what
   `Application.ReadWrite.OwnedBy` can and cannot do.
@@ -28,6 +28,44 @@ projects the attributes that explain a failure:
 - **Assignment requirement**: `appRoleAssignmentRequired` on the service
   principal, which explains why a correctly consented application still refuses
   a user.
+- **Assignments**, from `appRoleAssignedTo` on the service principal: the
+  users, security groups and applications allowed to use it, each with the role
+  it holds. A group is the usual answer, and where assignment is required an
+  identity that is not here is refused however much has been consented.
+- **Memberships**, from `memberOf` on the service principal: the groups,
+  directory roles and administrative units the application's own identity
+  belongs to. Access held through a group is recorded on the group and nowhere
+  on the application.
+
+## The four app role and consent collections
+
+Four Graph collections carry authorisation and three of the four hang off the
+same object, which makes them easy to confuse. They are not interchangeable and
+reading the wrong one reports the wrong objects entirely.
+
+| Collection | Path | What it holds |
+| --- | --- | --- |
+| Application permissions held | `/servicePrincipals/{id}/appRoleAssignments` | What this application may do to other resources |
+| Assignments to this application | `/servicePrincipals/{id}/appRoleAssignedTo` | Which users, groups and applications may use this one |
+| Delegated consent | `/oauth2PermissionGrants?$filter=clientId eq '{id}'` | What was consented on a signed in person's behalf, and by whom |
+| Memberships | `/servicePrincipals/{id}/memberOf` | The groups and roles this application's identity belongs to |
+
+Delegated consent is the one that decides whether a permission works for
+everybody or for one person. `consentType` is `AllPrincipals` where an
+administrator recorded it for the tenant and `Principal` where one person
+recorded it for themselves, and in the second case `principalId` names them.
+An application permission has no such distinction: there is no way to hold one
+without an administrator having consented, so holding one is itself the record.
+
+Whether a delegated scope needs an administrator at all is decided by the
+resource, not by the client: `oauth2PermissionScopes[].type` is `Admin` where
+only an administrator may consent and `User` where the signed in person may
+consent for themselves. Reporting a `User` scope as an admin consent problem
+sends the engineer to the wrong place, so the two are kept apart.
+
+A tenant wide sweep reads delegated consent once for the whole directory and
+matches it up by `clientId`, because one paged call answers for every
+application and asking per application is a call each.
 
 ## Application types to cover
 

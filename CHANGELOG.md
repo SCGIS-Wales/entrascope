@@ -7,6 +7,37 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- Missing admin consent is reported rather than left to be inferred. Every
+  permission a registration asks for is named, and carries whether only an
+  administrator may consent to it and whether anybody did.
+  `permissions.consent.without_admin_consent` names the ones refused for
+  everybody, `user_consented_only` names the delegated permissions one person
+  consented to for themselves alone, and `admin_consent_complete` says in one
+  value whether anything is outstanding.
+- An investigation reports the same two conditions as findings: an error for a
+  permission needing admin consent and lacking it, a warning for one consented
+  by an individual rather than for the tenant. A tenant wide sweep now names
+  every application waiting on consent.
+- `inspect` reports who may use an application, under `access`: the security
+  groups, users and applications assigned to the enterprise application, each
+  with the role it was assigned. The groups were previously invisible.
+- `inspect` reports the groups, directory roles and administrative units the
+  application's own identity belongs to, under `access.member_of`, with a
+  dynamic group marked as such. Access held through a group is recorded on the
+  group and nowhere on the application.
+- `whoami` names the security groups an identity belongs to rather than only
+  counting them.
+- A note where an enterprise application requires assignment and every
+  assignment is to a person rather than to a group, because access then has to
+  be granted and revoked one person at a time.
+
+### Changed
+- The Graph vocabulary that was hardcoded in `src` moved into
+  `config/fields.yaml`, as hard rule 3 requires: the `Scope` and `Role` markers,
+  the `AllPrincipals` consent type, the `memberOf` OData types and the null app
+  role identifier.
+
 ### Security
 - A known client secret is now redacted as a literal as well as by pattern. The
   machinery for it was written and never wired up, so a secret echoed back by
@@ -29,6 +60,20 @@ versioning.
   than relying on the handler the view displaces.
 
 ### Fixed
+- Granted application permissions were read from the wrong endpoint. `inspect`
+  and the tenant sweep both read `appRoleAssignedTo`, which lists the users and
+  groups assigned to an enterprise application, and reported those objects as
+  the application permissions the application holds. What it holds is
+  `appRoleAssignments`, and that is what is read now.
+- Delegated consent was never read at all. The `oauth2PermissionGrants`
+  endpoint was configured and called from nowhere, so the granted delegated
+  permissions were always empty and the admin consent answer was decided
+  without them.
+- An inspection read the application registration twice, once to project it and
+  once again whole. It is read once.
+- `pluck` split `@odata.type` as though the dot were a path separator, so a key
+  Microsoft Graph annotates a polymorphic collection with could not be mapped
+  in configuration at all. A key present verbatim now wins over walking a path.
 - A log record arriving from the polling thread could be dropped while the
   drawing thread emptied the queue, because reading a list and clearing it is
   two steps. Taking from a deque is one.

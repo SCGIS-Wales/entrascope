@@ -10,7 +10,8 @@ everything and merged.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from entrascope.config import Config, FindingRule
 from entrascope.discovery import (
@@ -20,6 +21,7 @@ from entrascope.discovery import (
 )
 from entrascope.errors import explain
 from entrascope.http import Session, refusal_reported_by_caller
+from entrascope.inspect import consent_state, read_permission_catalogue
 from entrascope.logger import get_logger
 from entrascope.logs import query_audit_graph, query_sign_ins_graph, sign_in_kinds
 from entrascope.models import (
@@ -218,7 +220,87 @@ def principal_findings(
                 docs_url=rules.assignment_required.docs_url,
             )
         )
+        if principal.assignments and not any(
+            item.principal_type == config.fields.classification.principal_types["group"]
+            for item in principal.assignments
+        ):
+            findings.append(
+                Finding(
+                    severity=severity_of(rules.assignment_without_group),
+                    area="assignment",
+                    subject=principal.display_name,
+                    identifier=principal.app_id,
+                    detail=(
+                        f"{rules.assignment_without_group.detail.strip()} "
+                        f"There are {len(principal.assignments)} assignments and "
+                        "none of them is to a group."
+                    ),
+                    remediation=rules.assignment_without_group.remediation.strip(),
+                    docs_url=rules.assignment_without_group.docs_url,
+                    occurrences=len(principal.assignments),
+                )
+            )
+    return tuple(findings) + consent_findings(principal, config)
+
+
+def consent_findings(
+    principal: ServicePrincipalSummary, config: Config
+) -> tuple[Finding, ...]:
+    """Report consent that is missing or narrower than it looks.
+
+    A permission consented by one person for themselves is the failure nobody
+    can reproduce: it works for whoever consented and is refused for everybody
+    else, and nothing on the application says so.
+    """
+    rules = config.fields.findings
+    findings: list[Finding] = []
+    user_only = tuple(
+        item
+        for item in principal.granted_permissions
+        if item.kind == "delegated" and not item.admin_consent_recorded
+    )
+    if user_only:
+        named = ", ".join(sorted({item.value for item in user_only}))
+        findings.append(
+            Finding(
+                severity=severity_of(rules.user_consent_only),
+                area="consent",
+                subject=principal.display_name,
+                identifier=principal.app_id,
+                detail=f"{rules.user_consent_only.detail.strip()} {named}",
+                remediation=rules.user_consent_only.remediation.strip(),
+                docs_url=rules.user_consent_only.docs_url,
+                occurrences=len(user_only),
+            )
+        )
     return tuple(findings)
+
+
+def missing_consent_finding(
+    subject: str,
+    identifier: str,
+    outstanding: Sequence[Mapping[str, Any]],
+    config: Config,
+) -> Finding | None:
+    """Report the permissions asked for that no administrator ever consented to.
+
+    Taken from the consent state the inspection works out, so the command line
+    and an investigation say the same thing about the same application.
+    """
+    if not outstanding:
+        return None
+    rules = config.fields.findings
+    named = ", ".join(str(row.get("permission", "")) for row in outstanding)
+    return Finding(
+        severity=severity_of(rules.missing_admin_consent),
+        area="consent",
+        subject=subject,
+        identifier=identifier,
+        detail=f"{rules.missing_admin_consent.detail.strip()} {named}",
+        remediation=rules.missing_admin_consent.remediation.strip(),
+        docs_url=rules.missing_admin_consent.docs_url,
+        occurrences=len(outstanding),
+    )
 
 
 def audit_findings(events: Sequence[AuditEvent], config: Config) -> tuple[Finding, ...]:
@@ -373,6 +455,41 @@ def gather_logs(
     return audit, tuple(sign_ins), tuple(notes)
 
 
+def consent_gap_findings(
+    session: Session,
+    config: Config,
+    applications: Sequence[ApplicationSummary],
+    principals: Sequence[ServicePrincipalSummary],
+) -> tuple[Finding, ...]:
+    """Report every application asking for a permission nobody consented to.
+
+    The resources are read once for the whole investigation rather than once
+    per application, because almost every application in a tenant asks for
+    something of the same handful of resources, Microsoft Graph above all.
+    """
+    by_app_id = {item.app_id: item for item in principals if item.app_id}
+    resources = [
+        request.resource_app_id
+        for application in applications
+        for request in application.requested_permissions
+    ]
+    if not resources:
+        return ()
+    catalogue = read_permission_catalogue(session, config, app_ids=resources)
+    findings: list[Finding] = []
+    for application in applications:
+        state = consent_state(application, by_app_id.get(application.app_id), catalogue)
+        finding = missing_consent_finding(
+            application.display_name,
+            application.app_id,
+            state["without_admin_consent"],
+            config,
+        )
+        if finding is not None:
+            findings.append(finding)
+    return tuple(findings)
+
+
 def investigate(
     session: Session,
     config: Config,
@@ -463,6 +580,7 @@ def investigate(
                 for principal in principals
                 for finding in principal_findings(principal, config)
             ],
+            *consent_gap_findings(session, config, applications, principals),
             *audit_findings(audit, config),
             *sign_in_findings(sign_ins, config),
         ]

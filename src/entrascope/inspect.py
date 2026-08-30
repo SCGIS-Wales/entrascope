@@ -19,11 +19,15 @@ from entrascope.discovery import (
     classify_application,
     discover_applications,
     discover_service_principals,
+    grants_for_client,
+    memberships_of_kind,
+    named_app_role_assignments,
     owner_names,
     pluck,
     project_application,
     project_federated_credentials,
     project_service_principal,
+    security_groups,
     strings,
     text,
 )
@@ -33,16 +37,13 @@ from entrascope.logger import get_logger
 from entrascope.models import (
     ApiCallError,
     ApplicationSummary,
+    PermissionGrant,
     ServicePrincipalSummary,
 )
 from entrascope.picker import Choice, Tone
 from entrascope.render import flatten, portal_link, to_payload
 
 log = get_logger(__name__)
-
-#: Graph reports a delegated permission as Scope and an application permission
-#: as Role inside an app role assignment.
-CONSENT_ALL = "AllPrincipals"
 
 
 class Catalogue(NamedTuple):
@@ -290,41 +291,346 @@ def matching(
     return found
 
 
+class PermissionFact(NamedTuple):
+    """What one permission identifier or scope name actually is.
+
+    Resolved from the resource that defines it, because a registration records
+    only an identifier and nobody can read one of those.
+    """
+
+    value: str
+    kind: str
+    #: Whether only an administrator may consent to it. An application
+    #: permission always needs one; a delegated scope needs one when the
+    #: resource says so.
+    admin_consent_required: bool
+    resource: str = ""
+
+
+class PermissionCatalogue(NamedTuple):
+    """Every permission the resources define, keyed both ways.
+
+    A requested permission is recorded as an identifier and a delegated grant
+    is recorded as a scope name, so both have to be resolvable.
+    """
+
+    by_id: dict[str, PermissionFact]
+    by_value: dict[tuple[str, str], PermissionFact]
+    resource_names: dict[str, str]
+    #: Resources that could not be read. A report full of unresolved
+    #: identifiers should say why rather than look like the answer.
+    unresolved: tuple[str, ...] = ()
+
+    def fact_for_id(self, identifier: str) -> PermissionFact | None:
+        """Return what a permission identifier means, if it was resolved."""
+        return self.by_id.get(identifier)
+
+    def fact_for_value(self, resource: str, value: str) -> PermissionFact | None:
+        """Return what a scope name means against one resource."""
+        return self.by_value.get((resource, value))
+
+
+def read_permission_catalogue(
+    session: Session,
+    config: Config,
+    *,
+    app_ids: Sequence[str] = (),
+    object_ids: Sequence[str] = (),
+) -> PermissionCatalogue:
+    """Read the permissions each named resource defines.
+
+    A requested permission carries the resource application id and a granted
+    one carries the resource object id, so a resource is looked up by whichever
+    of the two is to hand and then recorded under both.
+    """
+    scope_type = config.fields.classification.admin_consent_scope_type
+    by_id: dict[str, PermissionFact] = {}
+    by_value: dict[tuple[str, str], PermissionFact] = {}
+    resource_names: dict[str, str] = {}
+    unresolved: list[str] = []
+    wanted = [("app_id", value) for value in dict.fromkeys(app_ids) if value]
+    wanted += [("object_id", value) for value in dict.fromkeys(object_ids) if value]
+    for kind, identifier in wanted:
+        if identifier in resource_names:
+            continue
+        rows = _read_resource(session, config, kind, identifier)
+        if rows is None:
+            unresolved.append(identifier)
+            continue
+        for row in rows:
+            keys = [
+                text(row.get("id")),
+                text(row.get("appId")),
+                identifier,
+            ]
+            name = text(row.get("displayName"))
+            for key in keys:
+                if key:
+                    resource_names[key] = name
+            for scope in row.get("oauth2PermissionScopes") or []:
+                if not isinstance(scope, Mapping):
+                    continue
+                fact = PermissionFact(
+                    value=text(scope.get("value")),
+                    kind="delegated",
+                    admin_consent_required=text(scope.get("type")) == scope_type,
+                    resource=name,
+                )
+                if scope.get("id"):
+                    by_id[text(scope["id"])] = fact
+                for key in keys:
+                    if key and fact.value:
+                        by_value[(key, fact.value)] = fact
+            for role in row.get("appRoles") or []:
+                if not isinstance(role, Mapping):
+                    continue
+                fact = PermissionFact(
+                    value=text(role.get("value")) or text(role.get("displayName")),
+                    kind="application",
+                    # An application permission is never self consented.
+                    admin_consent_required=True,
+                    resource=name,
+                )
+                if role.get("id"):
+                    by_id[text(role["id"])] = fact
+                for key in keys:
+                    if key and fact.value:
+                        by_value[(key, fact.value)] = fact
+    return PermissionCatalogue(
+        by_id=by_id,
+        by_value=by_value,
+        resource_names=resource_names,
+        unresolved=tuple(unresolved),
+    )
+
+
+def _read_resource(
+    session: Session, config: Config, kind: str, identifier: str
+) -> tuple[dict[str, Any], ...] | None:
+    """Read one resource enterprise application, or None when it is refused."""
+    endpoint = (
+        "service_principal_by_app_id" if kind == "app_id" else "service_principal_by_id"
+    )
+    try:
+        if kind == "app_id":
+            return get_collection(
+                session,
+                config,
+                endpoint,
+                path_parameters={"app_id": identifier},
+            )
+        return (
+            get_object(
+                session,
+                config,
+                endpoint,
+                path_parameters={"object_id": identifier},
+            ),
+        )
+    except ApiCallError as error:
+        log.debug("could not resolve %s: %s", identifier, error.error.summary())
+        return None
+
+
+def named_grants(
+    grants: Sequence[PermissionGrant], catalogue: PermissionCatalogue
+) -> tuple[PermissionGrant, ...]:
+    """Fill in the name and the consent requirement of every granted permission.
+
+    An application permission arrives as a bare identifier and a delegated one
+    as a scope name. Both come out of here carrying the name, the resource it
+    belongs to and whether it needed an administrator.
+    """
+    resolved: list[PermissionGrant] = []
+    for grant in grants:
+        fact = (
+            catalogue.fact_for_id(grant.value)
+            if grant.kind == "application"
+            else catalogue.fact_for_value(grant.resource_app_id, grant.value)
+        )
+        resolved.append(
+            grant._replace(
+                value=fact.value if fact and fact.value else grant.value,
+                resource_display_name=(
+                    grant.resource_display_name
+                    or (fact.resource if fact else "")
+                    or catalogue.resource_names.get(grant.resource_app_id, "")
+                ),
+                admin_consent_required=(
+                    grant.admin_consent_required
+                    if grant.admin_consent_required is not None
+                    else (fact.admin_consent_required if fact else None)
+                ),
+            )
+        )
+    return tuple(resolved)
+
+
+def requested_permission_rows(
+    application: ApplicationSummary | None, catalogue: PermissionCatalogue
+) -> list[dict[str, Any]]:
+    """Return every requested permission, named and with its consent need."""
+    if application is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for request in application.requested_permissions:
+        resource = catalogue.resource_names.get(request.resource_app_id, "")
+        for kind, identifiers in (
+            ("delegated", request.delegated),
+            ("application", request.application),
+        ):
+            for identifier in identifiers:
+                fact = catalogue.fact_for_id(identifier)
+                rows.append(
+                    {
+                        "resource_app_id": request.resource_app_id,
+                        "resource": resource,
+                        "kind": kind,
+                        "permission": fact.value if fact else identifier,
+                        "permission_id": identifier,
+                        "admin_consent_required": (
+                            True
+                            if kind == "application"
+                            else None
+                            if fact is None
+                            else fact.admin_consent_required
+                        ),
+                        "resolved": fact is not None,
+                    }
+                )
+    return rows
+
+
+def matched_grant(
+    row: Mapping[str, Any], granted: Sequence[PermissionGrant]
+) -> PermissionGrant | None:
+    """Return the grant that satisfies one requested permission, if any.
+
+    Matched on the permission name rather than on the identifier, because a
+    delegated grant records the name and never the identifier. The resource has
+    to agree too where both sides know it: a request records the resource by
+    its application id and a grant records it by its object id, so the two are
+    compared by the resource name the catalogue resolved for each. Where either
+    is unknown the name alone decides, which is the best that can be done and
+    is what the identifier form of the report shows.
+    """
+    wanted_resource = str(row.get("resource") or "")
+    for grant in granted:
+        if grant.kind != row["kind"]:
+            continue
+        if grant.value not in (row["permission"], row["permission_id"]):
+            continue
+        if (
+            wanted_resource
+            and grant.resource_display_name
+            and grant.resource_display_name != wanted_resource
+        ):
+            continue
+        return grant
+    return None
+
+
 def consent_state(
     application: ApplicationSummary | None,
     principal: ServicePrincipalSummary | None,
+    catalogue: PermissionCatalogue | None = None,
 ) -> dict[str, Any]:
-    """Say what was asked for and what was actually granted.
+    """Say what was asked for, what was granted, and what nobody consented to.
 
     The difference between the two is where missing admin consent shows up, and
-    it is the single most common cause of a permission failure.
+    it is the single most common cause of a permission failure. Three things
+    are reported separately because they fail differently. A permission needing
+    admin consent and not having it is refused for everybody. A delegated
+    permission consented by one person works for them and is refused for
+    everybody else, which is the failure only one engineer cannot reproduce. A
+    permission granted but never asked for is consent nobody has a record of
+    requesting.
     """
-    requested_delegated = sum(
-        len(item.delegated)
-        for item in (application.requested_permissions if application else ())
-    )
-    requested_application = sum(
-        len(item.application)
-        for item in (application.requested_permissions if application else ())
-    )
-    granted = principal.granted_permissions if principal else ()
+    known = catalogue or PermissionCatalogue({}, {}, {})
+    requested = requested_permission_rows(application, known)
+    granted = tuple(principal.granted_permissions) if principal else ()
     granted_delegated = [item for item in granted if item.kind == "delegated"]
     granted_application = [item for item in granted if item.kind == "application"]
-    tenant_wide = [item for item in granted_delegated if item.principal == "all users"]
+    tenant_wide = [item for item in granted_delegated if item.admin_consent_recorded]
+    user_only = [item for item in granted_delegated if not item.admin_consent_recorded]
+
+    outstanding: list[dict[str, Any]] = []
+    for row in requested:
+        grant = matched_grant(row, granted)
+        needs_admin = row["admin_consent_required"]
+        if grant is not None and (grant.admin_consent_recorded or not needs_admin):
+            continue
+        outstanding.append(
+            {
+                **row,
+                "granted": grant is not None,
+                "consent_type": grant.consent_type if grant else "",
+                "why": (
+                    "granted, but consented by one person rather than for the tenant"
+                    if grant is not None
+                    else "no consent of any kind has been recorded"
+                ),
+            }
+        )
+    # Copied rather than shared, because the same object appearing in two
+    # lists is rendered as a YAML anchor and a reference, and nobody reading a
+    # report should have to know what those mean.
+    needing_admin = [dict(row) for row in outstanding if row["admin_consent_required"]]
+
     return {
-        "requested_delegated": requested_delegated,
-        "requested_application": requested_application,
+        "requested_delegated": sum(
+            1 for row in requested if row["kind"] == "delegated"
+        ),
+        "requested_application": sum(
+            1 for row in requested if row["kind"] == "application"
+        ),
+        "requested": requested,
         "granted_delegated": [item.value for item in granted_delegated],
         "granted_application": [item.value for item in granted_application],
+        "granted": [to_payload(item) for item in granted],
+        # The headline. Everything below explains it.
+        "admin_consent_complete": not needing_admin,
         "admin_consent_granted": bool(granted_application or tenant_wide),
-        "admin_consent_note": (
-            "Application permissions and tenant wide delegated grants both "
-            "require admin consent. Nothing granted here means consent was "
-            "never recorded, whatever the registration asks for."
-            if not (granted_application or tenant_wide)
-            else "Consent has been recorded for the grants listed."
-        ),
+        "without_admin_consent": needing_admin,
+        "user_consented_only": [to_payload(item) for item in user_only],
+        "not_consented": outstanding,
+        "admin_consent_note": consent_note(needing_admin, user_only, known),
     }
+
+
+def consent_note(
+    needing_admin: Sequence[Mapping[str, Any]],
+    user_only: Sequence[PermissionGrant],
+    catalogue: PermissionCatalogue,
+) -> str:
+    """Say in one sentence what the consent picture means."""
+    parts: list[str] = []
+    if needing_admin:
+        named = ", ".join(str(row["permission"]) for row in needing_admin)
+        parts.append(
+            f"{len(needing_admin)} permission(s) need admin consent and do not "
+            f"have it: {named}. Every call using one of them is refused."
+        )
+    if user_only:
+        people = ", ".join(
+            sorted({item.principal for item in user_only if item.principal})
+        )
+        parts.append(
+            f"{len(user_only)} delegated permission(s) were consented by an "
+            "individual rather than for the tenant, so they work for that "
+            f"person alone{f' ({people})' if people else ''}."
+        )
+    if not parts:
+        parts.append(
+            "Every permission the registration asks for has the consent it needs."
+        )
+    if catalogue.unresolved:
+        parts.append(
+            f"{len(catalogue.unresolved)} resource(s) could not be read, so "
+            "some permissions are shown as identifiers and their consent "
+            "requirement is unknown."
+        )
+    return " ".join(parts)
 
 
 def as_mapping(value: Any) -> Mapping[str, Any]:
@@ -446,30 +752,11 @@ def permission_names(
 
     A requested permission is recorded as a bare identifier. Nobody can read
     those, and the name is what the remediation will tell them to grant, so it
-    is worth one call per resource to resolve them.
+    is worth one call per resource to resolve them. The catalogue does the
+    reading; this is the name half of what it returns.
     """
-    resolved: dict[str, str] = {}
-    for app_id in dict.fromkeys(resource_app_ids):
-        if not app_id:
-            continue
-        try:
-            rows = get_collection(
-                session,
-                config,
-                "service_principal_by_app_id",
-                path_parameters={"app_id": app_id},
-            )
-        except ApiCallError as error:
-            log.debug("could not resolve %s: %s", app_id, error.error.summary())
-            continue
-        for row in rows:
-            for scope in row.get("oauth2PermissionScopes") or []:
-                if isinstance(scope, Mapping) and scope.get("id"):
-                    resolved[str(scope["id"])] = str(scope.get("value", ""))
-            for role in row.get("appRoles") or []:
-                if isinstance(role, Mapping) and role.get("id"):
-                    resolved[str(role["id"])] = str(role.get("value", ""))
-    return resolved
+    catalogue = read_permission_catalogue(session, config, app_ids=resource_app_ids)
+    return {key: fact.value for key, fact in catalogue.by_id.items()}
 
 
 def named_permissions(
@@ -512,9 +799,12 @@ def inspect(
     # The catalogue holds names and identifiers. The one being inspected is
     # read in full, on its own, which is two calls rather than one per object
     # in the tenant.
-    application = (
-        read_one_application(session, config, applications[0]) if applications else None
-    )
+    application: ApplicationSummary | None = None
+    payload: Mapping[str, Any] = {}
+    if applications:
+        application, payload = read_one_application_with_payload(
+            session, config, applications[0]
+        )
     principal = principals[0] if principals else None
     if application and not principal:
         principal = next(
@@ -532,7 +822,31 @@ def inspect(
     # every application in the tenant. On a directory of several hundred the
     # difference is two calls against several hundred.
     application = with_owners_and_federation(session, config, application)
-    payload = raw_application(session, config, application)
+    # Every resource the application asks something of, and every resource it
+    # has actually been granted something against. Read once, here, so that the
+    # requested permissions, the granted ones and the assignments are all named
+    # rather than left as identifiers.
+    permissions = read_permission_catalogue(
+        session,
+        config,
+        app_ids=[
+            request.resource_app_id
+            for request in (application.requested_permissions if application else ())
+        ],
+        object_ids=[
+            grant.resource_app_id
+            for grant in (principal.granted_permissions if principal else ())
+        ],
+    )
+    if principal is not None:
+        principal = principal._replace(
+            granted_permissions=named_grants(
+                principal.granted_permissions, permissions
+            ),
+            assignments=named_app_role_assignments(
+                principal.assignments, app_role_names(payload, principal)
+            ),
+        )
     portal = config.endpoints.portal
     return {
         "identity": {
@@ -582,19 +896,11 @@ def inspect(
         "permissions": {
             "requested": named_permissions(
                 application,
-                permission_names(
-                    session,
-                    config,
-                    [
-                        request.resource_app_id
-                        for request in (
-                            application.requested_permissions if application else ()
-                        )
-                    ],
-                ),
+                {key: fact.value for key, fact in permissions.by_id.items()},
             ),
-            "consent": consent_state(application, principal),
+            "consent": consent_state(application, principal, permissions),
         },
+        "access": access_view(principal, config),
         "credentials": [to_payload(item) for item in application.credentials]
         if application
         else [],
@@ -621,6 +927,102 @@ def inspect(
     }
 
 
+def app_role_names(
+    payload: Mapping[str, Any], principal: ServicePrincipalSummary | None
+) -> dict[str, str]:
+    """Map the roles this application defines onto their names.
+
+    An assignment records the role identifier. The roles are defined on the
+    application itself, so no extra call is needed to read them back.
+    """
+    _ = principal
+    return {
+        text(role.get("id")): text(role.get("value")) or text(role.get("displayName"))
+        for role in (payload.get("appRoles") or [])
+        if isinstance(role, Mapping) and role.get("id")
+    }
+
+
+def access_view(
+    principal: ServicePrincipalSummary | None, config: Config
+) -> dict[str, Any]:
+    """Say who may use this application, and what its own identity belongs to.
+
+    Assignment is the half of authorisation that consent says nothing about.
+    Where the application requires assignment, an identity that is not assigned
+    is refused however much has been consented, and the assignment is far more
+    often to a security group than to a person. The groups are listed by name,
+    with whether membership is a rule rather than a list, because a dynamic
+    group grants and revokes access without anybody touching the application.
+    """
+    if principal is None:
+        return {
+            "assignment_required": None,
+            "note": (
+                "There is no enterprise application, so nothing is assigned to "
+                "anything. Only the registration exists."
+            ),
+        }
+    rules = config.fields.classification
+    assignments = principal.assignments
+    groups = [
+        item
+        for item in assignments
+        if item.principal_type == rules.principal_types["group"]
+    ]
+    users = [
+        item
+        for item in assignments
+        if item.principal_type == rules.principal_types["user"]
+    ]
+    principals = [
+        item
+        for item in assignments
+        if item.principal_type == rules.principal_types["service_principal"]
+    ]
+    member_of = principal.member_of
+    return {
+        "assignment_required": principal.app_role_assignment_required,
+        "assignment_meaning": (
+            "Only the users, groups and applications assigned below may sign "
+            "in. Anybody else is refused whatever has been consented."
+            if principal.app_role_assignment_required
+            else "Assignment is not required, so anybody in the tenant the "
+            "consent covers may sign in. The assignments below grant roles "
+            "rather than admission."
+        ),
+        "assigned_total": len(assignments),
+        "security_groups": [to_payload(item) for item in groups],
+        "users": [to_payload(item) for item in users],
+        "applications": [to_payload(item) for item in principals],
+        "member_of": {
+            "security_groups": [
+                to_payload(item) for item in security_groups(member_of, config)
+            ],
+            "directory_roles": [
+                to_payload(item)
+                for item in memberships_of_kind(member_of, "directory-role")
+            ],
+            "administrative_units": [
+                to_payload(item)
+                for item in memberships_of_kind(member_of, "administrative-unit")
+            ],
+            "note": (
+                "Groups and roles this application's own identity belongs to. "
+                "Access held this way is granted to the group rather than to "
+                "the application, so nothing on the application itself records "
+                "it."
+            ),
+        },
+        "note": (
+            "Nothing is assigned to this application."
+            if not assignments
+            else f"{len(groups)} security group(s), {len(users)} user(s) and "
+            f"{len(principals)} application(s) are assigned."
+        ),
+    }
+
+
 def _not_found(target: str) -> Any:
     """Return the error raised when nothing matched."""
     from entrascope.models import ApiError
@@ -641,25 +1043,37 @@ def read_one_application(
     session: Session, config: Config, summary: ApplicationSummary
 ) -> ApplicationSummary:
     """Read one application in full and project it."""
-    if not summary.object_id:
-        return summary
-    try:
-        payload = get_object(
-            session,
-            config,
-            "application_by_id",
-            path_parameters={"object_id": summary.object_id},
-        )
-    except ApiCallError as error:
-        log.debug("could not read the application: %s", error.error.summary())
-        return summary
-    return project_application(payload, config)
+    payload = raw_application(session, config, summary)
+    return project_application(payload, config) if payload else summary
+
+
+def read_one_application_with_payload(
+    session: Session, config: Config, summary: ApplicationSummary
+) -> tuple[ApplicationSummary, Mapping[str, Any]]:
+    """Read one application once, returning both the projection and the payload.
+
+    The projection covers most of the report and the untouched payload covers
+    the rest. Reading the object twice to get both was a wasted call on every
+    single inspection.
+    """
+    payload = raw_application(session, config, summary)
+    if not payload:
+        return summary, {}
+    return project_application(payload, config), payload
 
 
 def read_one_principal(
     session: Session, config: Config, summary: ServicePrincipalSummary | None
 ) -> ServicePrincipalSummary | None:
-    """Read one enterprise application in full and project it."""
+    """Read one enterprise application in full, with everything around it.
+
+    Four collections, and each answers a different question. appRoleAssignments
+    is what this application may do to other resources. oauth2PermissionGrants
+    is what a person has consented to on its behalf, and whether they did so
+    for themselves or for the tenant. appRoleAssignedTo is who may use it, which
+    is where the security groups are. memberOf is what its own identity belongs
+    to, which is how it can hold access nothing about the application mentions.
+    """
     if summary is None or not summary.object_id:
         return summary
     try:
@@ -674,10 +1088,30 @@ def read_one_principal(
             "could not read the enterprise application: %s", error.error.summary()
         )
         return summary
-    grants = read_collection(
-        session, config, "app_role_assignments", {"object_id": summary.object_id}
+    parameters = {"object_id": summary.object_id}
+    return project_service_principal(
+        payload,
+        config,
+        grants=read_grants(session, config, summary.object_id),
+        assignments=read_collection(session, config, "granted_app_roles", parameters),
+        assigned_to=read_collection(
+            session, config, "app_role_assignments", parameters
+        ),
+        member_of=read_collection(
+            session, config, "service_principal_member_of", parameters
+        ),
     )
-    return project_service_principal(payload, config, assignments=grants)
+
+
+def read_grants(
+    session: Session, config: Config, object_id: str
+) -> tuple[dict[str, Any], ...]:
+    """Read the delegated consent recorded for one application, tolerating a refusal."""
+    try:
+        return grants_for_client(session, config, object_id)
+    except ApiCallError as error:
+        log.debug("could not read delegated consent: %s", error.error.summary())
+        return ()
 
 
 def with_owners_and_federation(

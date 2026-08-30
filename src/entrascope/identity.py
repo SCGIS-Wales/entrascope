@@ -19,7 +19,12 @@ from azure.core.credentials import TokenCredential
 
 from entrascope.capabilities import claim_values, decode_claims
 from entrascope.config import Config
-from entrascope.discovery import text
+from entrascope.discovery import (
+    memberships_of_kind,
+    project_memberships,
+    security_groups,
+    text,
+)
 from entrascope.graph import (
     arm_token_provider,
     get_collection,
@@ -36,14 +41,10 @@ log = get_logger(__name__)
 #: Claims worth reporting from an access token.
 CLAIMS_OF_INTEREST = ("aud", "iss", "tid", "azp", "appid", "oid", "sub", "upn")
 
-#: Object types Graph returns from a memberOf call.
-ROLE_TYPE = "#microsoft.graph.directoryRole"
-GROUP_TYPE = "#microsoft.graph.group"
-UNIT_TYPE = "#microsoft.graph.administrativeUnit"
-
-#: An app role assignment with this identifier carries no application
-#: permission. It records access to the application, nothing more.
-NO_APP_ROLE = "00000000-0000-0000-0000-000000000000"
+#: What this tool calls each kind of membership. The OData types they
+#: correspond to live in config/fields.yaml.
+ROLE_KIND = "directory-role"
+UNIT_KIND = "administrative-unit"
 
 
 def safely(
@@ -75,12 +76,34 @@ def needed_for(config: Config, lookup: str) -> str:
     return config.capabilities.lookup_permissions.get(lookup, "")
 
 
-def membership(rows: Sequence[Mapping[str, Any]], kind: str) -> list[str]:
+def membership(
+    rows: Sequence[Mapping[str, Any]], kind: str, config: Config
+) -> list[str]:
     """Return the display names of one kind of membership."""
     return [
-        text(row.get("displayName") or row.get("id"))
-        for row in rows
-        if row.get("@odata.type") == kind
+        item.display_name or item.object_id
+        for item in memberships_of_kind(project_memberships(rows, config), kind)
+    ]
+
+
+def group_details(
+    rows: Sequence[Mapping[str, Any]], config: Config
+) -> list[dict[str, Any]]:
+    """Return the security groups this identity belongs to, by name.
+
+    A group is where access that nothing on the identity itself records comes
+    from, so counting them was never enough. A dynamic group is named as such,
+    because its membership changes without anybody being assigned to anything.
+    """
+    return [
+        {
+            "display_name": item.display_name,
+            "object_id": item.object_id,
+            "dynamic": bool(item.membership_rule),
+            "membership_rule": item.membership_rule,
+            "on_premises_sync_enabled": item.on_premises_sync_enabled,
+        }
+        for item in security_groups(project_memberships(rows, config), config)
     ]
 
 
@@ -176,9 +199,10 @@ def signed_in_user(
         "object_id": text(profile.get("id")),
         "display_name": text(profile.get("displayName")),
         "user_principal_name": text(profile.get("userPrincipalName")),
-        "directory_roles": membership(memberships, ROLE_TYPE),
-        "administrative_units": membership(memberships, UNIT_TYPE),
-        "group_count": len(membership(memberships, GROUP_TYPE)),
+        "directory_roles": membership(memberships, ROLE_KIND, config),
+        "administrative_units": membership(memberships, UNIT_KIND, config),
+        "security_groups": group_details(memberships, config),
+        "group_count": len(group_details(memberships, config)),
     }
 
 
@@ -231,16 +255,18 @@ def service_principal_identity(
         "display_name": text(row.get("displayName")),
         "application_id": app_id,
         "account_enabled": row.get("accountEnabled"),
-        "directory_roles": membership(memberships, ROLE_TYPE),
-        "administrative_units": membership(memberships, UNIT_TYPE),
-        "group_count": len(membership(memberships, GROUP_TYPE)),
+        "directory_roles": membership(memberships, ROLE_KIND, config),
+        "administrative_units": membership(memberships, UNIT_KIND, config),
+        "security_groups": group_details(memberships, config),
+        "group_count": len(group_details(memberships, config)),
         "granted_app_role_assignments": [
             {
                 "resource": text(item.get("resourceDisplayName")),
                 "app_role_id": text(item.get("appRoleId")),
                 "meaning": (
                     "access to the application, carrying no permission"
-                    if text(item.get("appRoleId")) == NO_APP_ROLE
+                    if text(item.get("appRoleId"))
+                    == config.fields.classification.default_access_app_role_id
                     else "an application permission"
                 ),
             }

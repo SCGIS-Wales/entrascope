@@ -161,9 +161,48 @@ entrascope inspect enterprise-apps
 
 Shows the registration and the enterprise application together, as YAML,
 coloured at a terminal and plain in a pipe: the scopes it exposes, the roles it
-defines, what it asked for against what was actually consented, every URL it is
-registered with, its credentials and their expiry, and its single sign on
-configuration.
+defines, what it asked for against what was actually consented, who may use it,
+every URL it is registered with, its credentials and their expiry, and its
+single sign on configuration.
+
+#### Consent, and what is missing from it
+
+The `permissions.consent` section answers the question a permission failure
+usually turns on. Each permission the registration asks for is named rather
+than left as an identifier, and carries whether only an administrator may
+consent to it and whether anybody did.
+
+Three lists say what is wrong, and they say different things:
+
+- `without_admin_consent` names every permission that needs an administrator
+  and does not have one. Each of these is refused for everybody, and
+  `admin_consent_complete` is false while any of them remains.
+- `user_consented_only` names the delegated permissions one person consented to
+  for themselves rather than for the tenant. These work for that person and are
+  refused for everybody else, which is what a failure only one engineer cannot
+  reproduce looks like.
+- `not_consented` names everything asked for and never granted at all,
+  including the permissions a user may consent to on their own.
+
+An investigation reports the same two conditions as findings, an error for the
+first and a warning for the second, so a tenant wide sweep names every
+application waiting on consent.
+
+#### Who may use it
+
+The `access` section is the other half of authorisation, and consent says
+nothing about it. It lists the security groups, the users and the applications
+assigned to the enterprise application, each with the role it was assigned. A
+group is the usual answer and was previously invisible.
+
+Where `assignment_required` is true, an identity that is not assigned is
+refused however much has been consented.
+
+`access.member_of` lists the groups, directory roles and administrative units
+the application's own identity belongs to. Access held that way is granted to
+the group rather than to the application, so nothing on the application records
+it, and a dynamic group is marked as such because its membership changes
+without anybody assigning anything.
 
 With no argument and a terminal to draw on, it offers the list. Move with the
 arrow keys or with j and k, and the arrows keep moving while a search is being

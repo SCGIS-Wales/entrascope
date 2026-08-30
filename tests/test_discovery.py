@@ -20,12 +20,16 @@ from entrascope.discovery import (
     credential_state,
     discover_applications,
     discover_service_principals,
+    named_app_role_assignments,
     parse_timestamp,
     pluck,
+    project_app_role_assignments,
     project_application,
     project_credentials,
     project_granted_permissions,
+    project_memberships,
     project_service_principal,
+    security_groups,
     strings,
 )
 from entrascope.http import build_session
@@ -268,17 +272,122 @@ def test_assignment_required_and_enabled_are_projected(
     assert not by_name(projected, "Legacy application").account_enabled
 
 
-def test_granted_permissions_cover_both_kinds() -> None:
+def test_granted_permissions_cover_both_kinds(config: Config) -> None:
     """Delegated scopes are split, and application roles are kept whole."""
     fixture = load_fixture("permission_grants")
     grants = project_granted_permissions(
-        fixture["oauth2PermissionGrants"], fixture["appRoleAssignments"]
+        fixture["oauth2PermissionGrants"], fixture["appRoleAssignments"], config
     )
     delegated = [item for item in grants if item.kind == "delegated"]
     application = [item for item in grants if item.kind == "application"]
     assert {item.value for item in delegated} == {"User.Read", "Directory.Read.All"}
     assert delegated[0].principal == "all users"
     assert len(application) == 1
+
+
+def test_a_tenant_wide_grant_is_told_from_a_personal_one(config: Config) -> None:
+    """The consent type is what says whether a permission works for everybody."""
+    grants = project_granted_permissions(
+        [
+            {
+                "clientId": "client",
+                "resourceId": "resource",
+                "consentType": "AllPrincipals",
+                "principalId": None,
+                "scope": "User.Read",
+            },
+            {
+                "clientId": "client",
+                "resourceId": "resource",
+                "consentType": "Principal",
+                "principalId": "person-1",
+                "scope": "Mail.Read Files.Read",
+            },
+        ],
+        [],
+        config,
+    )
+    tenant_wide = [item for item in grants if item.admin_consent_recorded]
+    personal = [item for item in grants if not item.admin_consent_recorded]
+    assert [item.value for item in tenant_wide] == ["User.Read"]
+    assert {item.value for item in personal} == {"Mail.Read", "Files.Read"}
+    assert personal[0].principal_id == "person-1"
+    assert tenant_wide[0].principal == "all users"
+
+
+def test_an_application_permission_is_always_admin_consented(config: Config) -> None:
+    """There is no way to hold one without an administrator having said so."""
+    grants = project_granted_permissions(
+        [],
+        [{"appRoleId": "role-1", "resourceId": "resource"}],
+        config,
+    )
+    assert grants[0].admin_consent_required is True
+    assert grants[0].admin_consent_recorded is True
+
+
+def test_assignments_name_the_security_groups(config: Config) -> None:
+    """Who may use an application is as much of the answer as what it may do."""
+    assignments = project_app_role_assignments(
+        [
+            {
+                "principalId": "group-1",
+                "principalDisplayName": "Platform engineers",
+                "principalType": "Group",
+                "appRoleId": "00000000-0000-0000-0000-000000000000",
+            },
+            {
+                "principalId": "user-1",
+                "principalDisplayName": "Ada Lovelace",
+                "principalType": "User",
+                "appRoleId": "role-1",
+            },
+        ],
+        config,
+    )
+    assert assignments[0].principal_type == "Group"
+    assert assignments[0].meaning == "access to the application, carrying no role"
+    assert assignments[1].meaning == "an application role"
+    named = named_app_role_assignments(assignments, {"role-1": "Reader"})
+    assert named[1].app_role_value == "Reader"
+
+
+def test_memberships_keep_a_dynamic_group_apart(config: Config) -> None:
+    """A dynamic group grants access without anybody assigning anything."""
+    memberships = project_memberships(
+        [
+            {
+                "@odata.type": "#microsoft.graph.group",
+                "id": "g1",
+                "displayName": "Joiners",
+                "securityEnabled": True,
+                "membershipRule": 'user.department -eq "Platform"',
+            },
+            {
+                "@odata.type": "#microsoft.graph.group",
+                "id": "g2",
+                "displayName": "All staff",
+                "securityEnabled": False,
+            },
+            {
+                "@odata.type": "#microsoft.graph.directoryRole",
+                "id": "r1",
+                "displayName": "Global Reader",
+            },
+            {"@odata.type": "#microsoft.graph.unknownThing", "id": "u1"},
+        ],
+        config,
+    )
+    assert [item.kind for item in memberships] == [
+        "group",
+        "group",
+        "directory-role",
+        "#microsoft.graph.unknownThing",
+    ]
+    assert [item.display_name for item in security_groups(memberships, config)] == [
+        "Joiners"
+    ]
+    assert memberships[0].membership_rule
 
 
 def test_projection_tolerates_a_sparse_payload(config: Config) -> None:
