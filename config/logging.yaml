@@ -51,6 +51,13 @@ redaction:
     - Authorization
     - api_key
     - ARM_CLIENT_SECRET
+    # The verifier is what proves a code exchange is ours, so it is a secret
+    # for the length of one sign in. The authorisation code is deliberately not
+    # here: this tool has fields of its own called code, holding an AADSTS
+    # error code, and redacting those would hide the very thing the tool
+    # exists to explain. The code is caught by the query string pattern below,
+    # which is where it actually appears.
+    - code_verifier
   # Values matching these patterns are replaced wherever they appear.
   patterns:
     - name: bearer_token
@@ -63,7 +70,7 @@ redaction:
       regex: "(?<=://)[^/\\s:@]+:[^/\\s@]+(?=@)"
     # A secret in a query string is a secret wherever the string came from.
     - name: query_secret
-      regex: "(?i)\\b(client_secret|client_assertion|assertion|password|api[_-]?key|access_token|refresh_token|id_token)=[^&\\s\"']+"
+      regex: "(?i)\\b(client_secret|client_assertion|assertion|password|api[_-]?key|access_token|refresh_token|id_token|code|code_verifier)=[^&\\s\"']+"
 
 update_check:
   # A version check must never slow a command down or stop it working. It is

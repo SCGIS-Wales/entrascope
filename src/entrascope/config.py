@@ -512,6 +512,70 @@ class Capabilities(_Frozen):
     lookup_permissions: dict[str, str]
 
 
+class ListenerSettings(_Frozen):
+    """The loopback listener that catches one redirect and then stops."""
+
+    host: str
+    bind_host: str
+    path: str
+    port_range: tuple[int, int]
+    refuse_ports: tuple[int, ...]
+    timeout_seconds: float
+    read_timeout_seconds: float
+    max_request_bytes: int
+
+
+class PkceSettings(_Frozen):
+    """Proof key for code exchange, and the state that goes with it."""
+
+    method: str
+    verifier_bytes: int
+    state_bytes: int
+
+
+class AuthorizeSettings(_Frozen):
+    """What is asked of the authorize endpoint."""
+
+    response_type: str
+    response_mode: str
+    default_scopes: tuple[str, ...]
+    prompt: str = ""
+
+
+class TokenSettings(_Frozen):
+    """What is asked of the token endpoint."""
+
+    grant_type: str
+
+
+class BrowserSettings(_Frozen):
+    """Whether the browser is opened, or only the address printed."""
+
+    open_automatically: bool
+
+
+class PageSettings(_Frozen):
+    """What the browser is shown once it has been redirected back."""
+
+    success_title: str
+    success_body: str
+    failure_title: str
+    failure_body: str
+    ignored_title: str
+    ignored_body: str
+
+
+class OAuth(_Frozen):
+    """Everything the sign in attempt needs that is not an endpoint."""
+
+    listener: ListenerSettings
+    pkce: PkceSettings
+    authorize: AuthorizeSettings
+    token: TokenSettings
+    browser: BrowserSettings
+    pages: PageSettings
+
+
 class Config(_Frozen):
     """Every configuration file, validated, plus the directory they came from."""
 
@@ -527,6 +591,7 @@ class Config(_Frozen):
     server: Server
     error_codes: ErrorCodes
     capabilities: Capabilities
+    oauth: OAuth
 
 
 def user_config_dir(home: Path | None = None) -> Path:
@@ -833,6 +898,7 @@ def build_config(directory: Path) -> Config:
                 "server": read_layered(directory, "server.yaml", defaults),
                 "error_codes": read_layered(directory, "error-codes.yaml", defaults),
                 "capabilities": read_layered(directory, "capabilities.yaml", defaults),
+                "oauth": read_layered(directory, "oauth.yaml", defaults),
             }
         )
     except ValidationError as error:

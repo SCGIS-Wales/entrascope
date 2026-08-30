@@ -12,12 +12,52 @@ import re
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from re import Pattern
+from threading import Lock
 from typing import Any
 
 from entrascope.config import Config, Redaction, RedactionPattern
 
 #: Maximum depth walked in a nested structure, to bound pathological input.
 MAX_DEPTH = 12
+
+#: Literal secrets this process has been handed, which are replaced wherever
+#: they appear whatever they appear as.
+#:
+#: Process wide on purpose. A secret is a secret in a log line, in a rendered
+#: report and in an error message from a library that echoed what it was given,
+#: and passing it down every call that might print something would be a way to
+#: forget it in one of them. Guarded by a lock because the fan out is threaded.
+_known: set[str] = set()
+_known_lock = Lock()
+
+
+def remember_secret(value: str) -> None:
+    """Replace this exact value wherever it appears, from now on.
+
+    The patterns catch a secret that appears with a recognisable key or a
+    bearer prefix. One that appears as a bare word would slip through, and the
+    surest way to redact a known secret is to know it.
+    """
+    if not value:
+        return
+    with _known_lock:
+        _known.add(value)
+
+
+def forget_secrets() -> None:
+    """Forget every literal secret. Used by the test suite between cases."""
+    with _known_lock:
+        _known.clear()
+
+
+def known_secrets() -> tuple[str, ...]:
+    """Return the literal secrets, longest first.
+
+    Longest first so that a secret containing another is replaced whole rather
+    than leaving the tail of it behind.
+    """
+    with _known_lock:
+        return tuple(sorted(_known, key=len, reverse=True))
 
 
 @lru_cache(maxsize=32)
@@ -32,10 +72,12 @@ def pattern_source(settings: Redaction) -> tuple[str, ...]:
 
 
 def redact_text(text: str, settings: Redaction) -> str:
-    """Replace every configured pattern found in a string."""
+    """Replace every configured pattern, and every known literal, in a string."""
     result = text
     for pattern in compile_patterns(pattern_source(settings)):
         result = pattern.sub(settings.placeholder, result)
+    for secret in known_secrets():
+        result = result.replace(secret, settings.placeholder)
     return result
 
 

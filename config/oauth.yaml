@@ -1,0 +1,95 @@
+# The sign in attempt: entrascope attempt.
+#
+# One authorization code flow, run for real against a tenant, so that an
+# engineer can see what a token actually carries rather than what a
+# registration says it should. Read by entrascope.attempt.
+#
+# Nothing about the flow is hardcoded in src. The endpoints themselves live in
+# endpoints.yaml under authority.v2, because the rest of the tool uses them too.
+
+listener:
+  # The loopback address, not the name. Microsoft's own guidance is to register
+  # the IP literal rather than localhost, because a renamed network interface
+  # or a firewall that treats the name differently breaks the name and never
+  # breaks the address. The IPv6 loopback is not supported by Entra.
+  host: 127.0.0.1
+  # Bound to the loopback address above and to nothing else, so nothing off the
+  # machine can reach it even for the second it is up.
+  bind_host: 127.0.0.1
+  # Where a redirect lands. It is part of the redirect URI, so it has to match
+  # what is registered.
+  path: /callback
+  # Used when the registered redirect URI names no port, which is how a native
+  # client registers one. A port is chosen from this range and checked to be
+  # free. 8080 and 80 are deliberately outside it: both are so commonly already
+  # serving something that binding one is a coin toss.
+  port_range: [47820, 47899]
+  # Never bound even if a redirect URI names one, because something else almost
+  # certainly answers there and a redirect that reaches it is a redirect that
+  # went somewhere this tool cannot see.
+  refuse_ports: [80, 443, 8000, 8080, 8443]
+  # How long to wait for somebody to finish signing in before giving up and
+  # tearing the listener down. Long enough for a password, a second factor and
+  # a consent prompt; short enough that a forgotten window does not hold a
+  # socket open all afternoon.
+  timeout_seconds: 300
+  # How long to wait for the browser to send the rest of its request once it
+  # has connected. A connection that opens and says nothing is not a redirect.
+  read_timeout_seconds: 10
+  # The most a browser may send on the request line. A redirect carries a code
+  # and a state and nothing else, so anything longer is not one.
+  max_request_bytes: 8192
+
+pkce:
+  # S256 is the only method worth using. The plain method sends the verifier
+  # itself, which defeats the point of having one.
+  method: S256
+  # Bytes of randomness behind the verifier, before base64url. RFC 7636 allows
+  # a verifier of 43 to 128 characters; 32 bytes lands at 43.
+  verifier_bytes: 32
+  # Bytes of randomness behind the state, which is what makes a redirect this
+  # tool did not ask for impossible to pass off as one it did.
+  state_bytes: 32
+
+authorize:
+  response_type: code
+  # query, so the code arrives on the redirect URL where a loopback listener
+  # can read it. form_post would need a body parser for no gain here.
+  response_mode: query
+  # What to ask for when nothing is named. openid and profile identify the
+  # person, offline_access asks for a refresh token so the answer says whether
+  # one would be issued.
+  default_scopes:
+    - openid
+    - profile
+    - offline_access
+  # Sent so that the sign in is a sign in rather than a silent reuse of a
+  # session that is already open. Testing a flow with a cookie is testing the
+  # cookie. Set to an empty string to let an existing session answer.
+  prompt: select_account
+
+token:
+  grant_type: authorization_code
+
+browser:
+  # Opened with the platform's default handler, which is the browser somebody
+  # is already signed into. RFC 8252 requires an external user agent rather
+  # than an embedded one, and the default handler is exactly that.
+  open_automatically: true
+
+# What the browser is shown once it has been redirected back. Kept short and
+# self contained: this is served by a socket that closes immediately after, so
+# nothing may be fetched from anywhere.
+pages:
+  success_title: Sign in complete
+  success_body: >
+    entrascope has the authorisation code. This window can be closed, and the
+    result is in the terminal.
+  failure_title: Sign in failed
+  failure_body: >
+    Entra returned an error rather than a code. The reason is in the terminal,
+    with what to do about it.
+  # Sent when a request arrives that is not the redirect being waited for.
+  ignored_title: Not the redirect
+  ignored_body: >
+    entrascope is waiting for one particular redirect and this was not it.

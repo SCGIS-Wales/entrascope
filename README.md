@@ -306,6 +306,83 @@ display name, whichever the error message gave you. The same value works as
 already broken, **warning** for something that will break, and **note** for the
 context that explains a result.
 
+### Signing in for real
+
+Everything above reads what the tenant has recorded. `attempt` runs the flow,
+because a registration that looks correct and a sign in that works are
+different claims, and only the second one matters to somebody who cannot get
+in.
+
+```bash
+entrascope attempt                                   # choose from the ones that can
+entrascope attempt my-desktop-app                    # one, by name
+entrascope attempt my-api --scope User.Read --scope Mail.Read
+entrascope attempt my-web-app --secret               # a confidential client
+entrascope attempt my-app --no-browser               # over SSH, or with no browser
+```
+
+It runs an OAuth 2.0 authorization code flow with PKCE, which is the shape
+[RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html) specifies for a native
+application and a command line tool is one: your own browser rather than an
+embedded one, a redirect back to the loopback address, a high entropy `state`,
+and a proof key so that a code intercepted on the loopback interface cannot be
+spent by anything else.
+
+What happens, in order:
+
+1. The applications that can be signed into are listed, which means the ones
+   with a redirect URI that comes back to this machine. One is chosen, or named
+   as an argument.
+2. A listener is bound to the loopback address alone, on the port the redirect
+   URI names, or a free one from `listener.port_range` when it names none. 80,
+   443, 8000, 8080 and 8443 are refused outright, because something else is
+   almost always serving there.
+3. Your browser opens at the Microsoft sign in page. You authenticate there and
+   nowhere else: entrascope never sees the password, and never asks for it.
+4. Entra redirects back with a code. The `state` is checked before the code is
+   read, the code is exchanged for a token, and the listener is closed.
+5. The report says what the token **actually** carries: the scopes granted
+   against the scopes asked for, the roles, the audience, the issuer, whether a
+   refresh token came back, and who the token says you are.
+
+The last of those is the point. A scope asked for and not granted still gives a
+successful sign in, and only fails later when something calls with the token,
+which is why a broken integration so often reads as working.
+
+**What the application needs first.** A redirect URI that comes back to this
+machine, under the mobile and desktop platform, which needs no secret. Entra
+permits plain HTTP for the loopback address and for nothing else. Register the
+IP literal rather than `localhost`: a renamed network interface or a firewall
+that treats the name differently breaks the name and never breaks the address.
+
+Adding a redirect URI is a change to the registration, and entrascope only
+reads, so it will not make one. Where it is missing, the exact address to
+register and the `az` command that registers it are printed.
+
+**Secrets.** None is needed. PKCE replaces the secret, which is what it was
+designed for. `--secret` prompts for one, without echoing it, only for an
+application whose redirect URI is registered under the *web* platform, which
+Entra refuses to let a public client use. A secret given that way lives in one
+local variable for the length of one token request: it is never written to a
+file, never taken from the command line where a shell history would keep it,
+and it is added to the redaction filter the moment it is known, so it cannot
+reach a log even by accident.
+
+**Teardown.** The listener answers exactly one redirect and is closed on every
+path out, including a timeout and a control C. Nothing is left listening and
+nothing is left in the directory, because nothing was put there.
+
+**When it goes wrong.** Run with `--verbose` for the whole trace: which
+redirect URI was chosen and why, the port bound, the address the browser was
+sent to, what arrived on the redirect and what the token endpoint answered. An
+error from Entra carries an AADSTS code, and `attempt` explains it with the
+same mapping `entrascope errors explain` uses. The code, the verifier and any
+secret are redacted from all of it.
+
+`attempt` is deliberately absent from the MCP tool surface. It opens a browser
+and waits for a person to sign in to it, and there is nobody at a keyboard
+there.
+
 ### Looking at one thing at a time
 
 ```bash

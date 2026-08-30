@@ -67,6 +67,54 @@ A tenant wide sweep reads delegated consent once for the whole directory and
 matches it up by `clientId`, because one paged call answers for every
 application and asking per application is a call each.
 
+## Signing in, rather than reading about it
+
+`entrascope attempt` runs an OAuth 2.0 authorization code flow against a real
+browser. It is the one command that does something rather than reading, and it
+still changes nothing in the directory: the only thing it creates is a socket
+on the loopback address, and that is closed on every path out.
+
+The shape is [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html), which
+governs native applications, and a command line tool is one:
+
+- **An external user agent.** The platform's default browser, never an embedded
+  one. entrascope never sees the password and never asks for it.
+- **A loopback redirect.** Entra permits plain HTTP for the loopback address
+  and for nothing else. The IP literal is registered rather than `localhost`,
+  on Microsoft's own guidance: a renamed network interface or a firewall that
+  treats the name differently breaks the name and never breaks the address. The
+  IPv6 loopback is not supported by Entra.
+- **A high entropy state**, compared before the code is read. A redirect
+  carrying the wrong state is refused outright, because the only safe thing to
+  do with a code that arrived under somebody else's state is nothing.
+- **Proof key for code exchange**, S256. The loopback interface is shared with
+  everything else on the machine, so a code can be intercepted there; the
+  verifier is what makes an intercepted one worthless.
+
+No client secret is involved. PKCE is what replaced it for public clients, and
+creating one would need `Application.ReadWrite.All` or `.OwnedBy`, which this
+tool does not ask for and would not know what to do with. `--secret` prompts
+for one, for the case Entra forces: a redirect URI registered under the **web**
+platform, which a public client may not use. A secret given that way lives in
+one local for the length of one token request, is added to the redaction filter
+the moment it is known, and is never written anywhere.
+
+Which platform a redirect URI is registered under is the whole of whether a
+secret is needed, so the platform is projected alongside the URI rather than
+the URIs being pooled together.
+
+The port is not free to choose. Entra compares the redirect URI byte for byte,
+so the one registered is used exactly as registered. The exception is a
+registration that names no port, which is how a native client registers one:
+then a free port is taken from `listener.port_range` in `config/oauth.yaml`.
+80, 443, 8000, 8080 and 8443 are refused outright, because something else is
+almost always serving there and a redirect that reaches it is one this tool
+cannot see.
+
+`attempt` is deliberately absent from the MCP tool surface. It opens a browser
+and waits for a person to sign in to it, and there is nobody at a keyboard
+there.
+
 ## Application types to cover
 
 Two rules the classification follows, both learned by creating one application

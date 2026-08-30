@@ -25,6 +25,18 @@ from typing import Any, NoReturn, cast
 import click
 
 from entrascope import __version__
+from entrascope.attempt import (
+    Answer,
+    Attempt,
+    exchange,
+    listen,
+    open_browser,
+    prepare,
+    refusal,
+    report,
+    usable_redirects,
+    why_it_cannot_be_attempted,
+)
 from entrascope.capabilities import (
     grant_command,
     permissions_by_name,
@@ -52,13 +64,19 @@ from entrascope.doctor import run_checks
 from entrascope.errors import explain, explain_api_error, known_codes, search
 from entrascope.graph import graph_token_provider
 from entrascope.http import Session, build_session
-from entrascope.identity import graph_session_for
+from entrascope.identity import graph_session_for, tenant_details
 from entrascope.identity import whoami as run_whoami
-from entrascope.inspect import Catalogue, read_catalogue, search_gallery
+from entrascope.inspect import (
+    Catalogue,
+    matching,
+    read_catalogue,
+    search_gallery,
+)
 from entrascope.inspect import inspect as run_inspect
 from entrascope.investigate import investigate as run_investigation
 from entrascope.investigate import matches, matches_principal
 from entrascope.logger import (
+    also_redact,
     bind_context,
     configure_logging,
     get_logger,
@@ -76,6 +94,7 @@ from entrascope.models import (
     AUTH_SOURCE_ORDER,
     SEVERITY_ORDER,
     ApiCallError,
+    ApplicationSummary,
     AuthContext,
     AuthSource,
     ConfigError,
@@ -124,6 +143,10 @@ log = get_logger(__name__)
 
 #: Key under which the shared settings are held on the click context.
 SETTINGS = "settings"
+
+#: How a list is indented inside a message. Written once because a literal
+#: newline inside an f string is easy to lose in an edit.
+NEWLINE_INDENT = "\n  "
 
 
 def log_level(output: str, verbose: bool) -> str | None:
@@ -1613,6 +1636,269 @@ def upgrade(
         # An index URL can carry credentials, and the installer echoes it.
         emit(str(redact_with_config(tail(output_text, lines=6), config)))
     emit(f"Now run entrascope --version to confirm. Notes: {release.url}")
+
+
+ATTEMPT_EPILOG = """
+Examples:
+
+
+  entrascope attempt                     choose from the ones that can be
+  entrascope attempt my-desktop-app      one, by name
+  entrascope attempt my-api --scope User.Read
+  entrascope attempt my-web-app --secret a confidential client
+  entrascope attempt my-app --no-browser over SSH, or with no browser
+
+What the application must already have:
+
+
+  A redirect URI that comes back to this machine, registered under the
+  mobile and desktop platform, which needs no secret. The address and the
+  ports entrascope will listen on are configuration, under listener in
+  config/oauth.yaml.
+
+
+  Adding a redirect URI is a change to the registration, and entrascope
+  only reads, so it will not make one. Where it is missing, the address to
+  register and the command that registers it are printed.
+
+What happens:
+
+
+  Your browser opens at the Microsoft sign in page and you authenticate
+  there. entrascope listens on the loopback address for the one redirect
+  that comes back, checks the state, swaps the code for a token and
+  reports what the token actually carries: the scopes granted against the
+  scopes asked for, the roles, and who the token says you are.
+
+
+  The listener is closed whatever happens. No secret is needed, and one
+  supplied with --secret is never written down. Run with --verbose for the
+  whole trace when something goes wrong.
+"""
+
+
+@cli.command("attempt", cls=GlobalOptionCommand, epilog=ATTEMPT_EPILOG)
+@click.argument("target", required=False, default="")
+@click.option(
+    "--scope",
+    "scopes",
+    multiple=True,
+    help="Scope to ask for. Repeat the option. Defaults to the ones in "
+    "config/oauth.yaml, which identify the person and ask for a refresh token.",
+)
+@click.option(
+    "--secret",
+    is_flag=True,
+    help="Prompt for a client secret and send it with the code. Needed only "
+    "where the redirect URI is registered under the web platform, which Entra "
+    "refuses to let a public client use. The secret is never stored, never "
+    "logged, and is gone when the command ends.",
+)
+@click.option(
+    "--tenant",
+    default="",
+    help="Tenant id or domain to sign in against. Taken from the identity in "
+    "use when it names one.",
+)
+@click.option(
+    "--redirect-uri",
+    default="",
+    help="Which registered redirect URI to use, where the application has "
+    "several. The one needing no secret is chosen otherwise.",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=None,
+    help="Port to listen on. Taken from the redirect URI when it names one, "
+    "and chosen from the free range in config/oauth.yaml when it does not.",
+)
+@click.option(
+    "--no-browser",
+    is_flag=True,
+    help="Print the sign in address instead of opening it, for a machine with "
+    "no browser or a session over SSH.",
+)
+@click.pass_context
+@handled
+def attempt_command(
+    context: click.Context,
+    target: str,
+    scopes: tuple[str, ...],
+    secret: bool,
+    tenant: str,
+    redirect_uri: str,
+    port: int | None,
+    no_browser: bool,
+) -> None:
+    """Sign in to one application for real, and report what the token carries.
+
+    Every other command reads what the tenant has recorded. This runs an
+    authorization code flow with a proof key against a real browser, because a
+    registration that looks right and a sign in that works are different
+    claims, and only the second matters to somebody who cannot get in.
+
+    The application needs a redirect URI on this machine. Nothing in the
+    directory is changed: where one is missing, the command to add it is
+    printed rather than run.
+    """
+    settings = settings_of(context)
+    with graph_session(settings) as (config, session, token):
+        application = one_to_attempt(session, config, token, target)
+        prepared = prepare(
+            application,
+            config,
+            tenant_id=tenant or tenant_of(settings, session, config),
+            scopes=list(scopes),
+            redirect_uri=redirect_uri,
+            port=port,
+        )
+        supplied = ask_for_secret() if secret else ""
+        show_attempt_plan(prepared, config, opening=not no_browser)
+        answer = run_attempt(prepared, config, no_browser=no_browser)
+        with working("Exchanging the code for a token"):
+            tokens = exchange(session, config, prepared, answer.code, supplied)
+    write_report(
+        report(prepared, tokens, config, confidential=bool(supplied)),
+        config,
+        settings.get("output", "table"),
+    )
+
+
+def one_to_attempt(
+    session: Session, config: Config, token: Callable[[], str], target: str
+) -> ApplicationSummary:
+    """Return the application to sign in to, chosen or named.
+
+    The chooser is the one every listing uses, narrowed to the applications
+    that have somewhere on this machine for a redirect to land. Offering one
+    that cannot work and then refusing it wastes the choice.
+    """
+    with working("Reading applications"):
+        catalogue = read_catalogue(session, config, token)
+    if target:
+        found = matching(catalogue.applications, target)
+        if not found:
+            raise ConfigError(
+                f"Nothing matched {target!r}. Try part of a display name, an "
+                "application id or an object id, or run entrascope attempt "
+                "with no argument to choose from the list."
+            )
+        # Named explicitly, so it is reported on whether or not it qualifies.
+        # Being told exactly why it cannot is the useful answer.
+        refused = why_it_cannot_be_attempted(found[0], config)
+        if refused:
+            raise ConfigError(refused)
+        return cast("ApplicationSummary", found[0])
+    eligible = tuple(
+        item for item in catalogue.applications if usable_redirects(item, config)
+    )
+    if not eligible:
+        raise ConfigError(no_application_can_be_attempted(config))
+    if not available():
+        listed = NEWLINE_INDENT.join(
+            f"{item.display_name}  ({item.app_id})" for item in eligible[:20]
+        )
+        raise ConfigError(
+            "Name the application to sign in to. These have a redirect URI on "
+            f"this machine:{NEWLINE_INDENT}{listed}"
+        )
+    lines = Catalogue(applications=eligible, principals=()).lines()
+    picked = choose(list(lines), title="Sign in to", **palette(config))
+    if picked is None:
+        raise ConfigError("Nothing chosen.")
+    return cast("ApplicationSummary", matching(eligible, picked)[0])
+
+
+def no_application_can_be_attempted(config: Config) -> str:
+    """Explain that nothing in the tenant redirects back to this machine."""
+    listener = config.oauth.listener
+    wanted = f"http://{listener.host}:{listener.port_range[0]}{listener.path}"
+    return (
+        "No application registration has a redirect URI on this machine, so "
+        "there is nowhere for a sign in to come back to."
+        f"{NEWLINE_INDENT}Add {wanted} under the mobile and desktop platform "
+        "of the application you want to test."
+        f"{NEWLINE_INDENT}That is a change to the registration, and entrascope "
+        "only reads, so it will not make it for you."
+    )
+
+
+def tenant_of(settings: Mapping[str, Any], session: Session, config: Config) -> str:
+    """Return the tenant to sign in against.
+
+    An identity that authenticated with client credentials names one. A
+    delegated session does not, so the tenant is read from the directory it is
+    already signed into rather than asked for.
+    """
+    identity = settings.get("identity")
+    if isinstance(identity, AuthContext) and identity.tenant_id:
+        return identity.tenant_id
+    notes: list[str] = []
+    return str(tenant_details(session, config, notes).get("tenant_id", ""))
+
+
+def ask_for_secret() -> str:
+    """Ask for a client secret without echoing it and without keeping it.
+
+    It lives in one local for the length of one token request. It is never
+    written to a file, and never taken from the command line, where a shell
+    history would keep it. Once it is known it is added to the redaction
+    filter, so it cannot appear in a log even by accident.
+    """
+    value = click.prompt(
+        "Client secret (not echoed, not stored)",
+        hide_input=True,
+        default="",
+        show_default=False,
+        type=str,
+    ).strip()
+    if value:
+        also_redact(value)
+    return value
+
+
+def show_attempt_plan(prepared: Attempt, config: Config, *, opening: bool) -> None:
+    """Say what is about to happen, before the browser takes the screen."""
+    emit_error(
+        f"Signing in to {prepared.application.display_name} "
+        f"({prepared.application.app_id}) in tenant {prepared.tenant_id}."
+    )
+    emit_error(
+        f"Redirect {prepared.redirect_uri} on the {prepared.redirect.platform} "
+        f"platform, proof key {config.oauth.pkce.method}, asking for "
+        f"{' '.join(prepared.scopes)}."
+    )
+    if not opening:
+        emit("Open this address to sign in:")
+        emit(prepared.authorize_url)
+
+
+def run_attempt(prepared: Attempt, config: Config, *, no_browser: bool) -> Answer:
+    """Open the browser, wait for the redirect, and check what came back.
+
+    The state is what makes a redirect somebody else caused impossible to pass
+    off as this one, so it is compared before the code is so much as read.
+    """
+    if not no_browser and not open_browser(prepared, config):
+        emit("A browser could not be opened. Open this address to sign in:")
+        emit(prepared.authorize_url)
+    with working(
+        f"Waiting for the redirect on {config.oauth.listener.bind_host}:{prepared.port}"
+    ):
+        answer = listen(prepared, config)
+    if answer.state != prepared.state:
+        # Not the redirect this command asked for. Refused rather than looked
+        # into, because the only safe thing to do with a code that arrived
+        # under somebody else's state is nothing at all.
+        raise ConfigError(
+            "The redirect carried the wrong state, so it is not the sign in "
+            "this command started. Nothing has been exchanged. Try again with "
+            "no other entrascope sign in open in the same browser."
+        )
+    if answer.failed():
+        raise refusal(answer, config)
+    return answer
 
 
 @cli.command("whoami", cls=GlobalOptionCommand)
