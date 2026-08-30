@@ -154,32 +154,14 @@ def shorten(name: str, width: int) -> str:
     return plain if len(plain) <= width else plain[: width - 1] + "\u2026"
 
 
-#: All the chooser needs. Reading whole objects to draw a list of names is the
-#: difference between answering and appearing to hang.
-CHOOSER_FIELDS = (
-    "id",
-    "appId",
-    "displayName",
-    "createdDateTime",
-    # Small arrays, and they are what makes an expired secret visible in the
-    # list rather than only after opening the application.
-    "passwordCredentials",
-    "keyCredentials",
-)
-PRINCIPAL_CHOOSER_FIELDS = (
-    "id",
-    "appId",
-    "displayName",
-    "createdDateTime",
-    "servicePrincipalType",
-    "appOwnerOrganizationId",
-    "preferredSingleSignOnMode",
-    "tags",
-    # Small arrays, and they are what makes an expired credential visible in
-    # the list rather than only after opening the application.
-    "passwordCredentials",
-    "keyCredentials",
-)
+def chooser_fields(config: Config, collection: str) -> tuple[str, ...]:
+    """Return the Graph properties the chooser reads for one collection.
+
+    Which properties those are is configuration, like every other field
+    mapping, so a site that wants another column in the list adds it there
+    rather than here.
+    """
+    return tuple(config.fields.chooser_select.get(collection, ()))
 
 
 def read_catalogue(
@@ -200,13 +182,19 @@ def read_catalogue(
     applications = tuple(
         project_application(payload, config)
         for payload in get_collection(
-            session, config, "applications", select=CHOOSER_FIELDS
+            session,
+            config,
+            "applications",
+            select=chooser_fields(config, "applications"),
         )
     )
     principals = tuple(
         project_service_principal(payload, config)
         for payload in get_collection(
-            session, config, "service_principals", select=PRINCIPAL_CHOOSER_FIELDS
+            session,
+            config,
+            "service_principals",
+            select=chooser_fields(config, "service_principals"),
         )
     )
     hidden: list[str] = []
@@ -1265,7 +1253,7 @@ def read_policies(
     found: list[AssignedPolicy] = []
     for endpoint, kind in POLICY_ENDPOINTS:
         rows = read_collection(session, config, endpoint, parameters)
-        found.extend(project_policies(rows, kind))
+        found.extend(project_policies(rows, kind, config))
     return tuple(found)
 
 

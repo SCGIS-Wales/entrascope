@@ -132,6 +132,90 @@ def permitted_classes(source: str) -> tuple[set[str], list[str]]:
         undecided = remaining
 
 
+#: Graph property names that must never be written into a projection in src.
+#: Each is a field mapping, which hard rule 3 puts in config/fields.yaml. The
+#: list is the properties a projection actually reads, not every camel case
+#: word Microsoft uses, because the rule is about mappings rather than about
+#: spelling.
+MAPPED_PROPERTIES = frozenset(
+    {
+        "appRoleAssignmentRequired",
+        "createdDateTime",
+        "keyCredentials",
+        "notificationEmailAddresses",
+        "passwordCredentials",
+        "preferredSingleSignOnMode",
+        "preferredTokenSigningKeyThumbprint",
+        "requiredResourceAccess",
+        "servicePrincipalType",
+        "signInAudience",
+        "tokenEncryptionKeyId",
+    }
+)
+
+#: Where a mapping may legitimately be named: the module that reads the
+#: configuration files.
+MAPPING_EXEMPT = frozenset({"config.py"})
+
+
+def output_keys(tree: ast.AST) -> set[int]:
+    """Return the ids of literals used as keys of a dictionary being built.
+
+    A property name written as a key is this tool choosing what to call a
+    field in its own output. The provisioning report does exactly that, on
+    purpose, so that a live application can be read back in the vocabulary the
+    provisioner creates one with. Only a literal used to read a payload is a
+    field mapping.
+    """
+    keys: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            keys.update(
+                id(key)
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+    return keys
+
+
+@pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)
+def test_guard_field_mappings_live_in_configuration(path: Path) -> None:
+    """Guard six: a projection reads a property named in config, not in code.
+
+    Hard rule 3 lists field mappings among the things nothing in src may hold.
+    A Graph property name written into a module to read a payload is exactly
+    that, and it is the kind of thing that drifts quietly: the configuration
+    says one thing, the code reads another, and the two disagree for a release
+    before anybody notices.
+    """
+    if path.name in MAPPING_EXEMPT:
+        return
+    tree = ast.parse(path.read_text())
+    keys = output_keys(tree)
+    offenders = sorted(
+        {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in MAPPED_PROPERTIES
+            and id(node) not in keys
+        }
+    )
+    assert not offenders, (
+        f"{path.name} reads Graph properties that belong in config/fields.yaml: "
+        f"{offenders}"
+    )
+
+
+def test_the_mapping_guard_sees_a_read_and_not_a_key() -> None:
+    """The guard must tell a payload being read from a report being written."""
+    read = ast.parse('value = payload.get("signInAudience")')
+    written = ast.parse('report = {"signInAudience": value}')
+    assert not output_keys(read)
+    assert len(output_keys(written)) == 1
+
+
 @pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)
 def test_guard_no_classes(path: Path) -> None:
     """Guard two: no class without a framework contract comment above it."""

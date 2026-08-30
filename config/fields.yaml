@@ -51,6 +51,38 @@ pre_authorized_application:
   app_id: appId
   delegated_permission_ids: delegatedPermissionIds
 
+# One policy assigned to an enterprise application.
+policy:
+  object_id: id
+  display_name: displayName
+  definition: definition
+  is_organization_default: isOrganizationDefault
+
+# What the chooser reads. Names and identifiers only, because reading whole
+# objects to draw a list of names is the difference between a list that appears
+# and one that looks as though the tool has hung. The credential arrays are
+# small and are what makes an expired secret visible in the list rather than
+# only after opening the application.
+chooser_select:
+  applications:
+    - id
+    - appId
+    - displayName
+    - createdDateTime
+    - passwordCredentials
+    - keyCredentials
+  service_principals:
+    - id
+    - appId
+    - displayName
+    - createdDateTime
+    - servicePrincipalType
+    - appOwnerOrganizationId
+    - preferredSingleSignOnMode
+    - tags
+    - passwordCredentials
+    - keyCredentials
+
 service_principal:
   object_id: id
   app_id: appId
@@ -83,6 +115,8 @@ service_principal:
   # requires encrypted assertions.
   token_encryption_key_id: tokenEncryptionKeyId
   saml_single_sign_on_settings: samlSingleSignOnSettings
+  # Read from inside samlSingleSignOnSettings, not from the object.
+  saml_relay_state: relayState
   application_template_id: applicationTemplateId
   disabled_by_microsoft: disabledByMicrosoftStatus
 

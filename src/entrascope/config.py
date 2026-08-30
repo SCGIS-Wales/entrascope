@@ -309,6 +309,8 @@ class Fields(_Frozen):
     application: dict[str, str]
     service_principal: dict[str, str]
     pre_authorized_application: dict[str, str]
+    policy: dict[str, str]
+    chooser_select: dict[str, tuple[str, ...]]
     app_role_assignment: dict[str, str]
     oauth2_permission_grant: dict[str, str]
     membership: dict[str, str]

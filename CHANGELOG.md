@@ -50,6 +50,14 @@ versioning.
 - Whether a delegated scope needs an administrator is stated on each scope a
   resource exposes.
 - `logs graph-activity` takes `--pick`, like the log commands beside it.
+- A sixth structural guard: a Graph property read from a payload must be named
+  in `config/fields.yaml` rather than in `src`. It tells a read from an output
+  key, so the provisioning report keeps writing in the provisioner's own
+  vocabulary on purpose, and it caught one the sweep had missed.
+
+### Changed
+- The chooser's Graph properties and the policy projection moved into
+  `config/fields.yaml`, which is where hard rule 3 puts a field mapping.
 - Missing admin consent is reported rather than left to be inferred. Every
   permission a registration asks for is named, and carries whether only an
   administrator may consent to it and whether anybody did.

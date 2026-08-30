@@ -380,7 +380,9 @@ def project_saml(
             pluck(payload, mapping["token_encryption_key_id"])
         ),
         relay_state=text(
-            settings.get("relayState") if isinstance(settings, Mapping) else ""
+            pluck(settings, mapping["saml_relay_state"])
+            if isinstance(settings, Mapping)
+            else ""
         ),
     )
 
@@ -407,19 +409,18 @@ def project_pre_authorized(
 
 
 def project_policies(
-    payloads: Sequence[Mapping[str, Any]], kind: str
+    payloads: Sequence[Mapping[str, Any]], kind: str, config: Config
 ) -> tuple[AssignedPolicy, ...]:
     """Project the policies of one kind assigned to an enterprise application."""
+    mapping = config.fields.policy
     return tuple(
         AssignedPolicy(
-            object_id=text(item.get("id")),
-            display_name=text(item.get("displayName")),
+            object_id=text(pluck(item, mapping["object_id"])),
+            display_name=text(pluck(item, mapping["display_name"])),
             kind=kind,
-            definition=strings(item.get("definition")),
-            is_organization_default=(
-                None
-                if item.get("isOrganizationDefault") is None
-                else bool(item.get("isOrganizationDefault"))
+            definition=strings(pluck(item, mapping["definition"])),
+            is_organization_default=boolean(
+                pluck(item, mapping["is_organization_default"])
             ),
         )
         for item in payloads
