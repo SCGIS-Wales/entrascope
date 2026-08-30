@@ -25,6 +25,7 @@ from typing import Any
 
 from entrascope.config import Config, Logging
 from entrascope.redaction import redact, register_secret
+from entrascope.sanitise import one_line
 
 #: The logger namespace. Every logger is a child of this one.
 ROOT_NAME = "entrascope"
@@ -117,14 +118,25 @@ class _RedactionFilter(logging.Filter):
 
 
 def format_human(record: logging.LogRecord) -> str:
-    """Render one record as a line for a person to read."""
+    """Render one record as a line for a person to read.
+
+    The message is reduced to one line before it is written. Half of what this
+    tool logs is somebody else's text: a display name from the directory, a
+    failure message from an API. A newline in one forges a whole log line, and
+    a convincing one, because the reader has no way to tell a forged line from
+    a real one. An escape sequence is obeyed by the terminal printing it. The
+    JSON format escapes both on its own; this one has to be told.
+    """
     context = record_context(record)
-    correlation = str(context.pop("correlation_id", ""))[:8]
-    trailer = " ".join(f"{key}={value}" for key, value in sorted(context.items()))
+    correlation = one_line(str(context.pop("correlation_id", "")))[:8]
+    trailer = " ".join(
+        f"{one_line(str(key))}={one_line(str(value))}"
+        for key, value in sorted(context.items())
+    )
     parts = [
         f"{record.levelname:<8}",
         f"[{correlation}]" if correlation else "",
-        record.getMessage(),
+        one_line(record.getMessage()),
         trailer,
     ]
     return " ".join(part for part in parts if part)

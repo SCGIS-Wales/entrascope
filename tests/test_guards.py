@@ -208,12 +208,66 @@ def test_guard_field_mappings_live_in_configuration(path: Path) -> None:
     )
 
 
+def test_the_sanitiser_guard_catches_a_second_control_class() -> None:
+    """A guard that cannot fail is worth nothing, so this makes it fail."""
+    offending = ast.parse(
+        "import re\n"
+        'MINE = re.compile(r"[\\x00-\\x1f\\x7f]")\n'
+        'ALSO = re.compile(r"[\\x00-\\x08\\x0b-\\x1f]")\n'
+    )
+    caught = [
+        literal
+        for literal in string_literals(offending)
+        if CONTROL_RANGE.search(literal)
+    ]
+    assert len(caught) == 2
+    # An ordinary string is not a control class, whatever else it holds.
+    innocent = ast.parse('NAME = "an application called x00-x1f"')
+    assert not [
+        literal
+        for literal in string_literals(innocent)
+        if CONTROL_RANGE.search(literal)
+    ]
+
+
 def test_the_mapping_guard_sees_a_read_and_not_a_key() -> None:
     """The guard must tell a payload being read from a report being written."""
     read = ast.parse('value = payload.get("signInAudience")')
     written = ast.parse('report = {"signInAudience": value}')
     assert not output_keys(read)
     assert len(output_keys(written)) == 1
+
+
+#: The one module allowed to define how somebody else's text is made safe.
+SANITISE_MODULE = "sanitise.py"
+
+#: A character class naming the control range. Three modules had one of these
+#: before they shared one, and three copies of a security primitive is how two
+#: of them end up subtly different from the third. Matched against the literal
+#: itself: in source it is a raw string, so the backslashes are characters.
+CONTROL_RANGE = re.compile(r"\\x[0-9a-fA-F]{2}-\\x[0-9a-fA-F]{2}")
+
+
+@pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)
+def test_guard_one_sanitiser(path: Path) -> None:
+    """Guard seven: one rule for making somebody else's text safe to emit.
+
+    A display name, an API failure message and a typed identifier all reach a
+    terminal, a log stream or a query, and the rules that make each safe are
+    the same rules. Three modules held their own control character class before
+    this, which is how one of them comes to keep a newline the others strip.
+    """
+    if path.name == SANITISE_MODULE:
+        return
+    offenders = [
+        literal
+        for literal in string_literals(ast.parse(path.read_text()))
+        if CONTROL_RANGE.search(literal)
+    ]
+    assert not offenders, (
+        f"{path.name} defines its own control character class. Use "
+        f"entrascope.{SANITISE_MODULE.removesuffix('.py')} instead: {offenders}"
+    )
 
 
 @pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)

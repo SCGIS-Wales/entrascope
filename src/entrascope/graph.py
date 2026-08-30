@@ -7,7 +7,6 @@ rules and would hide the endpoints the guard test checks for.
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -22,6 +21,7 @@ from entrascope.config import Config
 from entrascope.http import Session, fan_out, get_json
 from entrascope.logger import get_logger
 from entrascope.models import ApiCallError, ApiError
+from entrascope.sanitise import bounded
 
 log = get_logger(__name__)
 
@@ -35,10 +35,6 @@ NEXT_LINK = "@odata.nextLink"
 VALUE = "value"
 
 
-#: Characters that have no business in a filter value and that no legitimate
-#: display name or identifier contains.
-CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
-
 #: A filter value longer than this is a mistake or an attack, not a name.
 MAX_FILTER_VALUE = 256
 
@@ -51,8 +47,7 @@ def odata_literal(value: str) -> str:
     it. Control characters are removed outright, and the length is bounded,
     because neither belongs in a name or an identifier.
     """
-    cleaned = CONTROL_CHARACTERS.sub("", value)[:MAX_FILTER_VALUE]
-    return cleaned.replace("'", "''")
+    return bounded(value, MAX_FILTER_VALUE).replace("'", "''")
 
 
 def graph_root(config: Config, *, beta: bool = False) -> str:

@@ -46,6 +46,7 @@ from entrascope.discovery import (
     discover_applications,
     discover_service_principals,
     is_first_party,
+    narrowed,
 )
 from entrascope.doctor import run_checks
 from entrascope.errors import explain, explain_api_error, known_codes, search
@@ -843,30 +844,6 @@ def require_workspace(workspace: str | None, config: Config, source: str = "") -
         "categories. Run entrascope doctor to see which are in place.\n"
         f"  {alternative}"
     )
-
-
-def narrowed[Row](
-    rows: Sequence[Row],
-    app_selector: str,
-    application_type: str | None,
-    matcher: Callable[[Row, str], bool],
-) -> tuple[Row, ...]:
-    """Narrow a listing by the selector and the type, the way every listing does.
-
-    Both listings take the same two options and mean the same thing by them.
-    The only difference is how an application is matched, because a
-    registration and an enterprise application are matched on different fields.
-    """
-    found = tuple(rows)
-    if app_selector:
-        found = tuple(row for row in found if matcher(row, app_selector))
-    if application_type:
-        found = tuple(
-            row
-            for row in found
-            if getattr(row, "application_type", None) == application_type
-        )
-    return found
 
 
 def route_options[Function: Callable[..., Any]](command: Function) -> Function:

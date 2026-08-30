@@ -9,7 +9,8 @@ Tools read. There is no tool that changes the directory.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, cast
 
 from azure.core.credentials import TokenCredential
@@ -17,7 +18,12 @@ from fastmcp import FastMCP
 
 from entrascope.config import Config, read_text_file
 from entrascope.credentials import resolve_auth
-from entrascope.discovery import discover_applications, discover_service_principals
+from entrascope.discovery import (
+    discover_applications,
+    discover_service_principals,
+    is_first_party,
+    narrowed,
+)
 from entrascope.doctor import run_checks
 from entrascope.errors import explain, known_codes, search
 from entrascope.graph import graph_token_provider
@@ -27,6 +33,7 @@ from entrascope.identity import whoami as run_whoami
 from entrascope.inspect import inspect as run_inspect
 from entrascope.inspect import search_gallery
 from entrascope.investigate import investigate as run_investigation
+from entrascope.investigate import matches, matches_principal
 from entrascope.logger import get_logger, new_correlation_id
 from entrascope.logs import (
     audit_categories,
@@ -93,6 +100,24 @@ def graph_session(
     return build_session(config, token), token
 
 
+@contextmanager
+def open_graph(
+    config: Config, credential: TokenCredential
+) -> Iterator[tuple[Session, Callable[[], str]]]:
+    """Yield a Graph session and close it afterwards.
+
+    Every tool that reads from Graph opens one and has to remember to close it.
+    Eight repetitions of the same try and finally is eight chances to forget,
+    and a session left open in a long lived server holds its connection pool
+    until the process ends.
+    """
+    session, token = graph_session(config, credential)
+    try:
+        yield session, token
+    finally:
+        session.close()
+
+
 def payload(rows: Any, config: Config) -> Any:
     """Return the structured content for a tool result."""
     return payload_for(rows, config)
@@ -135,22 +160,21 @@ def register_tools(
         target: str = "",
         severity: str | None = None,
         limit: int = 100,
+        kinds: list[str] | None = None,
         include_first_party: bool = False,
     ) -> dict[str, Any]:
         new_correlation_id()
-        session, token = graph_session(config, credential())
-        try:
+        with open_graph(config, credential()) as (session, token):
             result = run_investigation(
                 session,
                 config,
                 token,
                 target=target,
                 limit=limit,
+                kinds=kinds or None,
                 minimum_severity=cast("Severity | None", severity),
                 include_first_party=include_first_party,
             )
-        finally:
-            session.close()
         return dict(payload(result, config))
 
     @server.tool(
@@ -223,22 +247,15 @@ def register_tools(
         target: str, application_type: str | None = None
     ) -> dict[str, Any]:
         new_correlation_id()
-        session, token = graph_session(config, credential())
-        try:
-            return dict(
-                payload(
-                    run_inspect(
-                        session,
-                        config,
-                        token,
-                        target=target,
-                        kinds=[application_type] if application_type else [],
-                    ),
-                    config,
-                )
+        with open_graph(config, credential()) as (session, token):
+            report = run_inspect(
+                session,
+                config,
+                token,
+                target=target,
+                kinds=[application_type] if application_type else [],
             )
-        finally:
-            session.close()
+        return dict(payload(report, config))
 
     @server.tool(
         name="gallery_applications",
@@ -248,23 +265,32 @@ def register_tools(
             "and which single sign on modes it supports."
         ),
     )
-    def gallery_applications(term: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    def gallery_applications(term: str = "", limit: int = 50) -> dict[str, Any]:
+        """Search the gallery, saying when the answer is only a near match.
+
+        The gallery endpoint filters on a case sensitive prefix, so a search
+        often answers with what starts the same rather than with what was
+        asked for. The command says so. Returning the rows alone left an
+        assistant presenting near matches as though they were the answer, so
+        the note comes back with them.
+        """
         new_correlation_id()
-        session, _ = graph_session(config, credential())
-        try:
-            rows, _note = search_gallery(session, config, term, limit)
-        finally:
-            session.close()
-        return [
-            {
-                "display_name": row.get("displayName"),
-                "publisher": row.get("publisher"),
-                "categories": row.get("categories"),
-                "single_sign_on_modes": row.get("supportedSingleSignOnModes"),
-                "id": row.get("id"),
-            }
-            for row in rows
-        ]
+        with open_graph(config, credential()) as (session, _token):
+            rows, note = search_gallery(session, config, term, limit)
+        return {
+            "applications": [
+                {
+                    "display_name": row.get("displayName"),
+                    "publisher": row.get("publisher"),
+                    "categories": row.get("categories"),
+                    "single_sign_on_modes": row.get("supportedSingleSignOnModes"),
+                    "id": row.get("id"),
+                }
+                for row in rows
+            ],
+            "note": note,
+            "exact": not note,
+        }
 
     @server.tool(
         name="discover_applications",
@@ -275,14 +301,14 @@ def register_tools(
         ),
     )
     def discover_applications_tool(
+        app: str = "",
         filter_expression: str | None = None,
         application_type: str | None = None,
         expiring_only: bool = False,
         with_details: bool = True,
     ) -> list[dict[str, Any]]:
         new_correlation_id()
-        session, token = graph_session(config, credential())
-        try:
+        with open_graph(config, credential()) as (session, token):
             rows = discover_applications(
                 session,
                 config,
@@ -290,15 +316,10 @@ def register_tools(
                 filter_expression=filter_expression,
                 with_details=with_details,
             )
-        finally:
-            session.close()
-        if application_type:
-            rows = tuple(
-                row for row in rows if row.application_type == application_type
-            )
+        found = narrowed(rows, app, application_type, matches)
         if expiring_only:
-            rows = tuple(row for row in rows if row.expiring())
-        return list(payload(rows, config))
+            found = tuple(row for row in found if row.expiring())
+        return list(payload(found, config))
 
     @server.tool(
         name="discover_service_principals",
@@ -309,13 +330,14 @@ def register_tools(
         ),
     )
     def discover_service_principals_tool(
+        app: str = "",
         filter_expression: str | None = None,
         application_type: str | None = None,
+        include_first_party: bool = False,
         with_details: bool = True,
     ) -> list[dict[str, Any]]:
         new_correlation_id()
-        session, token = graph_session(config, credential())
-        try:
+        with open_graph(config, credential()) as (session, token):
             rows = discover_service_principals(
                 session,
                 config,
@@ -323,13 +345,11 @@ def register_tools(
                 filter_expression=filter_expression,
                 with_details=with_details,
             )
-        finally:
-            session.close()
-        if application_type:
-            rows = tuple(
-                row for row in rows if row.application_type == application_type
-            )
-        return list(payload(rows, config))
+        if not include_first_party:
+            rows = tuple(row for row in rows if not is_first_party(row, config))
+        return list(
+            payload(narrowed(rows, app, application_type, matches_principal), config)
+        )
 
     default_category = config.tables.default_audit_category
     known_categories = ", ".join(audit_categories(config))
@@ -353,8 +373,7 @@ def register_tools(
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         new_correlation_id()
-        session, _ = graph_session(config, credential())
-        try:
+        with open_graph(config, credential()) as (session, _token):
             rows = query_audit_graph(
                 session,
                 config,
@@ -363,8 +382,6 @@ def register_tools(
                 lookback_hours=lookback_hours,
                 top=limit,
             )
-        finally:
-            session.close()
         if failures_only:
             failures = set(config.fields.findings.audit_failure_results)
             rows = tuple(row for row in rows if row.result.lower() in failures)
@@ -421,24 +438,17 @@ def register_tools(
                     config,
                 )
             )
-        session, _ = graph_session(config, credential())
-        try:
-            return list(
-                payload(
-                    query_sign_ins_graph(
-                        session,
-                        config,
-                        kind=kind,
-                        app_id=app_id,
-                        failures_only=failures_only,
-                        lookback_hours=lookback_hours,
-                        top=limit,
-                    ),
-                    config,
-                )
+        with open_graph(config, credential()) as (session, _token):
+            rows = query_sign_ins_graph(
+                session,
+                config,
+                kind=kind,
+                app_id=app_id,
+                failures_only=failures_only,
+                lookback_hours=lookback_hours,
+                top=limit,
             )
-        finally:
-            session.close()
+        return list(payload(rows, config))
 
     @server.tool(
         name="graph_activity",

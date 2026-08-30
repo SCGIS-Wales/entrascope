@@ -21,6 +21,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from entrascope.models import ConfigError
+from entrascope.sanitise import bounded
 
 #: Environment variable that overrides where configuration is read from.
 CONFIG_DIR_VARIABLE = "ENTRASCOPE_CONFIG_DIR"
@@ -687,9 +688,6 @@ def load_kql(name: str, config: Config) -> str:
 #: Characters that end a KQL string literal or start an escape inside one.
 KQL_ESCAPES = {"\\": "\\\\", '"': '\\"', "'": "\\'"}
 
-#: Control characters have no place in a query parameter.
-CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
-
 #: A parameter longer than this is a mistake or an attack, not a name.
 MAX_PARAMETER = 512
 
@@ -702,7 +700,7 @@ def kql_literal(value: str) -> str:
     was meant to be matched by, and KQL can express a great deal more than a
     filter. Control characters are removed and the length is bounded.
     """
-    cleaned = CONTROL_CHARACTERS.sub("", value)[:MAX_PARAMETER]
+    cleaned = bounded(value, MAX_PARAMETER)
     return "".join(KQL_ESCAPES.get(character, character) for character in cleaned)
 
 
