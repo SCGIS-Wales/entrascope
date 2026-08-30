@@ -19,6 +19,53 @@ Reuse it exactly. Do not change it.
 - An alternative filename inside `~/.entra` may be named in configuration.
 - The secret is never logged and never printed.
 
+The contract above is the default and does not change. What follows extends it,
+so a machine set up before any of it still works untouched.
+
+### Where the file lives
+
+The directory and the file name are both settings under `file` in
+`credentials.yaml`, and `entrascope config credentials` writes them into the
+engineer's own configuration directory rather than asking anybody to edit a
+file by hand. The defaults are unchanged, so a machine that has never run the
+command reads `~/.entra/provisioner-credentials.json` as it always did.
+
+When the configured file is absent and other credential files match
+`file.discovery_glob` beside it, the ones that are there are offered and the
+choice is stored for the next run. Never without a terminal, never when a file
+was already named with `--credentials` or the environment variable, and never
+when the file that is there is unsafe: that refusal is the answer, and offering
+another file would be working around it.
+
+### A certificate instead of a secret
+
+A credential file carries `ClientID`, `TenantID` and then either `Secret` or
+`CertificatePath`. A file carrying both prefers the certificate: it is the
+stronger of the two, and somebody who has put one in place has said which they
+mean. `CertificatePassword` unlocks a PKCS12, and `SendCertificateChain` turns
+on subject name and issuer authentication.
+
+- A bare or relative `CertificatePath` is a file beside the credential file.
+- The certificate must be mode 0600, checked and refused the same way the
+  credential file is, because the private key in it is exactly as sensitive as
+  a secret.
+- A file carrying neither is refused where it is read, rather than failing
+  later as a token request nobody can explain.
+- `certificate.default_path` fills in for any credential file naming none of
+  its own, so a machine set up for certificates needs no change to every file.
+- The certificate password is added to the redaction filter the moment it is
+  known, exactly as the secret is.
+
+### Saying what is in force
+
+`credentials.posture` works out what a run would authenticate as without
+authenticating: which source would answer, whether it is a secret or a
+certificate, and which files are in force. Every question it asks is answered
+by the filesystem, the environment or PATH, so it costs nothing and is shown at
+the end of every run as one coloured line. Never for machine readable output,
+never without a terminal, and never able to stop a command: what it reports is
+worth nothing beside the command somebody actually asked for.
+
 ## Authentication sources
 
 Four sources, resolved in this order unless `--auth` names one explicitly. The
@@ -28,7 +75,7 @@ log record, so it is always obvious which identity produced a result.
 | Order | `--auth` | Mechanism | Identity |
 | --- | --- | --- | --- |
 | 1 | `file` | the credential file, client credentials flow | application |
-| 2 | `env` | `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID` | application |
+| 2 | `env` | `ARM_CLIENT_ID`, `ARM_TENANT_ID`, and `ARM_CLIENT_SECRET` or `ARM_CLIENT_CERTIFICATE_PATH` | application |
 | 3 | `azure-cli` | `AzureCliCredential`, the session from `az login` | delegated user |
 | 4 | `default` | `DefaultAzureCredential` | varies |
 

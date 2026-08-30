@@ -365,13 +365,27 @@ class CredentialFileSettings(_Frozen):
     environment_variable: str = "ENTRASCOPE_CREDENTIAL_FILE"
     required_directory_mode: str
     required_file_mode: str
+    #: What is offered when the configured file is not there.
+    discovery_glob: str = "*.json"
     keys: dict[str, str]
+
+
+class CertificateSettings(_Frozen):
+    """A certificate in place of a secret, which Entra accepts for either."""
+
+    keys: dict[str, str]
+    required_file_mode: str
+    resolve_relative_to_directory: bool = True
+    #: Used when the credential file names no certificate of its own.
+    default_path: str = ""
 
 
 class EnvironmentSettings(_Frozen):
     client_id: str
     secret: str
     tenant_id: str
+    certificate_path: str = ""
+    certificate_password: str = ""
 
 
 class SourceSettings(_Frozen):
@@ -380,10 +394,23 @@ class SourceSettings(_Frozen):
     identity_kind: dict[str, str]
 
 
+class BannerSettings(_Frozen):
+    """The line printed at the start of a run naming what is in force."""
+
+    enabled: bool = True
+    colour: str = "red"
+    destination: str = "stderr"
+    formats: tuple[str, ...] = ("table",)
+    prefix: str = "credentials:"
+
+
 class Credentials(_Frozen):
     file: CredentialFileSettings
+    certificate: CertificateSettings
     environment: EnvironmentSettings
     sources: SourceSettings
+    kinds: dict[str, str]
+    banner: BannerSettings
 
 
 class TransportSettings(_Frozen):
@@ -921,3 +948,55 @@ def load_config(explicit: Path | None = None) -> Config:
 def clear_cache() -> None:
     """Forget every cached configuration. Used by the test suite."""
     _load_cached.cache_clear()
+
+
+#: Header written above a configuration file entrascope maintains itself, so
+#: that somebody opening it knows why it holds only a few keys.
+WRITTEN_HEADER = (
+    "# Written by entrascope. It holds only what you have changed; everything\n"
+    "# else comes from the shipped defaults underneath it, so a release that\n"
+    "# adds a setting is picked up without you doing anything.\n"
+    "#\n"
+    "# Editing this by hand is fine. Run entrascope config show to see the\n"
+    "# result, and entrascope config path to see what is layered over what.\n"
+)
+
+#: Suffix for the copy kept when a file that somebody wrote is rewritten.
+BACKUP_SUFFIX = ".bak"
+
+
+def user_config_file(name: str, home: Path | None = None) -> Path:
+    """Return where one file of an engineer's own configuration belongs."""
+    return user_config_dir(home) / name
+
+
+def write_user_config(
+    name: str,
+    overrides: Mapping[str, Any],
+    home: Path | None = None,
+) -> tuple[Path, Path | None]:
+    """Merge some settings into an engineer's own configuration file.
+
+    Returns the file written and the backup taken, if one was needed. Anything
+    already in the file is kept, because a directory of somebody's own is a set
+    of changes rather than a replacement and this adds to it.
+
+    A file that carries comments is copied aside first. The comments do not
+    survive being parsed and written back, and losing somebody's notes without
+    saying so is worse than the extra file.
+    """
+    path = user_config_file(name, home)
+    existing: dict[str, Any] = {}
+    backup: Path | None = None
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+        existing = read_yaml(path)
+        if any(line.lstrip().startswith("#") for line in text.splitlines()):
+            backup = path.with_suffix(path.suffix + BACKUP_SUFFIX)
+            backup.write_text(text, encoding="utf-8")
+    merged = merge(existing, dict(overrides))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False)
+    path.write_text(f"{WRITTEN_HEADER}\n{body}", encoding="utf-8")
+    clear_cache()
+    return path, backup

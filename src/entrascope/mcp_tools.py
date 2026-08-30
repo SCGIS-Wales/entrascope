@@ -558,6 +558,12 @@ NOT_EXPOSED: dict[str, str] = {
         "Writes files to the machine. An assistant reads the configuration "
         "with the configuration tool instead."
     ),
+    "config credentials": (
+        "Chooses and stores where this machine reads its credentials from, "
+        "and asks a person which file to use. Where an assistant's own "
+        "credentials come from is a decision for the person who set it up, "
+        "and the configuration tool already reports what is in force."
+    ),
 }
 
 

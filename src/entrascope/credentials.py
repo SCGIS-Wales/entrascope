@@ -18,6 +18,7 @@ from pathlib import Path
 from azure.core.credentials import TokenCredential
 from azure.identity import (
     AzureCliCredential,
+    CertificateCredential,
     ClientSecretCredential,
     DefaultAzureCredential,
 )
@@ -33,6 +34,7 @@ from entrascope.models import (
     CheckResult,
     Credential,
     CredentialError,
+    CredentialPosture,
     IdentityKind,
 )
 
@@ -100,10 +102,12 @@ def resolve_file(
 
 
 def other_files(settings: Credentials, home: Path | None = None) -> tuple[str, ...]:
-    """Return the other credential files sitting in the directory.
+    """Return the credential files sitting in the directory.
 
     Somebody who keeps one file per tenant has the answer in front of them, and
-    naming it is more use than repeating what was expected.
+    naming it is more use than repeating what was expected. What counts as one
+    is configured rather than assumed, because a shop that names them .cred
+    should not have to rename them to be offered them.
     """
     directory = resolve_directory(settings, home)
     if not directory.is_dir():
@@ -111,8 +115,8 @@ def other_files(settings: Credentials, home: Path | None = None) -> tuple[str, .
     return tuple(
         sorted(
             item.name
-            for item in directory.iterdir()
-            if item.is_file() and item.suffix == ".json"
+            for item in directory.glob(settings.file.discovery_glob)
+            if item.is_file()
         )
     )
 
@@ -213,13 +217,114 @@ def check_file_mode(
     )
 
 
+def resolve_certificate(
+    settings: Credentials, raw: str, home: Path | None = None
+) -> Path:
+    """Return the certificate file a credential names.
+
+    A bare name or a relative path is taken as a file beside the credential
+    file, which is where somebody keeps a key that belongs to it. An absolute
+    path is used as it stands, and a leading tilde means the home directory as
+    it does everywhere else.
+    """
+    if raw.startswith("~"):
+        base = home if home is not None else Path.home()
+        return base / raw.removeprefix("~").lstrip("/")
+    candidate = Path(raw)
+    if (
+        candidate.is_absolute()
+        or not settings.certificate.resolve_relative_to_directory
+    ):
+        return candidate
+    return resolve_directory(settings, home) / candidate
+
+
+def check_certificate_mode(settings: Credentials, path: Path) -> CheckResult:
+    """Check that a certificate is readable only by its owner.
+
+    The file holds the private key as well as the certificate, so it is exactly
+    as sensitive as a secret and the same mode is required of it. A key
+    readable by others is a key somebody else can authenticate with.
+    """
+    wanted = required_mode(settings.certificate.required_file_mode)
+    if not path.is_file():
+        return CheckResult(
+            check="certificate",
+            passed=False,
+            detail=f"{path} does not exist.",
+            remediation=(
+                f"Point the {settings.certificate.keys['path']} key at a PEM or "
+                "PKCS12 file holding the certificate and its private key."
+            ),
+        )
+    actual = permission_bits(path)
+    if actual != wanted:
+        return CheckResult(
+            check="certificate",
+            passed=False,
+            detail=(
+                f"{path} has mode {format_mode(actual)} and must have "
+                f"{format_mode(wanted)}. Its private key is readable by others."
+            ),
+            remediation=f"chmod {format_mode(wanted)} {path}",
+        )
+    return CheckResult(
+        check="certificate",
+        passed=True,
+        detail=f"{path} has mode {format_mode(actual)}.",
+    )
+
+
 def check_permissions(
     settings: Credentials, home: Path | None = None, named: str | None = None
 ) -> tuple[CheckResult, ...]:
-    """Check the credential directory and the credential file together."""
-    return (
-        check_directory_mode(settings, home),
-        check_file_mode(settings, home, named),
+    """Check the credential directory, the credential file and any certificate.
+
+    The certificate is only checked when the file names one, because a file
+    that authenticates with a secret has no certificate to be wrong about.
+    """
+    directory = check_directory_mode(settings, home)
+    file = check_file_mode(settings, home, named)
+    if not file.passed:
+        # An unsafe or missing file is not parsed. There is nothing to learn
+        # from one that this has not already said, and reading a file the tool
+        # has just refused would be the tool ignoring its own answer.
+        return (directory, file)
+    named_certificate = certificate_named_by(settings, home, named)
+    if named_certificate is None:
+        return (directory, file)
+    return (directory, file, check_certificate_mode(settings, named_certificate))
+
+
+def certificate_named_by(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> Path | None:
+    """Return the certificate the credential file names, without failing.
+
+    Used where the answer is worth having and an unreadable file is not worth
+    stopping for: the permission checks report the file itself, and the boot
+    banner must never raise.
+    """
+    raw = certificate_path_in(settings, home, named)
+    return resolve_certificate(settings, raw, home) if raw else None
+
+
+def certificate_path_in(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> str:
+    """Return the raw certificate path a credential file carries, or nothing."""
+    path = resolve_file(settings, home, named)
+    if not path.is_file():
+        return ""
+    try:
+        payload = json.loads(read_checked(path, settings))
+    except OSError, json.JSONDecodeError, UnicodeDecodeError, CredentialError:
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(
+        payload.get(settings.certificate.keys["path"], "")
+        or settings.certificate.default_path
     )
 
 
@@ -263,31 +368,82 @@ def read_credential_file(
         raise CredentialError(f"{path} must contain a JSON object.")
 
     keys = settings.file.keys
-    missing = [name for name in keys.values() if not payload.get(name)]
+    certificate_keys = settings.certificate.keys
+    identifying = [keys["client_id"], keys["tenant_id"]]
+    missing = [name for name in identifying if not payload.get(name)]
     if missing:
         raise CredentialError(
             f"{path} is missing the keys {sorted(missing)}. "
-            f"The required keys are {sorted(keys.values())}."
+            f"Every credential file needs {sorted(identifying)}, and then "
+            f"either {keys['secret']} or {certificate_keys['path']}."
         )
+
+    raw_certificate = str(
+        payload.get(certificate_keys["path"], "") or settings.certificate.default_path
+    )
+    secret = str(payload.get(keys["secret"], "") or "")
+    if not raw_certificate and not secret:
+        raise CredentialError(
+            f"{path} carries neither {keys['secret']} nor "
+            f"{certificate_keys['path']}, so there is nothing to authenticate "
+            "with. Add one of the two."
+        )
+
+    certificate_path = ""
+    if raw_certificate:
+        resolved = resolve_certificate(settings, raw_certificate, home)
+        result = check_certificate_mode(settings, resolved)
+        if not result.passed:
+            raise CredentialError(f"{result.detail} Fix it with: {result.remediation}")
+        certificate_path = str(resolved)
+
     return Credential(
         client_id=str(payload[keys["client_id"]]),
         tenant_id=str(payload[keys["tenant_id"]]),
-        secret=str(payload[keys["secret"]]),
+        secret=secret,
+        certificate_path=certificate_path,
+        certificate_password=str(payload.get(certificate_keys["password"], "") or ""),
+        send_certificate_chain=bool(payload.get(certificate_keys["send_chain"], False)),
     )
 
 
 def read_environment(
-    settings: Credentials, environ: Mapping[str, str] | None = None
+    settings: Credentials,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
 ) -> Credential | None:
-    """Return client credentials from the environment, or None if incomplete."""
+    """Return client credentials from the environment, or None if incomplete.
+
+    A certificate is accepted here as it is in the credential file, under the
+    names the Azure provider for Terraform uses, so a shell already set up for
+    one is set up for this.
+    """
     source = os.environ if environ is None else environ
     names = settings.environment
     client_id = source.get(names.client_id, "")
-    secret = source.get(names.secret, "")
     tenant_id = source.get(names.tenant_id, "")
-    if not (client_id and secret and tenant_id):
+    secret = source.get(names.secret, "")
+    raw_certificate = (
+        source.get(names.certificate_path, "") if names.certificate_path else ""
+    )
+    if not (client_id and tenant_id) or not (secret or raw_certificate):
         return None
-    return Credential(client_id=client_id, tenant_id=tenant_id, secret=secret)
+    certificate_path = (
+        str(resolve_certificate(settings, raw_certificate, home))
+        if raw_certificate
+        else ""
+    )
+    return Credential(
+        client_id=client_id,
+        tenant_id=tenant_id,
+        secret=secret,
+        certificate_path=certificate_path,
+        certificate_password=(
+            source.get(names.certificate_password, "")
+            if names.certificate_password
+            else ""
+        ),
+    )
 
 
 def azure_cli_available(
@@ -343,6 +499,42 @@ def build_client_secret_credential(
     )
 
 
+def build_certificate_credential(
+    credential: Credential, verify: str | bool = True
+) -> TokenCredential:
+    """Build a token source that signs an assertion with a certificate.
+
+    Nothing about the private key leaves the file: azure-identity reads it and
+    signs with it, and the certificate itself is what Entra already holds. The
+    verification setting is passed through for the same reason it is for a
+    secret, so the token endpoint is reached the same way as everything else.
+    """
+    # framework contract: azure-identity requires a credential object. It is
+    # treated as configuration and carries none of our logic.
+    return CertificateCredential(
+        tenant_id=credential.tenant_id,
+        client_id=credential.client_id,
+        certificate_path=credential.certificate_path,
+        password=credential.certificate_password or None,
+        send_certificate_chain=credential.send_certificate_chain,
+        connection_verify=verify,
+    )
+
+
+def build_application_credential(
+    credential: Credential, verify: str | bool = True
+) -> TokenCredential:
+    """Build the token source for an application, whichever kind it carries.
+
+    One function, so that every caller gets a certificate where there is one
+    without having to remember to look. A credential with neither is refused
+    where it is read, so it cannot reach here.
+    """
+    if credential.kind() == "certificate":
+        return build_certificate_credential(credential, verify)
+    return build_client_secret_credential(credential, verify)
+
+
 def build_azure_cli_credential() -> TokenCredential:
     """Build a token source backed by the Azure CLI session.
 
@@ -359,15 +551,28 @@ def build_default_credential(verify: str | bool = True) -> TokenCredential:
     return DefaultAzureCredential(connection_verify=verify)
 
 
-def describe(source: AuthSource, credential: Credential | None) -> str:
-    """Return a one line description of an authenticated identity."""
-    if source == "file":
-        return "client credentials from the credential file"
-    if source == "env":
-        return "client credentials from the environment"
+def kind_label(settings: Credentials, kind: str) -> str:
+    """Return how one way of holding a credential is named in output."""
+    return settings.kinds.get(kind, kind)
+
+
+def describe(
+    source: AuthSource,
+    credential: Credential | None,
+    settings: Credentials | None = None,
+) -> str:
+    """Return a one line description of an authenticated identity.
+
+    A secret and a certificate are not interchangeable when something fails, so
+    which of the two is in use is part of saying what we authenticated as.
+    """
+    if source in ("file", "env"):
+        where = "the credential file" if source == "file" else "the environment"
+        kind = credential.kind() if credential is not None else "secret"
+        named = kind_label(settings, kind) if settings is not None else kind
+        return f"a {named} from {where}"
     if source == "azure-cli":
         return "the signed in Azure CLI session"
-    _ = credential
     return "the default azure-identity chain"
 
 
@@ -384,39 +589,43 @@ def try_source(
         credential = read_credential_file(settings, home, named)
         # Known secrets are redacted as literals as well as by pattern. This is
         # the one moment the secret is in hand, and a library that echoes what
-        # it was given will not have used a name we recognise.
+        # it was given will not have used a name we recognise. A certificate
+        # password is exactly as sensitive and is told the same thing.
         also_redact(credential.secret)
+        also_redact(credential.certificate_password)
         context = AuthContext(
             source=source,
             identity_kind=identity_kind(settings, source),
             tenant_id=credential.tenant_id,
             client_id=credential.client_id,
             description=(
-                "client credentials from "
+                f"a {kind_label(settings, credential.kind())} from "
                 f"{resolve_file(settings, home, named, environ)}"
             ),
         )
-        return context, build_client_secret_credential(
+        return context, build_application_credential(
             credential, verify_setting(config, environ)
         )
 
     if source == "env":
-        from_environment = read_environment(settings, environ)
+        from_environment = read_environment(settings, environ, home)
         if from_environment is None:
             names = settings.environment
             raise AuthSourceUnavailableError(
                 "The environment does not carry client credentials. Set "
-                f"{names.client_id}, {names.secret} and {names.tenant_id}."
+                f"{names.client_id}, {names.tenant_id} and either "
+                f"{names.secret} or {names.certificate_path}."
             )
         also_redact(from_environment.secret)
+        also_redact(from_environment.certificate_password)
         context = AuthContext(
             source=source,
             identity_kind=identity_kind(settings, source),
             tenant_id=from_environment.tenant_id,
             client_id=from_environment.client_id,
-            description=describe(source, from_environment),
+            description=describe(source, from_environment, settings),
         )
-        return context, build_client_secret_credential(
+        return context, build_application_credential(
             from_environment, verify_setting(config, environ)
         )
 
@@ -431,7 +640,7 @@ def try_source(
             identity_kind=identity_kind(settings, source),
             tenant_id=None,
             client_id=None,
-            description=describe(source, None),
+            description=describe(source, None, settings),
         )
         return context, build_azure_cli_credential()
 
@@ -440,7 +649,7 @@ def try_source(
         identity_kind=identity_kind(settings, "default"),
         tenant_id=None,
         client_id=None,
-        description=describe("default", None),
+        description=describe("default", None, settings),
     )
     return context, build_default_credential(verify_setting(config, environ))
 
@@ -515,3 +724,72 @@ def resolve_auth(
         "Run az login, or place client credentials in the credential file, or "
         "name a source explicitly with --auth."
     )
+
+
+def file_kind(
+    settings: Credentials, home: Path | None = None, named: str | None = None
+) -> str:
+    """Return what the credential file authenticates with, without failing.
+
+    A file that cannot be read at all reports nothing found. Saying which of
+    the two is in the file is worth having before a run, and no reason at all
+    to stop one.
+    """
+    try:
+        return read_credential_file(settings, home, named).kind()
+    except CredentialError:
+        return "none"
+
+
+def posture(
+    config: Config,
+    requested: AuthSource | None = None,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    named: str | None = None,
+) -> CredentialPosture:
+    """Return what a run would authenticate as, without authenticating.
+
+    Every question this asks is answered by the filesystem, the environment or
+    PATH, so it costs nothing and can be asked before every command. The one
+    thing it will not do is acquire a token: that belongs to the command being
+    run, and a report that authenticates twice is a report that is wrong about
+    how long the command took.
+    """
+    settings = config.credentials
+    path = resolve_file(settings, home, named, environ)
+    present = path.is_file()
+    problem = unsafe_reason(settings, home, named)
+    alternatives = tuple(
+        name for name in other_files(settings, home) if name != path.name
+    )
+    certificate = certificate_named_by(settings, home, named)
+    found = CredentialPosture(
+        source=None,
+        kind="none",
+        file_path=str(path),
+        file_present=present,
+        certificate_path=str(certificate) if certificate else "",
+        problem=problem,
+        alternatives=alternatives,
+    )
+
+    order = (requested,) if requested is not None else resolution_order(settings)
+    for source in order:
+        if requested is None and not source_enabled(settings, source):
+            continue
+        if source == "file":
+            if not present or problem:
+                continue
+            return found._replace(source="file", kind=file_kind(settings, home, named))
+        if source == "env":
+            from_environment = read_environment(settings, environ, home)
+            if from_environment is None:
+                continue
+            return found._replace(source="env", kind=from_environment.kind())
+        if source == "azure-cli":
+            if not azure_cli_available():
+                continue
+            return found._replace(source="azure-cli", kind="session")
+        return found._replace(source="default", kind="chain")
+    return found

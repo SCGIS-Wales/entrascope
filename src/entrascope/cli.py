@@ -52,8 +52,21 @@ from entrascope.config import (
     read_text_file,
     repository_config_dir,
     user_config_dir,
+    user_config_file,
+    write_user_config,
 )
-from entrascope.credentials import resolve_auth
+from entrascope.config import (
+    clear_cache as clear_config_cache,
+)
+from entrascope.credentials import (
+    check_certificate_mode,
+    kind_label,
+    other_files,
+    posture,
+    resolve_auth,
+    resolve_certificate,
+    resolve_directory,
+)
 from entrascope.discovery import (
     discover_applications,
     discover_service_principals,
@@ -99,6 +112,7 @@ from entrascope.models import (
     AuthSource,
     ConfigError,
     CredentialError,
+    CredentialPosture,
     EntrascopeError,
     Investigation,
     Severity,
@@ -115,8 +129,10 @@ from entrascope.render import (
     OUTPUT_FORMATS,
     OutputFormat,
     count_summary,
+    credential_banner,
     emit,
     emit_error,
+    emit_notice,
     exit_code_for_checks,
     portal_link,
     render,
@@ -128,6 +144,7 @@ from entrascope.render import (
     yaml_text,
 )
 from entrascope.render import show as show_rows
+from entrascope.sanitise import one_line
 from entrascope.stream import follow as follow_tenant
 from entrascope.stream import rows_from
 from entrascope.upgrade import (
@@ -193,6 +210,38 @@ def announce_new_version(config: Config, output: str) -> None:
         log.debug("the version notice was skipped", exc_info=True)
 
 
+def announce_credentials(
+    config: Config,
+    output: str,
+    auth: str | None,
+    credential_file: str | None,
+) -> None:
+    """Say once, in colour, what this run would authenticate as.
+
+    Never for machine readable output, because a banner in front of JSON is a
+    banner in somebody's parser. Never without a terminal, for the same reason.
+    Never able to stop a command running: what it reports is worth having and
+    is worth nothing at all compared with the command somebody actually asked
+    for.
+    """
+    settings = config.credentials.banner
+    try:
+        if not settings.enabled or output not in settings.formats:
+            return
+        if not sys.stderr.isatty():
+            return
+        chosen = auth if auth in AUTH_SOURCE_ORDER else None
+        emit_notice(
+            credential_banner(posture(config, chosen, named=credential_file), config),
+            config,
+            colour=settings.colour,
+        )
+    except Exception:
+        # Belt as well as braces, as with the version notice. Nothing about
+        # describing the credentials may stop a command from running.
+        log.debug("the credential banner was skipped", exc_info=True)
+
+
 def build_settings(
     config_dir: Path | None,
     auth: str | None,
@@ -212,6 +261,7 @@ def build_settings(
     announce_new_version(config, output)
     return {
         "config": config,
+        "config_dir": config_dir,
         "auth": auth,
         "output": output,
         "credential_file": credential_file,
@@ -800,6 +850,56 @@ Examples:
 """
 
 
+def worth_offering_a_file(
+    settings: Mapping[str, Any], current: CredentialPosture
+) -> bool:
+    """Return whether asking which credential file to use would be reasonable.
+
+    Only when nobody has already said which one: a file named on the command
+    line or in the environment is an answer, and asking again would be asking
+    somebody to repeat themselves. Only when the file source would have been
+    used at all. Only when there is something to offer. And only when there is
+    a terminal, because an unattended run must fail with the message it has
+    always failed with rather than wait for an answer nobody will give.
+    """
+    config: Config = settings["config"]
+    if settings.get("credential_file"):
+        return False
+    if settings.get("auth") not in (None, "file"):
+        return False
+    if os.environ.get(config.credentials.file.environment_variable, "").strip():
+        return False
+    if current.file_present or current.problem:
+        return False
+    return bool(current.alternatives) and sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def settle_the_credential_file(settings: MutableMapping[str, Any]) -> None:
+    """Ask which credential file to use when the configured one is not there.
+
+    Somebody who keeps one file per tenant has the answer sitting in the
+    directory already, and the ordinary failure names those files and stops.
+    Offering them instead costs one keystroke, and the choice is remembered so
+    that the next run does not ask. Choosing nothing carries on and fails in
+    the way it always did.
+    """
+    config: Config = settings["config"]
+    current = posture(config)
+    if not worth_offering_a_file(settings, current):
+        return
+    emit_error(
+        f"There is no {current.file_path}. These are in "
+        f"{resolve_directory(config.credentials)}."
+    )
+    picked = offer_the_files_there(config)
+    if picked is None:
+        return
+    settings["credential_file"] = picked
+    written, backup = store_credential_settings(filename=picked)
+    confirm_written(written, backup, {"filename": picked})
+    settings["config"] = load_config(settings.get("config_dir"))
+
+
 def authenticated_session(
     settings: MutableMapping[str, Any],
 ) -> tuple[Config, Session, Callable[[], str]]:
@@ -810,6 +910,7 @@ def authenticated_session(
     the two have different signatures.
     """
     config: Config = settings["config"]
+    settle_the_credential_file(settings)
     context, credential = resolve_auth(
         config, settings.get("auth"), named=settings.get("credential_file")
     )
@@ -1189,6 +1290,14 @@ def cli(
     context.obj[SETTINGS] = build_settings(
         config_dir, auth, output, verbose, None, credential_file
     )
+    # At the end of the run rather than the start of it. Running entrascope
+    # with no command opens a full screen chooser, and a line written before
+    # that is a line the chooser paints over. The bottom is also where
+    # somebody looks after reading an answer they did not expect.
+    settings: dict[str, Any] = context.obj[SETTINGS]
+    context.call_on_close(
+        lambda: announce_credentials(settings["config"], output, auth, credential_file)
+    )
 
 
 @cli.command(cls=GlobalOptionCommand)
@@ -1372,12 +1481,30 @@ def identifier_of(result: Investigation) -> str:
 
 
 CONFIG_EPILOG = """
-\b
 Examples:
 
+\b
   entrascope config path                    where configuration is read from
+  entrascope config credentials             which credentials are in force
   entrascope config export ~/.entrascope    take a copy to edit
   entrascope config show endpoints.yaml     read one file
+"""
+
+
+#: The file of an engineer's own configuration that credential settings go in.
+CREDENTIALS_FILE = "credentials.yaml"
+
+
+CREDENTIALS_EPILOG = """
+Examples:
+
+\b
+  entrascope config credentials                            what is in force now
+  entrascope config credentials --directory ~/.entra-prod  keep them elsewhere
+  entrascope config credentials --file staging.json        another tenant
+  entrascope config credentials --choose                   pick from what is there
+  entrascope config credentials --certificate app.pem      authenticate with a key
+  entrascope config credentials --forget                   back to the defaults
 """
 
 
@@ -1441,6 +1568,228 @@ def describe_directory(candidate: Path) -> str:
     if candidate == repository_config_dir():
         return "a development checkout"
     return "named explicitly, used as it stands"
+
+
+def credential_rows(config: Config, named: str | None) -> list[dict[str, str]]:
+    """Project what a run would authenticate with into rows to read.
+
+    The settings and what they resolve to, side by side. A directory written
+    with a tilde and the directory it means are different answers to different
+    questions, and somebody looking for why a file is not being found needs the
+    second one.
+    """
+    settings = config.credentials
+    current = posture(config, named=named)
+    certificate = settings.certificate.default_path
+    return [
+        {
+            "setting": "directory",
+            "value": settings.file.directory,
+            "in_effect": str(resolve_directory(settings)),
+        },
+        {
+            "setting": "file",
+            "value": settings.file.filename,
+            "in_effect": current.file_path
+            + ("" if current.file_present else "  (not there)"),
+        },
+        {
+            "setting": "certificate",
+            "value": certificate or "none, the credential file names its own",
+            "in_effect": current.certificate_path or "none",
+        },
+        {
+            "setting": "kind",
+            "value": kind_label(settings, current.kind),
+            "in_effect": f"through {current.source or 'nothing'}",
+        },
+    ]
+
+
+def store_credential_settings(**changes: str) -> tuple[Path, Path | None]:
+    """Write credential locations into an engineer's own configuration.
+
+    Only the keys being changed are written. The rest comes from the shipped
+    defaults underneath, so a release that adds a setting is picked up without
+    anybody editing a file.
+    """
+    file_keys = {"directory", "filename"}
+    overrides: dict[str, dict[str, str]] = {}
+    for key, value in changes.items():
+        section = "file" if key in file_keys else "certificate"
+        overrides.setdefault(section, {})[key] = value
+    return write_user_config(CREDENTIALS_FILE, overrides)
+
+
+def confirm_written(
+    path: Path, backup: Path | None, changes: Mapping[str, str]
+) -> None:
+    """Say what was written, where, and what it means for the next run."""
+    for key, value in changes.items():
+        emit(f"Set {key} to {value}.")
+    emit(f"Written to {path}, which is used automatically and survives an upgrade.")
+    if backup is not None:
+        emit(
+            f"That file had comments, which do not survive being written. The "
+            f"previous version is at {backup}."
+        )
+
+
+def offer_the_files_there(config: Config) -> str | None:
+    """Show what is in the credential directory and return the one picked.
+
+    Returns None where there is nothing to offer or nobody to ask, so the
+    caller carries on and the ordinary message about a missing file is what
+    somebody sees.
+    """
+    settings = config.credentials
+    directory = resolve_directory(settings)
+    names = other_files(settings)
+    if not names:
+        emit_error(
+            f"There are no credential files in {directory} matching "
+            f"{settings.file.discovery_glob}."
+        )
+        return None
+    # A file name is text this tool did not write. Anybody who can create a
+    # file in the directory chooses it, and a newline in one would forge a
+    # line of this list while an escape sequence would be obeyed by the
+    # terminal printing it. The name used to open the file is the real one;
+    # only what is shown is reduced to a line.
+    lines = [
+        Choice(key=name, label=f"{one_line(name):<40} in {directory}", name=name)
+        for name in names
+    ]
+    picked = choose(lines, title="Credential files", **palette(config))
+    if picked is not None:
+        return picked
+    if not available():
+        # No terminal the chooser can draw on. A numbered list still works
+        # wherever a prompt does, and is better than refusing to offer at all.
+        for index, name in enumerate(names, start=1):
+            emit(f"  {index}  {one_line(name)}")
+        answer = click.prompt(
+            "File to use, or nothing to stop", default="", show_default=False, type=str
+        ).strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(names):
+            return names[int(answer) - 1]
+    return None
+
+
+@config_group.command("credentials", epilog=CREDENTIALS_EPILOG)
+@click.option(
+    "--directory",
+    "directory",
+    default=None,
+    help="Keep credential files somewhere other than the default directory.",
+)
+@click.option(
+    "--file",
+    "filename",
+    default=None,
+    help="Use this file inside the credential directory by default.",
+)
+@click.option(
+    "--certificate",
+    "certificate",
+    default=None,
+    help="Authenticate with this certificate when a credential file names none "
+    "of its own. A PEM or PKCS12 file holding the private key.",
+)
+@click.option(
+    "--choose",
+    "choosing",
+    is_flag=True,
+    help="Pick from the credential files in the directory and remember the choice.",
+)
+@click.option(
+    "--forget",
+    "forget",
+    is_flag=True,
+    help="Drop what you have set here and go back to the shipped defaults.",
+)
+@click.pass_context
+@handled
+def config_credentials(
+    context: click.Context,
+    directory: str | None,
+    filename: str | None,
+    certificate: str | None,
+    choosing: bool,
+    forget: bool,
+) -> None:
+    """Say where credentials are read from, and change it.
+
+    entrascope reads credentials from a file, from the environment, from the
+    Azure CLI session or from the azure-identity chain, in that order. This
+    command is about the first of those: which directory the file is in, which
+    file, and whether it authenticates with a client secret or a certificate.
+
+    A file carries ClientID, TenantID, and then either Secret or
+    CertificatePath. The file must be mode 0600 and its directory 0700, and a
+    certificate must be 0600 as well, because the private key in it is exactly
+    as sensitive as a secret. entrascope refuses to run rather than use one
+    that anybody else can read.
+
+    Anything set here is written to your own configuration directory, layered
+    over the shipped defaults, and is never touched when entrascope is
+    upgraded. With no options it says what is in force and changes nothing.
+    """
+    settings = settings_of(context)
+    active: Config = settings["config"]
+
+    if forget:
+        path = user_config_file(CREDENTIALS_FILE)
+        if not path.is_file():
+            emit("Nothing of your own to forget. The shipped defaults are in use.")
+            return
+        path.unlink()
+        clear_config_cache()
+        emit(f"Removed {path}. The shipped defaults are in use again.")
+        return
+
+    changes: dict[str, str] = {}
+    if directory is not None:
+        changes["directory"] = str(Path(directory).expanduser())
+    if filename is not None:
+        changes["filename"] = filename
+    if certificate is not None:
+        resolved = resolve_certificate(active.credentials, certificate)
+        result = check_certificate_mode(active.credentials, resolved)
+        if not result.passed:
+            raise CredentialError(f"{result.detail} Fix it with: {result.remediation}")
+        changes["default_path"] = str(resolved)
+    if choosing:
+        picked = offer_the_files_there(active)
+        if picked is None:
+            return
+        changes["filename"] = picked
+
+    if changes:
+        written, backup = store_credential_settings(**changes)
+        confirm_written(written, backup, changes)
+        active = load_config(settings.get("config_dir"))
+        settings["config"] = active
+        emit("")
+
+    show(
+        credential_rows(active, settings.get("credential_file")),
+        settings,
+        "Credentials",
+        ("setting", "value", "in_effect"),
+        "settings",
+    )
+    current = posture(active, named=settings.get("credential_file"))
+    if current.problem:
+        emit_error(f"\n{current.problem}")
+    elif not current.file_present and current.alternatives:
+        emit(
+            f"\nThere is no {current.file_path}, but these are in "
+            f"{resolve_directory(active.credentials)}: "
+            f"{', '.join(one_line(name) for name in current.alternatives)}."
+            "\nRun entrascope config credentials --choose to pick one and "
+            "remember it."
+        )
 
 
 @config_group.command("export")

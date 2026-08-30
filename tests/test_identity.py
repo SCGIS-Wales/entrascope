@@ -71,7 +71,7 @@ def application(client_id: str = "aaaaaaaa-1111-1111-1111-111111111111") -> Auth
         identity_kind="application",
         tenant_id=TENANT,
         client_id=client_id,
-        description="client credentials from the credential file",
+        description="a client secret from the credential file",
     )
 
 
