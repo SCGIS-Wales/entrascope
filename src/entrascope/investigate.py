@@ -175,6 +175,29 @@ def configuration_findings(
             )
         )
 
+    # A confidential client marked as a fallback public client is refused when
+    # it presents its secret, and a native client not marked as one is refused
+    # for not presenting a secret it cannot hold. Both read as a credential
+    # problem and neither is.
+    if application.credentials and application.is_fallback_public_client:
+        findings.append(
+            finding_from(
+                rules.confidential_client_marked_public, "client type", application
+            )
+        )
+    elif (
+        application.redirect_uris.public_client
+        and not application.redirect_uris.web
+        and not application.redirect_uris.single_page
+        and not application.credentials
+        and not application.is_fallback_public_client
+    ):
+        findings.append(
+            finding_from(
+                rules.public_client_not_marked_public, "client type", application
+            )
+        )
+
     if application.requested_access_token_version == 1:
         findings.append(
             Finding(
@@ -185,6 +208,79 @@ def configuration_findings(
                 detail=rules.token_version_one.detail.strip(),
                 remediation=rules.token_version_one.remediation.strip(),
                 docs_url=rules.token_version_one.docs_url,
+            )
+        )
+    return tuple(findings)
+
+
+def finding_from(
+    rule: FindingRule, area: str, application: ApplicationSummary
+) -> Finding:
+    """Build one finding about an application from a configured rule.
+
+    The five fields every configuration driven finding fills in the same way,
+    written once so that adding a rule is adding a rule rather than copying a
+    constructor.
+    """
+    return Finding(
+        severity=severity_of(rule),
+        area=area,
+        subject=application.display_name,
+        identifier=application.app_id,
+        detail=rule.detail.strip(),
+        remediation=rule.remediation.strip(),
+        docs_url=rule.docs_url,
+    )
+
+
+def token_shaping_findings(
+    application: ApplicationSummary | None,
+    principal: ServicePrincipalSummary,
+    config: Config,
+) -> tuple[Finding, ...]:
+    """Report the things that change a token without the registration saying so.
+
+    A claims mapping policy assigned to an application that does not accept
+    mapped claims is ignored rather than refused, so the token comes out
+    without the claims and nothing anywhere reports an error. A SAML signing
+    certificate with nobody registered to be warned of its expiry ends single
+    sign on for everybody at once, on a date nobody is watching.
+    """
+    rules = config.fields.findings
+    claims_kind = config.fields.classification.claims_mapping_policy_kind
+    findings: list[Finding] = []
+    if (
+        any(item.kind == claims_kind for item in principal.policies)
+        and application is not None
+        and not application.accepts_mapped_claims
+    ):
+        findings.append(
+            Finding(
+                severity=severity_of(rules.claims_policy_without_accept_mapped_claims),
+                area="claims",
+                subject=principal.display_name,
+                identifier=principal.app_id,
+                detail=rules.claims_policy_without_accept_mapped_claims.detail.strip(),
+                remediation=(
+                    rules.claims_policy_without_accept_mapped_claims.remediation.strip()
+                ),
+                docs_url=rules.claims_policy_without_accept_mapped_claims.docs_url,
+            )
+        )
+    saml = principal.saml
+    if saml is not None and not saml.notification_email_addresses:
+        findings.append(
+            Finding(
+                severity=severity_of(rules.saml_without_expiry_notification),
+                area="single sign on",
+                subject=principal.display_name,
+                identifier=principal.app_id,
+                when=next(
+                    (item.end for item in saml.signing_certificates if item.end), ""
+                ),
+                detail=rules.saml_without_expiry_notification.detail.strip(),
+                remediation=rules.saml_without_expiry_notification.remediation.strip(),
+                docs_url=rules.saml_without_expiry_notification.docs_url,
             )
         )
     return tuple(findings)
@@ -455,38 +551,51 @@ def gather_logs(
     return audit, tuple(sign_ins), tuple(notes)
 
 
-def consent_gap_findings(
+def paired_findings(
     session: Session,
     config: Config,
     applications: Sequence[ApplicationSummary],
     principals: Sequence[ServicePrincipalSummary],
 ) -> tuple[Finding, ...]:
-    """Report every application asking for a permission nobody consented to.
+    """Report what needs both halves of an application to see.
+
+    A registration and its enterprise application answer different halves of
+    the same question. What was asked for is on one and what was consented is
+    on the other; whether claims may be mapped is on one and whether a policy
+    maps them is on the other. Neither half alone is a finding.
 
     The resources are read once for the whole investigation rather than once
-    per application, because almost every application in a tenant asks for
-    something of the same handful of resources, Microsoft Graph above all.
+    per application, because almost every application in a tenant asks
+    something of the same handful of them, Microsoft Graph above all.
     """
     by_app_id = {item.app_id: item for item in principals if item.app_id}
+    by_principal = {item.app_id: item for item in applications if item.app_id}
     resources = [
         request.resource_app_id
         for application in applications
         for request in application.requested_permissions
     ]
-    if not resources:
-        return ()
-    catalogue = read_permission_catalogue(session, config, app_ids=resources)
     findings: list[Finding] = []
-    for application in applications:
-        state = consent_state(application, by_app_id.get(application.app_id), catalogue)
-        finding = missing_consent_finding(
-            application.display_name,
-            application.app_id,
-            state["without_admin_consent"],
-            config,
+    if resources:
+        catalogue = read_permission_catalogue(session, config, app_ids=resources)
+        for application in applications:
+            state = consent_state(
+                application, by_app_id.get(application.app_id), catalogue
+            )
+            finding = missing_consent_finding(
+                application.display_name,
+                application.app_id,
+                state["without_admin_consent"],
+                config,
+            )
+            if finding is not None:
+                findings.append(finding)
+    for principal in principals:
+        findings.extend(
+            token_shaping_findings(
+                by_principal.get(principal.app_id), principal, config
+            )
         )
-        if finding is not None:
-            findings.append(finding)
     return tuple(findings)
 
 
@@ -580,7 +689,7 @@ def investigate(
                 for principal in principals
                 for finding in principal_findings(principal, config)
             ],
-            *consent_gap_findings(session, config, applications, principals),
+            *paired_findings(session, config, applications, principals),
             *audit_findings(audit, config),
             *sign_in_findings(sign_ins, config),
         ]

@@ -36,6 +36,16 @@ graph:
     service_principal_member_of: /servicePrincipals/{object_id}/memberOf
     granted_app_roles: /servicePrincipals/{object_id}/appRoleAssignments
     conditional_access_policies: /identity/conditionalAccess/policies
+    # Policies assigned to one enterprise application. Each one changes what a
+    # token carries or how it is issued, and none of it is recorded on the
+    # application itself, so an engineer comparing a registration against a
+    # token it produced cannot see any of this.
+    claims_mapping_policies: /servicePrincipals/{object_id}/claimsMappingPolicies
+    home_realm_discovery_policies: /servicePrincipals/{object_id}/homeRealmDiscoveryPolicies
+    token_lifetime_policies: /servicePrincipals/{object_id}/tokenLifetimePolicies
+    # Which of a resource's delegated permissions an ordinary user may consent
+    # to under the tenant's consent policy.
+    delegated_permission_classifications: /servicePrincipals/{object_id}/delegatedPermissionClassifications
     administrative_units: /directory/administrativeUnits
     # The gallery. These are the applications that can be added to a tenant,
     # which is what somebody means by searching for an application by name.

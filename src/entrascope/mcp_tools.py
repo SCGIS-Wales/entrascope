@@ -29,6 +29,7 @@ from entrascope.inspect import search_gallery
 from entrascope.investigate import investigate as run_investigation
 from entrascope.logger import get_logger, new_correlation_id
 from entrascope.logs import (
+    audit_categories,
     query_audit_graph,
     query_graph_activity,
     query_sign_ins_graph,
@@ -330,24 +331,61 @@ def register_tools(
             )
         return list(payload(rows, config))
 
-    audit_category = config.tables.audit_categories["application_management"]
+    default_category = config.tables.default_audit_category
+    known_categories = ", ".join(audit_categories(config))
     activity = config.tables.log_queries["graph-activity"]
 
     @server.tool(
         name="audit_events",
         description=(
-            "Read Entra directory changes to applications, the "
-            f"{audit_category} category. These do not appear in the Azure "
-            "subscription activity log."
+            "Read Entra directory changes. Defaults to the "
+            f"{default_category} category, which is where changes to "
+            "application registrations and enterprise applications are "
+            f"recorded. Categories: {known_categories}. These do not appear in "
+            "the Azure subscription activity log."
         ),
     )
-    def audit_events(limit: int | None = None) -> list[dict[str, Any]]:
+    def audit_events(
+        category: str | None = None,
+        target: str = "",
+        failures_only: bool = False,
+        lookback_hours: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         new_correlation_id()
         session, _ = graph_session(config, credential())
         try:
-            return list(payload(query_audit_graph(session, config, top=limit), config))
+            rows = query_audit_graph(
+                session,
+                config,
+                category=category,
+                target=target,
+                lookback_hours=lookback_hours,
+                top=limit,
+            )
         finally:
             session.close()
+        if failures_only:
+            failures = set(config.fields.findings.audit_failure_results)
+            rows = tuple(row for row in rows if row.result.lower() in failures)
+        return list(payload(rows, config))
+
+    @server.tool(
+        name="audit_categories",
+        description=(
+            "List the directory audit categories that can be read, and which "
+            "one audit_events reads when none is named."
+        ),
+    )
+    def audit_categories_tool() -> list[dict[str, Any]]:
+        return [
+            {
+                "category": name,
+                "graph_value": value or "every category",
+                "default": name == default_category,
+            }
+            for name, value in sorted(config.tables.audit_categories.items())
+        ]
 
     @server.tool(
         name="sign_ins",
@@ -368,18 +406,21 @@ def register_tools(
         new_correlation_id()
         if workspace_id:
             client = build_logs_client(credential(), config)
-            rows = query_sign_ins_monitor(
-                client,
-                config,
-                workspace_id,
-                kind=kind,
-                app_id=app_id or "",
-                lookback_hours=lookback_hours,
-                row_limit=limit,
+            return list(
+                payload(
+                    query_sign_ins_monitor(
+                        client,
+                        config,
+                        workspace_id,
+                        kind=kind,
+                        app_id=app_id or "",
+                        failures_only=failures_only,
+                        lookback_hours=lookback_hours,
+                        row_limit=limit,
+                    ),
+                    config,
+                )
             )
-            if failures_only:
-                rows = tuple(row for row in rows if row.failed())
-            return list(payload(rows, config))
         session, _ = graph_session(config, credential())
         try:
             return list(
@@ -390,6 +431,7 @@ def register_tools(
                         kind=kind,
                         app_id=app_id,
                         failures_only=failures_only,
+                        lookback_hours=lookback_hours,
                         top=limit,
                     ),
                     config,
@@ -477,6 +519,7 @@ COMMAND_TOOLS: dict[str, str] = {
     "logs signins": "sign_ins",
     "logs graph-activity": "graph_activity",
     "logs kinds": "sign_in_kinds",
+    "logs categories": "audit_categories",
     "errors explain": "explain_error",
     "errors list": "list_error_codes",
     "errors search": "list_error_codes",
@@ -512,6 +555,7 @@ def tool_names() -> tuple[str, ...]:
         "discover_applications",
         "discover_service_principals",
         "audit_events",
+        "audit_categories",
         "sign_ins",
         "graph_activity",
         "explain_error",

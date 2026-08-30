@@ -1,16 +1,22 @@
-// Directory changes to application registrations and service principals.
+// Directory changes recorded in the Entra audit log.
+//
 // Entra directory operations do not appear in the Azure subscription activity
-// log. They appear here, in the AuditLogs table, category ApplicationManagement.
-// Parameters: lookback_hours, target_filter, row_limit
+// log. They appear here, in the AuditLogs table.
+//
+// The category is a parameter so that any category can be asked for by name.
+// An empty category means every category rather than none.
+//
+// Parameters: lookback_hours, category, target_filter, row_limit
 let lookback = {lookback_hours}h;
 AuditLogs
 | where TimeGenerated > ago(lookback)
-| where Category == "ApplicationManagement"
+| where "{category}" == "" or Category == "{category}"
 | extend TargetName = tostring(TargetResources[0].displayName)
 | extend TargetId = tostring(TargetResources[0].id)
 | where "{target_filter}" == "" or TargetName has "{target_filter}" or TargetId == "{target_filter}"
 | project
     TimeGenerated,
+    Category,
     OperationName,
     Result,
     ResultReason,

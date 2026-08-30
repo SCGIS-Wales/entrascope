@@ -21,6 +21,7 @@ from entrascope.render import (
     EXIT_CHECKS_FAILED,
     EXIT_CONFIG,
     EXIT_CREDENTIALS,
+    EXIT_INTERRUPTED,
 )
 from tests.conftest import SENTINEL_SECRET, load_fixture
 
@@ -746,6 +747,79 @@ def test_cli_gallery(authenticated: None) -> None:
     result = run(["--auth", "file", "discover", "gallery", "amazon"])
     assert "Amazon Web Services" in result.output
     assert "saml" in result.output
+
+
+def test_an_interrupt_at_a_menu_leaves_the_way_every_command_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control C must mean the same thing wherever it is pressed.
+
+    A menu is drawn outside any command, so without its own handling an
+    interrupt there gave click's "Aborted!" and exit code 1, where every
+    command says "Interrupted." and exits 130, which is what a shell expects.
+    """
+    import entrascope.cli as module
+
+    monkeypatch.setattr(module, "available", lambda: True)
+    monkeypatch.setattr(
+        module,
+        "choose",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    left: list[int] = []
+    monkeypatch.setattr(module.os, "_exit", left.append)
+    monkeypatch.setattr(module, "emit_error", lambda message: left.append(message))
+    module.offer_commands(module.logs, click.Context(module.logs))
+    assert "Interrupted." in left
+    assert EXIT_INTERRUPTED in left
+
+
+def test_every_log_listing_offers_the_same_options() -> None:
+    """Two commands that read a log should not disagree about how to ask.
+
+    A reader who has learnt one of these must not have to learn the next, so
+    the options they share are named here and a command that quietly loses one
+    fails this rather than surprising somebody.
+    """
+    shared = {"--app", "--hours", "--limit", "--pick"}
+    for path in ("audit", "signins", "graph-activity"):
+        command = cli.commands["logs"].commands[path]  # type: ignore[attr-defined]
+        names = {
+            option
+            for parameter in command.params
+            for option in parameter.opts
+            if option.startswith("--")
+        }
+        assert shared <= names, f"logs {path} is missing {shared - names}"
+
+
+def test_the_two_routes_take_the_same_narrowing_options() -> None:
+    """A route is where an answer comes from, not which questions may be asked."""
+    for path in ("audit", "signins"):
+        command = cli.commands["logs"].commands[path]  # type: ignore[attr-defined]
+        names = {
+            option
+            for parameter in command.params
+            for option in parameter.opts
+            if option.startswith("--")
+        }
+        assert {"--route", "--workspace"} <= names
+
+
+def test_every_command_says_what_it_does() -> None:
+    """A command with no help is a command nobody will find."""
+    missing: list[str] = []
+    for name, command in cli.commands.items():
+        for path, leaf in (
+            [(name, command)]
+            if not isinstance(command, click.Group)
+            else [
+                (f"{name} {child}", found) for child, found in command.commands.items()
+            ]
+        ):
+            if not (leaf.get_short_help_str(120) or "").strip():
+                missing.append(path)
+    assert not missing, f"commands with no help: {missing}"
 
 
 def test_the_monitor_route_explains_itself_without_a_workspace(

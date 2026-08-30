@@ -1,0 +1,28 @@
+// Sign ins of one kind, from the table that holds that kind.
+//
+// The table is a parameter because each sign in kind lives in a table of its
+// own: interactive user sign ins in SigninLogs, service principal sign ins in
+// AADServicePrincipalSignInLogs, and so on. One template that named a single
+// table would answer every kind with the contents of that one table, which is
+// a wrong answer rather than an empty one.
+//
+// Parameters: table, lookback_hours, app_filter, failures_only, row_limit
+let lookback = {lookback_hours}h;
+{table}
+| where TimeGenerated > ago(lookback)
+| where {failures_only} == 0 or ResultType != 0
+| where "{app_filter}" == "" or AppId == "{app_filter}" or AppDisplayName has "{app_filter}"
+| project
+    TimeGenerated,
+    UserPrincipalName,
+    AppId,
+    AppDisplayName,
+    ResourceDisplayName,
+    ClientAppUsed,
+    IPAddress,
+    ResultType,
+    ResultDescription,
+    ConditionalAccessStatus,
+    CorrelationId
+| order by TimeGenerated desc
+| take {row_limit}

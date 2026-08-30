@@ -27,8 +27,8 @@ EXPECTED_FILES = (
 )
 
 EXPECTED_KQL = (
-    "signins_failures.kql",
-    "audit_applicationmanagement.kql",
+    "signins.kql",
+    "audit_events.kql",
     "graph_activity.kql",
 )
 
@@ -198,16 +198,15 @@ def test_config_directory_search_reports_what_it_tried(tmp_path: Path) -> None:
 def test_kql_templates_render_with_their_parameters() -> None:
     """Every template renders once its declared parameters are supplied."""
     from entrascope.config import load_config, load_kql, render_kql
+    from entrascope.logs import query_parameters
 
     config = load_config()
-    parameters = {
-        "lookback_hours": 24,
-        "app_filter": "",
-        "target_filter": "",
-        "row_limit": 50,
-    }
-    for name in ("signins_failures", "audit_applicationmanagement", "graph_activity"):
-        rendered = render_kql(load_kql(name, config), parameters)
+    # The parameters every template is given, so a template naming one this
+    # does not supply fails here rather than against somebody's workspace.
+    parameters: dict[str, Any] = dict(query_parameters(config))
+    identifiers = {"table": "SigninLogs"}
+    for name in ("signins", "audit_events", "graph_activity"):
+        rendered = render_kql(load_kql(name, config), parameters, identifiers)
         assert "{" not in rendered.replace("{app_filter}", "")
 
 
@@ -217,7 +216,7 @@ def test_missing_kql_template_lists_the_available_ones() -> None:
 
     with pytest.raises(ConfigError) as raised:
         load_kql("no_such_template", load_config())
-    assert "signins_failures" in str(raised.value)
+    assert "signins" in str(raised.value)
 
 
 def test_render_kql_reports_a_missing_parameter() -> None:
@@ -397,7 +396,7 @@ def test_a_kql_template_falls_back_to_the_defaults(
     monkeypatch.setattr("entrascope.config.defaults_directory", lambda: CONFIG_ROOT)
     clear_cache()
     config = build_config(mine)
-    assert "SigninLogs" in load_kql("signins_failures", config)
+    assert "{table}" in load_kql("signins", config)
     clear_cache()
 
 

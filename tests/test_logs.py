@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import unquote_plus
 
 import pytest
 import responses
@@ -31,6 +33,15 @@ from entrascope.models import ApiCallError, QueryResult
 from tests.conftest import load_fixture
 
 ROOT = "https://graph.microsoft.com/v1.0"
+
+
+def asked_url(index: int = 0) -> str:
+    """Return one recorded request URL with its query string decoded.
+
+    A filter reaches Graph percent encoded, and asserting against the encoded
+    form tests the encoding rather than the filter.
+    """
+    return unquote_plus(responses.calls[index].request.url or "")
 
 
 # framework contract: azure-monitor-query defines the client and table shapes,
@@ -64,7 +75,33 @@ class FakeClient:
 def test_audit_filter_uses_the_configured_category(config: Config) -> None:
     """Application management is the category that records registration changes."""
     assert audit_filter(config) == "category eq 'ApplicationManagement'"
-    assert audit_filter(config, "DirectoryManagement").endswith("DirectoryManagement'")
+    assert audit_filter(config, "directory-management").endswith("DirectoryManagement'")
+
+
+def test_every_category_sends_no_category_clause(config: Config) -> None:
+    """Asking for everything must not ask for a category called everything."""
+    assert audit_filter(config, "all") == ""
+
+
+def test_an_unknown_audit_category_lists_the_known_ones(config: Config) -> None:
+    """A name that is not a category says which are, rather than reading nothing."""
+    with pytest.raises(ApiCallError) as raised:
+        audit_filter(config, "no-such-category")
+    assert "application-management" in raised.value.error.message
+
+
+def test_the_audit_filter_narrows_the_period_at_graph(config: Config) -> None:
+    """A lookback applied after the rows arrive narrows nothing at all."""
+    moment = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    built = audit_filter(config, lookback_hours=6, now=moment)
+    assert "activityDateTime ge 2026-08-30T06:00:00Z" in built
+
+
+def test_the_audit_filter_matches_an_object_id_at_graph(config: Config) -> None:
+    """An object id can be matched at Graph; a display name cannot."""
+    identifier = "11111111-1111-1111-1111-111111111111"
+    assert f"t/id eq '{identifier}'" in audit_filter(config, target=identifier)
+    assert "t/id eq" not in audit_filter(config, target="Confidential web")
 
 
 @responses.activate
@@ -161,16 +198,54 @@ def test_signin_query_graph(config: Config) -> None:
 
 
 @responses.activate
-def test_signin_query_can_return_failures_only(config: Config) -> None:
-    """Filtering to failures is what an engineer diagnosing a problem wants."""
+def test_signin_query_asks_graph_for_the_failures(config: Config) -> None:
+    """Keeping the failures out of the newest rows answers a different question.
+
+    Asking for the newest twenty five sign ins and then discarding the
+    successes reports whether any of those twenty five failed, which is not
+    what somebody diagnosing a failure asked. The clause goes to Graph.
+    """
     responses.add(
         responses.GET,
         f"{ROOT}/auditLogs/signIns",
         json=load_fixture("sign_ins"),
         status=200,
     )
-    events = query_sign_ins_graph(build_session(config), config, failures_only=True)
-    assert [event.error_code for event in events] == [50011]
+    query_sign_ins_graph(build_session(config), config, failures_only=True)
+    assert "status/errorCode ne 0" in asked_url()
+
+
+@responses.activate
+def test_signin_query_narrows_at_graph_rather_than_afterwards(
+    config: Config,
+) -> None:
+    """The application, the period and the order all go to the service."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/auditLogs/signIns",
+        json=load_fixture("sign_ins"),
+        status=200,
+    )
+    query_sign_ins_graph(
+        build_session(config),
+        config,
+        app_id="aaaaaaaa-1111-1111-1111-111111111111",
+        lookback_hours=6,
+    )
+    asked = asked_url()
+    assert "appId eq 'aaaaaaaa-1111-1111-1111-111111111111'" in asked
+    assert "createdDateTime ge" in asked
+
+
+def test_sign_ins_ask_for_no_order_by_default(config: Config) -> None:
+    """The endpoint already answers newest first, and asking can be refused.
+
+    Microsoft Graph rejects $orderby combined with a $filter on a different
+    property on several reporting collections, so asking for an order the
+    endpoint already gives would trade a correct answer for a refusal. The
+    setting is configuration, so a tenant that wants it stated can say so.
+    """
+    assert config.tables.sign_in_filters.graph_order_by == ""
 
 
 @responses.activate

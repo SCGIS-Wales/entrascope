@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
+from contextlib import contextmanager
 from functools import wraps
 from importlib import import_module
 from importlib.util import find_spec
@@ -57,6 +64,7 @@ from entrascope.logger import (
     new_correlation_id,
 )
 from entrascope.logs import (
+    looks_like_identifier,
     query_audit_graph,
     query_audit_monitor,
     query_graph_activity,
@@ -221,15 +229,6 @@ SERVICE_PRINCIPAL_COLUMNS = (
     "app_role_assignment_required",
     "owners",
 )
-AUDIT_COLUMNS = (
-    "timestamp",
-    "activity",
-    "result",
-    "initiated_by",
-    "target",
-    "target_type",
-    "target_id",
-)
 #: What a table shows. Fewer columns, because a terminal that has to elide
 #: every one of them shows nothing at all. The identifiers and the rest of the
 #: record are in --output plain, json and yaml.
@@ -243,6 +242,7 @@ AUDIT_FAILURE_COLUMNS = (
     "initiated_by",
     "target",
 )
+AUDIT_COLUMNS = (*AUDIT_TABLE_COLUMNS, "target_type", "target_id")
 APPLICATION_TABLE_COLUMNS = (
     "display_name",
     "application_type",
@@ -265,14 +265,7 @@ SIGN_IN_TABLE_COLUMNS = (
 # A count of one, repeated down a column, tells nobody anything: where a
 # finding groups several events the detail says how many, in words. What was
 # missing was which application, exactly, and when.
-FINDING_TABLE_COLUMNS = (
-    "severity",
-    "area",
-    "subject",
-    "identifier",
-    "when",
-    "detail",
-)
+FINDING_TABLE_COLUMNS = ("severity", "area", "subject", "identifier", "when", "detail")
 SIGN_IN_COLUMNS = (
     "timestamp",
     "identity",
@@ -290,19 +283,16 @@ GRAPH_ACTIVITY_COLUMNS = (
     "duration_ms",
 )
 EXPLANATION_COLUMNS = ("code", "meaning", "likely_cause", "remediation", "docs_url")
-FINDING_COLUMNS = (
-    "severity",
-    "area",
-    "subject",
-    "identifier",
-    "when",
-    "detail",
-    "remediation",
-    "docs_url",
-)
+#: The table columns, and then what a table has no room for.
+FINDING_COLUMNS = (*FINDING_TABLE_COLUMNS, "remediation", "docs_url")
 
 #: Where a log query is answered from.
 ROUTES = ("graph", "monitor")
+
+#: The category name that means every category rather than one. It is a key in
+#: config/tables.yaml like any other; named here only so the heading can say
+#: "every category" rather than repeat the word.
+EVERY_CATEGORY = "all"
 
 #: Short forms an engineer is likely to type. They resolve to the full name and
 #: are deliberately absent from the help, so that one thing has one name there.
@@ -357,13 +347,27 @@ class GlobalOptionCommand(click.Command):
 
     def invoke(self, ctx: click.Context) -> Any:
         """Apply any global option given after the subcommand, then run."""
-        overrides: dict[str, Any] = {
-            name: ctx.params.pop(name)
-            for name in ("auth", "output", "verbose", "timezone")
-            if name in ctx.params
-        }
-        apply_overrides(ctx, overrides)
+        apply_overrides(ctx, pop_global_options(ctx))
         return super().invoke(ctx)
+
+
+#: The options accepted on either side of a subcommand, named once so that the
+#: declaration and the two places that consume them cannot drift apart.
+GLOBAL_OPTION_NAMES = ("auth", "output", "verbose", "timezone")
+
+
+def pop_global_options(context: click.Context) -> dict[str, Any]:
+    """Take the global options off a command's parameters and return them.
+
+    They are declared on the group and on every command, so the same value
+    arrives twice and only the one given later should win. Taking them off here
+    leaves each command's own signature untouched.
+    """
+    return {
+        name: context.params.pop(name)
+        for name in GLOBAL_OPTION_NAMES
+        if name in context.params
+    }
 
 
 def apply_overrides(context: click.Context, overrides: Mapping[str, Any]) -> None:
@@ -465,6 +469,19 @@ def offer_commands(group: click.Group, ctx: click.Context) -> Any:
     """
     if not available():
         return None
+    try:
+        return run_menu(group, ctx)
+    except KeyboardInterrupt:
+        # A menu is drawn outside any command, so the interrupt handling every
+        # command has does not cover it. Without this, control C at a menu
+        # gives click's own "Aborted!" and exit code 1, where everywhere else
+        # in the tool it says "Interrupted." and exits 130, which is what a
+        # shell expects from an interrupted process.
+        leave_now()
+
+
+def run_menu(group: click.Group, ctx: click.Context) -> Any:
+    """Draw the menu, run what is chosen, and draw it again."""
     root = ctx.find_root().command is group
     lines = [
         Choice(key=name, label=f"{name:<18} {summary(command)}")
@@ -645,14 +662,31 @@ APP_SELECTOR_HELP = (
     "Application id, object id, or part of a display name. Whichever of those "
     "the error message gave you."
 )
+FILTER_HELP = (
+    "OData filter passed to Microsoft Graph, for narrowing the query before it is sent."
+)
 ROUTE_HELP = (
     "Where to read from. The graph route uses the Microsoft Graph reporting "
     "API and works on any tenant. The monitor route uses a Log Analytics "
     "workspace and needs a diagnostic setting."
 )
 WORKSPACE_HELP = "Log Analytics workspace id. Required by the monitor route."
-HOURS_HELP = "How far back to look, in hours."
+GRAPH_ACTIVITY_WORKSPACE_HELP = (
+    "Log Analytics workspace id. Always required here, because this source "
+    "exists only through Azure Monitor. Set workspace_id in config/tables.yaml "
+    "to stop being asked."
+)
+HOURS_HELP = (
+    "How far back to look, in hours. Applied by the service on both routes, so "
+    "the rows returned are the newest inside the period rather than the newest "
+    "of all."
+)
 LIMIT_HELP = "Greatest number of rows to return."
+CATEGORY_HELP = (
+    "Audit category to read. Application management by default, which is where "
+    "changes to applications are recorded. Pass all for every category, and "
+    "run entrascope logs categories for the list."
+)
 TYPE_HELP = (
     "Show only one application type, for example confidential-client, "
     "single-page-application, managed-identity or workload-identity-federation."
@@ -758,6 +792,24 @@ def authenticated_session(
     return config, build_session(config, token), token
 
 
+@contextmanager
+def graph_session(
+    settings: MutableMapping[str, Any],
+) -> Iterator[tuple[Config, Session, Callable[[], str]]]:
+    """Yield an authenticated Graph session and close it afterwards.
+
+    Every command that reads from Graph opens one and has to remember to close
+    it. Eight repetitions of the same try and finally is eight chances to
+    forget, and a session left open holds a connection pool until the process
+    ends.
+    """
+    config, session, token = authenticated_session(settings)
+    try:
+        yield config, session, token
+    finally:
+        session.close()
+
+
 def logs_client(settings: Mapping[str, Any]) -> tuple[Config, Any]:
     """Resolve an identity and build the Log Analytics client."""
     config: Config = settings["config"]
@@ -791,6 +843,63 @@ def require_workspace(workspace: str | None, config: Config, source: str = "") -
         "categories. Run entrascope doctor to see which are in place.\n"
         f"  {alternative}"
     )
+
+
+def narrowed[Row](
+    rows: Sequence[Row],
+    app_selector: str,
+    application_type: str | None,
+    matcher: Callable[[Row, str], bool],
+) -> tuple[Row, ...]:
+    """Narrow a listing by the selector and the type, the way every listing does.
+
+    Both listings take the same two options and mean the same thing by them.
+    The only difference is how an application is matched, because a
+    registration and an enterprise application are matched on different fields.
+    """
+    found = tuple(rows)
+    if app_selector:
+        found = tuple(row for row in found if matcher(row, app_selector))
+    if application_type:
+        found = tuple(
+            row
+            for row in found
+            if getattr(row, "application_type", None) == application_type
+        )
+    return found
+
+
+def route_options[Function: Callable[..., Any]](command: Function) -> Function:
+    """Add the two options that decide where a log query is answered from.
+
+    They belong together: naming the monitor route without a workspace cannot
+    work, and a workspace means nothing on the graph route. Declaring them once
+    keeps the two log commands describing them the same way.
+    """
+    for option in (
+        click.option("--workspace", default=None, help=WORKSPACE_HELP),
+        click.option(
+            "--route",
+            type=click.Choice(ROUTES),
+            default="graph",
+            show_default=True,
+            help=ROUTE_HELP,
+        ),
+    ):
+        command = option(command)
+    return command
+
+
+def audit_title(config: Config, category: str | None) -> str:
+    """Return the heading for a listing of audit events.
+
+    Naming the category is the difference between a reader knowing they are
+    looking at part of the audit log and assuming they are looking at all of it.
+    """
+    name = category or config.tables.default_audit_category
+    if name == EVERY_CATEGORY:
+        return "Audit events, every category"
+    return f"Audit events, {name.replace('-', ' ')}"
 
 
 def show(
@@ -1139,23 +1248,20 @@ def investigate(
         entrascope investigate 6fb17f1c-7c19-41a5-bd50-63a16bd7346b
     """
     settings = settings_of(context)
-    config, session, token = authenticated_session(settings)
-    try:
-        with working(
-            f"Investigating {target}" if target else "Investigating the tenant"
-        ):
-            result = run_investigation(
-                session,
-                config,
-                token,
-                target=target,
-                limit=limit,
-                kinds=list(kinds) or None,
-                minimum_severity=cast("Severity | None", severity),
-                include_first_party=include_first_party,
-            )
-    finally:
-        session.close()
+    with (
+        graph_session(settings) as (config, session, token),
+        working(f"Investigating {target}" if target else "Investigating the tenant"),
+    ):
+        result = run_investigation(
+            session,
+            config,
+            token,
+            target=target,
+            limit=limit,
+            kinds=list(kinds) or None,
+            minimum_severity=cast("Severity | None", severity),
+            include_first_party=include_first_party,
+        )
 
     output: OutputFormat = settings.get("output", "table")
     if output != "table":
@@ -1595,12 +1701,7 @@ class InspectGroup(AliasGroup):
         With no subcommand the callback offers the list itself, so unlike other
         groups this one does not go on to offer its commands.
         """
-        overrides: dict[str, Any] = {
-            name: ctx.params.pop(name)
-            for name in ("auth", "output", "verbose", "timezone")
-            if name in ctx.params
-        }
-        apply_overrides(ctx, overrides)
+        apply_overrides(ctx, pop_global_options(ctx))
         return click.Group.invoke(self, ctx)
 
     def resolve_command(
@@ -1650,16 +1751,13 @@ def inspect_group(
         emit(context.get_help())
         return
     settings = settings_of(context)
-    config, session, token = authenticated_session(settings)
     output: OutputFormat = settings.get("output", "table")
-    try:
+    with graph_session(settings) as (config, session, token):
         # Read the directory once and stay in the chooser, because looking at
         # one application is almost never the whole question.
         with working("Reading applications"):
             catalogue = read_catalogue(session, config, token, everything=everything)
         browse(catalogue, session, config, token, list(kinds), output)
-    finally:
-        session.close()
 
 
 # Every command in this group accepts the global options too, so that nobody
@@ -1688,9 +1786,8 @@ def inspect_command(
     expiry, and its single sign on configuration.
     """
     settings = settings_of(context)
-    config, session, token = authenticated_session(settings)
     output: OutputFormat = settings.get("output", "table")
-    try:
+    with graph_session(settings) as (config, session, token):
         if target:
             with working(f"Looking for {target} and reading it in full"):
                 report = run_inspect(
@@ -1703,8 +1800,6 @@ def inspect_command(
         with working("Reading applications"):
             catalogue = read_catalogue(session, config, token, everything=everything)
         browse(catalogue, session, config, token, list(kinds), output)
-    finally:
-        session.close()
 
 
 def write_report(
@@ -1852,13 +1947,7 @@ def doctor(context: click.Context) -> None:
 
 
 @inspect_group.command("applications")
-@click.option(
-    "--filter",
-    "filter_expression",
-    default=None,
-    help="OData filter passed to Microsoft Graph, for narrowing the query "
-    "before it is sent.",
-)
+@click.option("--filter", "filter_expression", default=None, help=FILTER_HELP)
 @click.option("--type", "application_type", default=None, help=TYPE_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
 @click.option(
@@ -1883,8 +1972,7 @@ def discover_apps(
 ) -> None:
     """List application registrations with the attributes that explain a failure."""
     settings = settings_of(context)
-    config, session, token = authenticated_session(settings)
-    try:
+    with graph_session(settings) as (config, session, token):
         rows = discover_applications(
             session,
             config,
@@ -1892,12 +1980,7 @@ def discover_apps(
             filter_expression=filter_expression,
             with_details=not no_details,
         )
-    finally:
-        session.close()
-    if app_selector:
-        rows = tuple(row for row in rows if matches(row, app_selector))
-    if application_type:
-        rows = tuple(row for row in rows if row.application_type == application_type)
+    rows = narrowed(rows, app_selector, application_type, matches)
     if expiring:
         rows = tuple(row for row in rows if row.expiring())
     show(
@@ -1911,13 +1994,7 @@ def discover_apps(
 
 
 @inspect_group.command("enterprise-apps")
-@click.option(
-    "--filter",
-    "filter_expression",
-    default=None,
-    help="OData filter passed to Microsoft Graph, for narrowing the query "
-    "before it is sent.",
-)
+@click.option("--filter", "filter_expression", default=None, help=FILTER_HELP)
 @click.option("--type", "application_type", default=None, help=TYPE_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
 @click.option(
@@ -1938,8 +2015,7 @@ def discover_service_principals_command(
 ) -> None:
     """List enterprise applications, managed identities and SAML applications."""
     settings = settings_of(context)
-    config, session, token = authenticated_session(settings)
-    try:
+    with graph_session(settings) as (config, session, token):
         rows = discover_service_principals(
             session,
             config,
@@ -1947,14 +2023,9 @@ def discover_service_principals_command(
             filter_expression=filter_expression,
             with_details=not no_details,
         )
-    finally:
-        session.close()
     if not include_first_party:
         rows = tuple(row for row in rows if not is_first_party(row, config))
-    if app_selector:
-        rows = tuple(row for row in rows if matches_principal(row, app_selector))
-    if application_type:
-        rows = tuple(row for row in rows if row.application_type == application_type)
+    rows = narrowed(rows, app_selector, application_type, matches_principal)
     show(
         rows,
         settings,
@@ -1981,11 +2052,8 @@ def discover_gallery(context: click.Context, term: str, limit: int | None) -> No
         entrascope discover gallery "amazon web services"
     """
     settings = settings_of(context)
-    config, session, _ = authenticated_session(settings)
-    try:
+    with graph_session(settings) as (config, session, _):
         rows, note = search_gallery(session, config, term, limit or 50)
-    finally:
-        session.close()
     if note:
         emit_error(note)
     projected = [
@@ -2023,14 +2091,8 @@ logs.command_class = GlobalOptionCommand
 
 
 @logs.command("audit")
-@click.option(
-    "--route",
-    type=click.Choice(ROUTES),
-    default="graph",
-    show_default=True,
-    help=ROUTE_HELP,
-)
-@click.option("--workspace", default=None, help=WORKSPACE_HELP)
+@route_options
+@click.option("--category", default=None, help=CATEGORY_HELP)
 @click.option("--hours", type=int, default=None, help=HOURS_HELP)
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
@@ -2042,13 +2104,20 @@ def logs_audit(
     context: click.Context,
     route: str,
     workspace: str | None,
+    category: str | None,
     hours: int | None,
     limit: int | None,
     app_selector: str,
     failures_only: bool,
     pick: bool,
 ) -> None:
-    """Read directory changes to applications, the ApplicationManagement category."""
+    """Read directory changes recorded in the Entra audit log.
+
+    Application management by default, which is where changes to application
+    registrations and enterprise applications are recorded. Pass --category to
+    read another, or --category all for every one. Run entrascope logs
+    categories for the list.
+    """
     settings = settings_of(context)
     if route == "monitor":
         config, client = logs_client(settings)
@@ -2056,21 +2125,22 @@ def logs_audit(
             client,
             config,
             require_workspace(workspace, config),
+            category=category,
             target=app_selector,
             lookback_hours=hours,
             row_limit=limit,
         )
     else:
-        config, session, _ = authenticated_session(settings)
-        try:
-            rows = query_audit_graph(session, config, top=limit)
-        finally:
-            session.close()
-        if app_selector:
-            rows = tuple(
-                row for row in rows if app_selector.lower() in row.target.lower()
+        with graph_session(settings) as (config, session, _):
+            rows = query_audit_graph(
+                session,
+                config,
+                category=category,
+                target=app_selector,
+                lookback_hours=hours,
+                top=limit,
             )
-    failures = set(settings["config"].fields.findings.audit_failure_results)
+    failures = set(config.fields.findings.audit_failure_results)
     if failures_only:
         rows = tuple(row for row in rows if row.result.lower() in failures)
     # The reason is only worth a column when something failed, and then it is
@@ -2083,11 +2153,23 @@ def logs_audit(
     show(
         rows,
         settings,
-        "Application management audit events",
+        audit_title(config, category),
         AUDIT_COLUMNS,
         "audit events",
         table_columns,
     )
+    if app_selector and route == "graph" and not looks_like_identifier(app_selector):
+        # Graph can match an audit event against an object id and not against a
+        # name, so a name is matched here, over the rows that arrived. Somebody
+        # seeing nothing should know whether that means nothing happened or
+        # only that nothing among the newest rows did.
+        emit_error(
+            f"{app_selector!r} is a name, and Microsoft Graph can only narrow "
+            "an audit query by object id, so the name was matched over the "
+            f"newest {limit or config.tables.defaults.row_limit} events rather "
+            "than over the whole period. Pass the object id to narrow at the "
+            "service, or raise --limit."
+        )
     if anything_failed and not failures_only:
         emit_error(
             "Something failed above. Narrow with --failures-only, open one "
@@ -2096,15 +2178,12 @@ def logs_audit(
 
 
 @logs.command("signins")
-@click.option("--kind", default="interactive", help="Which sign in kind to read.")
 @click.option(
-    "--route",
-    type=click.Choice(ROUTES),
-    default="graph",
-    show_default=True,
-    help=ROUTE_HELP,
+    "--kind",
+    default="interactive",
+    help="Which sign in kind to read. Run entrascope logs kinds for the list.",
 )
-@click.option("--workspace", default=None, help=WORKSPACE_HELP)
+@route_options
 @click.option("--app", "app_id", default="", help=APP_SELECTOR_HELP)
 @click.option("--failures-only", is_flag=True, help="Show only sign ins that failed.")
 @click.option("--pick", is_flag=True, help=PICK_HELP)
@@ -2137,24 +2216,21 @@ def logs_signins(
             require_workspace(workspace, config),
             kind=kind,
             app_id=app_id,
+            failures_only=failures_only,
             lookback_hours=hours,
             row_limit=limit,
         )
-        if failures_only:
-            rows = tuple(row for row in rows if row.failed())
     else:
-        config, session, _ = authenticated_session(settings)
-        try:
+        with graph_session(settings) as (config, session, _):
             rows = query_sign_ins_graph(
                 session,
                 config,
                 kind=kind,
                 app_id=app_id or None,
                 failures_only=failures_only,
+                lookback_hours=hours,
                 top=limit,
             )
-        finally:
-            session.close()
     if pick:
         pick_one(rows, settings, SIGN_IN_TABLE_COLUMNS)
         return
@@ -2169,8 +2245,9 @@ def logs_signins(
 
 
 @logs.command("graph-activity")
-@click.option("--workspace", default=None, help="Log Analytics workspace id.")
+@click.option("--workspace", default=None, help=GRAPH_ACTIVITY_WORKSPACE_HELP)
 @click.option("--app", "app_id", default="", help=APP_SELECTOR_HELP)
+@click.option("--pick", is_flag=True, help=PICK_HELP)
 @click.option("--hours", type=int, default=None, help=HOURS_HELP)
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.pass_context
@@ -2179,6 +2256,7 @@ def logs_graph_activity(
     context: click.Context,
     workspace: str | None,
     app_id: str,
+    pick: bool,
     hours: int | None,
     limit: int | None,
 ) -> None:
@@ -2186,6 +2264,7 @@ def logs_graph_activity(
 
     This source exists only through Azure Monitor, and needs the
     MicrosoftGraphActivityLogs diagnostic category and a P1 or P2 licence.
+    There is no graph route, because this is the log of the Graph route itself.
     """
     settings = settings_of(context)
     config, client = logs_client(settings)
@@ -2197,7 +2276,41 @@ def logs_graph_activity(
         lookback_hours=hours,
         row_limit=limit,
     )
+    if pick:
+        pick_one(rows, settings, GRAPH_ACTIVITY_COLUMNS)
+        return
     show(rows, settings, "Microsoft Graph activity", GRAPH_ACTIVITY_COLUMNS, "requests")
+
+
+@logs.command("categories")
+@click.argument("category", required=False, default="")
+@click.pass_context
+@handled
+def logs_categories(context: click.Context, category: str) -> None:
+    """List the audit categories, or describe one of them.
+
+    Each is read with logs audit --category. Application management is the
+    default, because it is where changes to applications are recorded.
+    """
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    default = config.tables.default_audit_category
+    rows = [
+        {
+            "category": name,
+            "graph_value": value or "every category",
+            "default": name == default,
+        }
+        for name, value in sorted(config.tables.audit_categories.items())
+        if not category or category == name
+    ]
+    if category and not rows:
+        known = ", ".join(sorted(config.tables.audit_categories))
+        raise ConfigError(
+            f"No audit category named {category}. Known categories: {known}."
+        )
+    columns = ("category", "graph_value", "default")
+    show(rows, settings, "Audit categories", columns, "categories")
 
 
 @logs.command("kinds")

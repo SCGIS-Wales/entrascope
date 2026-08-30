@@ -204,6 +204,34 @@ the group rather than to the application, so nothing on the application records
 it, and a dynamic group is marked as such because its membership changes
 without anybody assigning anything.
 
+#### On behalf of, SAML and the policies that rewrite a token
+
+`exposes.pre_authorized_applications` names each client allowed to ask for this
+resource's scopes without a consent prompt, and names the scopes it may ask
+for. An on behalf of chain runs with nobody present to answer a prompt, so a
+client pre authorised for the wrong scope fails exactly like one that is not
+pre authorised at all, and only the scope names tell the two apart.
+
+`single_sign_on` covers what a registration does not show. For SAML that is
+which of several certificates actually signs, whether any address is registered
+to be warned before it expires, where the service provider begins sign in, the
+relay state and the token encryption key. A signing certificate nobody is
+warned about ends single sign on for everybody at once, on a date nobody is
+watching, so it is a finding of its own.
+
+`single_sign_on.policies` lists the claims mapping, home realm discovery and
+token lifetime policies assigned to the enterprise application. Each rewrites a
+token without the registration recording that it does, which is why a token
+compared against the registration that produced it can disagree with it. A
+claims mapping policy assigned to an application that does not accept mapped
+claims is ignored rather than refused, so it looks exactly like a policy that
+does not work; that pairing is reported as an error.
+
+`provisioning.isFallbackPublicClient` is the setting behind two failures that
+read as credential problems. A confidential client with it set presents its
+secret and is refused with AADSTS700025. A native client without it is refused
+with AADSTS7000218 for not sending a secret it cannot hold. Both are findings.
+
 With no argument and a terminal to draw on, it offers the list. Move with the
 arrow keys or with j and k, and the arrows keep moving while a search is being
 typed. Search with `/` as in vi, `s` cycles the order between name, name
@@ -292,6 +320,8 @@ entrascope logs signins --kind service-principal --failures-only
 entrascope logs signins --app my-api --hours 6
 entrascope logs graph-activity --workspace <workspace-id>
 entrascope logs kinds                                # which sign in kinds exist
+entrascope logs categories                           # which audit categories exist
+entrascope logs audit --category all --hours 6       # every category, last six hours
 entrascope logs audit --pick                         # number the lines and open one
 
 entrascope inspect gallery saml                      # what can be added ready made
@@ -334,6 +364,12 @@ Monitor, and both return the same fields.
 entrascope logs audit --route graph                        # any tenant
 entrascope logs audit --route monitor --workspace <id>     # longer retention
 ```
+
+The route decides where an answer comes from, not which questions may be asked.
+Both take the same `--app`, `--hours`, `--limit` and `--category`, and both
+narrow at the service rather than after the rows arrive, so a lookback is a
+lookback and not a suggestion. Each sign in kind is exported to a table of its
+own, and the monitor route reads the table belonging to the kind asked for.
 
 The Graph route needs only the right permission. The Monitor route needs a
 diagnostic setting and the Log Analytics Reader role, and gives longer

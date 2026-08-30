@@ -37,6 +37,7 @@ def register(
     grants: list[dict[str, Any]] | None = None,
     held_roles: list[dict[str, Any]] | None = None,
     member_of: list[dict[str, Any]] | None = None,
+    claims_policies: list[dict[str, Any]] | None = None,
 ) -> None:
     """Register the calls an inspection makes.
 
@@ -76,6 +77,18 @@ def register(
         (
             rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/memberOf",
             {"value": member_of or []},
+        ),
+        (
+            rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/claimsMappingPolicies",
+            {"value": claims_policies or []},
+        ),
+        (
+            rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/homeRealmDiscoveryPolicies",
+            {"value": []},
+        ),
+        (
+            rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/tokenLifetimePolicies",
+            {"value": []},
         ),
     ):
         responses.add(responses.GET, re.compile(pattern), json=body, status=200)
@@ -148,7 +161,7 @@ def test_matching_by_name_identifier_and_type(
     assert matching(projected, "nothing at all") == ()
 
 
-def test_exposed_api_projects_scopes_and_roles() -> None:
+def test_exposed_api_projects_scopes_and_roles(config: Config) -> None:
     """What an application offers to others is half of a permission failure."""
     payload = {
         "identifierUris": ["api://x"],
@@ -161,11 +174,56 @@ def test_exposed_api_projects_scopes_and_roles() -> None:
         },
         "appRoles": [{"value": "Reader", "displayName": "Reader", "isEnabled": True}],
     }
-    exposed = exposed_api(payload)
+    exposed = exposed_api(payload, config)
     assert exposed["delegated_scopes"][0]["value"] == "access_as_user"
     assert exposed["application_roles"][0]["value"] == "Reader"
-    assert exposed["pre_authorized_applications"] == ["abc"]
+    assert exposed["pre_authorized_applications"][0]["app_id"] == "abc"
     assert exposed["requested_access_token_version"] == 2
+
+
+def test_a_pre_authorised_client_names_the_scopes_it_may_ask_for(
+    config: Config,
+) -> None:
+    """Knowing a client is pre authorised is no use without knowing what for.
+
+    An on behalf of chain runs with nobody present to answer a consent prompt,
+    so a client pre authorised for the wrong scope fails exactly like one that
+    is not pre authorised at all.
+    """
+    payload = {
+        "api": {
+            "oauth2PermissionScopes": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "value": "access_as_user",
+                    "type": "User",
+                },
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "value": "read_all",
+                    "type": "Admin",
+                },
+            ],
+            "preAuthorizedApplications": [
+                {
+                    "appId": "client-1",
+                    "delegatedPermissionIds": ["11111111-1111-1111-1111-111111111111"],
+                },
+                {"appId": "client-2", "delegatedPermissionIds": ["not-a-known-id"]},
+            ],
+        }
+    }
+    exposed = exposed_api(payload, config)
+    first, second = exposed["pre_authorized_applications"]
+    assert first["permissions"] == ["access_as_user"]
+    # An identifier that cannot be resolved is shown rather than dropped.
+    assert second["permissions"] == ["not-a-known-id"]
+    # Which scopes need an administrator is the other half of the same question.
+    admin = {
+        row["value"]: row["admin_consent_required"]
+        for row in exposed["delegated_scopes"]
+    }
+    assert admin == {"access_as_user": False, "read_all": True}
 
 
 def test_exposed_api_tolerates_an_empty_application() -> None:
@@ -450,6 +508,85 @@ def test_inspecting_shows_the_groups_an_application_belongs_to(
 
 
 @responses.activate
+def test_inspecting_reports_the_policies_that_rewrite_a_token(
+    config: Config,
+) -> None:
+    """A policy changes the token and the registration records none of it."""
+    register(
+        claims_policies=[
+            {
+                "id": "policy-1",
+                "displayName": "Map the employee id",
+                "definition": ['{"ClaimsMappingPolicy":{}}'],
+                "isOrganizationDefault": False,
+            }
+        ]
+    )
+    report = inspect(build_session(config), config, target="Confidential web")
+    sso = report["single_sign_on"]
+    assert sso["policies"][0]["display_name"] == "Map the employee id"
+    assert sso["policies"][0]["kind"] == "claims mapping"
+    # The application does not accept mapped claims, so the policy is ignored.
+    assert "ignored" in sso["policy_note"]
+
+
+@responses.activate
+def test_a_saml_application_reports_what_signs_and_who_is_warned(
+    config: Config,
+) -> None:
+    """Both are absent from a registration and both end single sign on."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/applications",
+        json={"value": []},
+        status=200,
+    )
+    principal = {
+        "id": "77777777-7777-7777-7777-777777777777",
+        "appId": "aaaaaaaa-7777-7777-7777-777777777777",
+        "displayName": "Gallery SAML application",
+        "preferredSingleSignOnMode": "saml",
+        "servicePrincipalNames": ["https://sp.example.invalid"],
+        "replyUrls": ["https://sp.example.invalid/acs"],
+        "preferredTokenSigningKeyThumbprint": "AABBCC",
+        "notificationEmailAddresses": ["platform@example.invalid"],
+        "loginUrl": "https://sp.example.invalid/start",
+        "logoutUrl": "https://sp.example.invalid/slo",
+        "samlSingleSignOnSettings": {"relayState": "/dashboard"},
+        "keyCredentials": [{"keyId": "k", "endDateTime": "2027-01-01T00:00:00Z"}],
+    }
+    responses.add(
+        responses.GET,
+        f"{ROOT}/servicePrincipals",
+        json={"value": [principal]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        re.compile(rf"{re.escape(ROOT)}/servicePrincipals/[0-9a-f-]+$"),
+        json=principal,
+        status=200,
+    )
+    for pattern in (
+        rf"{re.escape(ROOT)}/servicePrincipals/[^/]+/",
+        rf"{re.escape(ROOT)}/oauth2PermissionGrants",
+    ):
+        responses.add(
+            responses.GET, re.compile(pattern), json={"value": []}, status=200
+        )
+    report = inspect(build_session(config), config, target="Gallery SAML")
+    saml = report["single_sign_on"]["saml"]
+    assert saml["preferred_signing_key_thumbprint"] == "AABBCC"
+    assert saml["notification_email_addresses"] == ["platform@example.invalid"]
+    assert saml["login_url"] == "https://sp.example.invalid/start"
+    assert saml["relay_state"] == "/dashboard"
+    # The note says which certificate signs, and says nothing about warning,
+    # because somebody is registered to be warned.
+    assert "AABBCC" in saml["signing_note"]
+    assert "nobody is warned" not in saml["signing_note"]
+
+
+@responses.activate
 def test_inspecting_something_that_is_not_there(config: Config) -> None:
     """A mistyped name says how to find the right one."""
     register()
@@ -545,7 +682,7 @@ def test_inspecting_one_application_is_a_handful_of_calls(config: Config) -> Non
     """
     register()
     inspect(build_session(config), config, target="Confidential web")
-    assert len(responses.calls) <= 12, [call.request.url for call in responses.calls]
+    assert len(responses.calls) <= 16, [call.request.url for call in responses.calls]
 
 
 @responses.activate

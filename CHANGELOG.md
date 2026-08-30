@@ -7,7 +7,57 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- Every sign in kind shared one KQL template, and that template named
+  SigninLogs. Azure Monitor exports each kind to a table of its own, so
+  `logs signins --kind service-principal --route monitor` returned interactive
+  user sign ins: a wrong answer rather than an empty one. The table now comes
+  from the kind.
+- `logs audit` ignored `--hours` entirely on the graph route and matched
+  `--app` against the rows after they arrived, so an application changed a
+  month ago looked like one that was never changed at all. Both routes now
+  narrow at the service.
+- `logs signins --failures-only` kept the failures out of whatever the newest
+  rows happened to be, which answers whether any of those were failures rather
+  than the question that was asked. The clause goes to the service.
+- `int()` over a Log Analytics cell raised on a float duration or a non numeric
+  result code and lost the entire result set with it.
+- The audit projection rendered the raw TargetResources array as the name of
+  one target where the template had not projected a name.
+- An interrupt at a menu gave click's own "Aborted!" and exit code 1, where
+  every command says "Interrupted." and exits 130.
+
 ### Added
+- The audit log can be read for any category, not only application management.
+  `--category all` reads every one, `logs categories` lists them, and there is
+  a matching tool on the MCP surface.
+- `exposes.pre_authorized_applications` names the scopes each pre authorised
+  client may ask for, rather than only its application id. An on behalf of
+  chain runs with nobody present to answer a consent prompt, so a client pre
+  authorised for the wrong scope fails exactly like one that is not pre
+  authorised at all.
+- A `single_sign_on` section: for SAML, which certificate actually signs, who
+  is warned before it expires, the login and logout URLs, the relay state and
+  the token encryption key; and for any protocol, the claims mapping, home
+  realm discovery and token lifetime policies assigned to the enterprise
+  application. Each rewrites a token without the registration recording it.
+- `isFallbackPublicClient` is read and reported. A confidential client with it
+  set is refused with AADSTS700025 and a native client without it with
+  AADSTS7000218; both now name the code.
+- Findings for a claims mapping policy on an application that does not accept
+  mapped claims, which Entra ignores rather than refuses, and for a SAML
+  signing certificate with nobody registered to be warned of its expiry.
+- Whether a delegated scope needs an administrator is stated on each scope a
+  resource exposes.
+- `logs graph-activity` takes `--pick`, like the log commands beside it.
+- A sixth structural guard: a Graph property read from a payload must be named
+  in `config/fields.yaml` rather than in `src`. It tells a read from an output
+  key, so the provisioning report keeps writing in the provisioner's own
+  vocabulary on purpose, and it caught one the sweep had missed.
+
+### Changed
+- The chooser's Graph properties and the policy projection moved into
+  `config/fields.yaml`, which is where hard rule 3 puts a field mapping.
 - Missing admin consent is reported rather than left to be inferred. Every
   permission a registration asks for is named, and carries whether only an
   administrator may consent to it and whether anybody did.
