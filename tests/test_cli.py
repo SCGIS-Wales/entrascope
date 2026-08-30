@@ -2061,7 +2061,15 @@ def test_attempt_prints_the_address_when_it_cannot_open_a_browser(
         ]
     )
     assert result.exit_code == 0
-    assert "login.microsoftonline.com" in result.output
+    # The whole endpoint, built the way the tool builds it. Looking for the
+    # host somewhere in the output would pass on an address that merely
+    # mentions it, and the address is the one thing the person has to trust.
+    from entrascope.config import load_config
+
+    endpoint = load_config().endpoints.authority.v2.authorize_endpoint_template.format(
+        tenant_id="tenant-1"
+    )
+    assert endpoint in result.output
     assert "code_challenge" in result.output
 
 

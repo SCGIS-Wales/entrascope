@@ -12,7 +12,12 @@ def test_credentials_in_an_address_are_redacted(config: Config) -> None:
     line = "pip install --index-url https://build:hunter2@pypi.invalid/simple thing"
     redacted = str(redact_with_config(line, config))
     assert "hunter2" not in redacted
-    assert "pypi.invalid" in redacted
+    # The whole line, so the test says what redaction produces rather than only
+    # that one word survived it. The address is still readable, which is the
+    # point: an index that cannot be reached is worth naming.
+    assert redacted == (
+        "pip install --index-url https://[redacted]@pypi.invalid/simple thing"
+    )
 
 
 def test_a_secret_in_a_query_string_is_redacted(config: Config) -> None:
