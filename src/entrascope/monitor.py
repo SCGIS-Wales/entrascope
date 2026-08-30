@@ -7,6 +7,7 @@ from concatenation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
@@ -42,7 +43,13 @@ def build_logs_client(
 
 
 def table_for(config: Config, category: str) -> str:
-    """Return the Log Analytics table that one diagnostic category populates."""
+    """Return the Log Analytics table that one diagnostic category populates.
+
+    Each sign in kind is exported to a table of its own, so a template naming a
+    single table would answer every kind with the contents of that one table.
+    That is a wrong answer rather than an empty one, which is the worse of the
+    two, so the table is looked up here and substituted as an identifier.
+    """
     for entry in config.tables.diagnostic_categories:
         if entry.name == category:
             return entry.table
@@ -57,9 +64,19 @@ def table_for(config: Config, category: str) -> str:
     )
 
 
-def build_query(config: Config, template_name: str, parameters: dict[str, Any]) -> str:
-    """Render one KQL template with its parameters."""
-    return render_kql(load_kql(template_name, config), parameters)
+def build_query(
+    config: Config,
+    template_name: str,
+    parameters: dict[str, Any],
+    identifiers: Mapping[str, str] | None = None,
+) -> str:
+    """Render one KQL template with its parameters.
+
+    Identifiers are named separately from values because they are substituted
+    unquoted. A table name cannot be a quoted literal, so each one is checked
+    against the shape a name may have before it reaches the query.
+    """
+    return render_kql(load_kql(template_name, config), parameters, identifiers)
 
 
 def to_query_result(response: Any) -> QueryResult:
@@ -128,9 +145,19 @@ def run_template(
     workspace_id: str,
     template_name: str,
     parameters: dict[str, Any],
+    identifiers: Mapping[str, str] | None = None,
 ) -> QueryResult:
-    """Render a KQL template and run it, in one call."""
-    lookback = int(parameters.get("lookback_hours", 24))
+    """Render a KQL template and run it, in one call.
+
+    The timespan given to the workspace is the same lookback the template was
+    rendered with, so the two cannot disagree about the period being asked for.
+    """
+    lookback = int(
+        parameters.get("lookback_hours", config.tables.defaults.lookback_hours)
+    )
     return query_workspace(
-        client, workspace_id, build_query(config, template_name, parameters), lookback
+        client,
+        workspace_id,
+        build_query(config, template_name, parameters, identifiers),
+        lookback,
     )

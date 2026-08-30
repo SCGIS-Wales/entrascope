@@ -78,12 +78,53 @@ def test_build_query_renders_a_template(config: Config) -> None:
     """A template is rendered with its parameters and never concatenated."""
     query = build_query(
         config,
-        "signins_failures",
-        {"lookback_hours": 6, "app_filter": "abc", "row_limit": 10},
+        "signins",
+        {
+            "lookback_hours": 6,
+            "app_filter": "abc",
+            "failures_only": 0,
+            "row_limit": 10,
+        },
+        {"table": "AADServicePrincipalSignInLogs"},
     )
     assert "let lookback = 6h;" in query
     assert 'AppId == "abc"' in query
     assert "take 10" in query
+    # The table is substituted unquoted, because it is a name and not a value.
+    assert "AADServicePrincipalSignInLogs" in query
+    assert '"AADServicePrincipalSignInLogs"' not in query
+
+
+def test_a_table_name_is_checked_before_it_reaches_a_query(config: Config) -> None:
+    """An identifier is substituted unquoted, so its shape is what makes it safe."""
+    from entrascope.models import ConfigError
+
+    with pytest.raises(ConfigError) as raised:
+        build_query(
+            config,
+            "signins",
+            {
+                "lookback_hours": 6,
+                "app_filter": "",
+                "failures_only": 0,
+                "row_limit": 10,
+            },
+            {"table": "SigninLogs | project Secret"},
+        )
+    assert "not a valid table" in str(raised.value)
+
+
+def test_every_sign_in_kind_reads_its_own_table(config: Config) -> None:
+    """One template naming one table answered every kind with the wrong rows."""
+    tables = {
+        kind: table_for(config, entry.diagnostic_category)
+        for kind, entry in config.tables.sign_in_kinds.items()
+    }
+    assert tables["interactive"] == "SigninLogs"
+    assert tables["service-principal"] == "AADServicePrincipalSignInLogs"
+    assert tables["managed-identity"] == "AADManagedIdentitySignInLogs"
+    assert tables["non-interactive"] == "AADNonInteractiveUserSignInLogs"
+    assert len(set(tables.values())) == len(tables)
 
 
 def test_logs_query_returns_rows(config: Config) -> None:
@@ -140,7 +181,12 @@ def test_run_template_passes_the_lookback(config: Config) -> None:
         client,
         config,
         "workspace",
-        "audit_applicationmanagement",
-        {"lookback_hours": 48, "target_filter": "", "row_limit": 5},
+        "audit_events",
+        {
+            "lookback_hours": 48,
+            "target_filter": "",
+            "category": "",
+            "row_limit": 5,
+        },
     )
     assert client.calls[0]["timespan"].total_seconds() == 48 * 3600

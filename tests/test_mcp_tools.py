@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_plus
 
 import pytest
 import responses
@@ -158,8 +159,21 @@ async def test_mcp_logs_tool(server: Any) -> None:
     )
     events = await call(server, "audit_events")
     assert events[0]["activity"] == "Update application"
-    sign_ins = await call(server, "sign_ins", {"failures_only": True})
-    assert [row["error_code"] for row in sign_ins] == [50011]
+    # The failures clause goes to Graph rather than being applied to whatever
+    # the newest rows happened to be, so the request is what carries it.
+    await call(server, "sign_ins", {"failures_only": True})
+    asked = unquote_plus(responses.calls[-1].request.url or "")
+    assert "status/errorCode ne 0" in asked
+
+
+@responses.activate
+async def test_mcp_audit_categories_tool(server: Any) -> None:
+    """An assistant can find out which categories exist before asking for one."""
+    rows = await call(server, "audit_categories")
+    names = {row["category"] for row in rows}
+    assert "application-management" in names
+    default = next(row for row in rows if row["default"])
+    assert default["category"] == "application-management"
 
 
 @responses.activate
@@ -365,7 +379,7 @@ async def test_the_configuration_can_be_read_but_not_written(server: Any) -> Non
 
     listing = await call(server, "configuration")
     assert "endpoints.yaml" in listing["files"]
-    assert "signins_failures" in listing["kql_templates"]
+    assert "signins" in listing["kql_templates"]
     one = await call(server, "configuration", {"name": "tables.yaml"})
     assert "diagnostic_categories" in one["contents"]
     assert "config export" in NOT_EXPOSED

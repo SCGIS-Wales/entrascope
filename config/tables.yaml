@@ -32,44 +32,95 @@ diagnostic_categories:
     description: Every Microsoft Graph request made against the tenant.
 
 audit_categories:
-  application_management: ApplicationManagement
+  # Every directory audit category worth asking for by name. The left hand side
+  # is what entrascope calls it on the command line, the right hand side is the
+  # value Microsoft Graph records in the category property. Add a row here and
+  # entrascope logs audit --category accepts it; nothing in src changes.
+  application-management: ApplicationManagement
+  user-management: UserManagement
+  group-management: GroupManagement
+  role-management: RoleManagement
+  policy: Policy
+  directory-management: DirectoryManagement
+  device-management: DeviceManagement
+  resource-management: ResourceManagement
+  authorisation: Authorization
+  # Every category. Selected by name like the rest, and it sends no category
+  # clause at all rather than a clause naming a category that does not exist.
+  all: ""
+
+# The category asked for when none is named. Application management is where
+# changes to application registrations and enterprise applications are
+# recorded, which is what this tool exists to diagnose.
+default_audit_category: application-management
+
+# Applied to every sign in kind. Written once here rather than repeated under
+# each kind, because they are the same property names whichever kind is asked
+# for, and a value repeated four times is a value that will disagree with
+# itself eventually.
+sign_in_filters:
+  # Narrows to one application at Microsoft Graph. Applied after the rows
+  # arrive it could only narrow the newest rows, so an application that last
+  # signed in an hour ago would look like one that never has.
+  graph_app_template: "appId eq '{app_id}'"
+  # Narrows to a period, for the same reason.
+  graph_since_template: "createdDateTime ge {since}"
+  # Keeps only the sign ins that failed. Status zero is success.
+  graph_failures_filter: "status/errorCode ne 0"
+  # Newest first. A log read without an order is a log read in whatever order
+  # the service felt like.
+  graph_order_by: "createdDateTime desc"
 
 sign_in_kinds:
   # OData filters for the Graph reporting API, and the KQL template that
   # answers the same question through Azure Monitor. Graph reports every sign
-  # in kind from one endpoint, distinguished by signInEventTypes.
+  # in kind from one endpoint, distinguished by signInEventTypes. Azure Monitor
+  # holds each kind in a table of its own, which is the diagnostic_category
+  # below, so the template is given the table to read rather than naming one.
   interactive:
     # The version 1.0 signIns endpoint returns interactive sign ins and does
     # not carry the signInEventTypes property, so no filter is sent.
     graph_filter: ""
     graph_beta: false
     diagnostic_category: SignInLogs
-    kql_template: signins_failures
+    kql_template: signins
   non-interactive:
     # signInEventTypes exists on the beta endpoint only.
     graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'nonInteractiveUser')"
     diagnostic_category: NonInteractiveUserSignInLogs
-    kql_template: signins_failures
+    kql_template: signins
   service-principal:
     # signInEventTypes exists on the beta endpoint only.
     graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'servicePrincipal')"
     diagnostic_category: ServicePrincipalSignInLogs
-    kql_template: signins_failures
+    kql_template: signins
   managed-identity:
     # signInEventTypes exists on the beta endpoint only.
     graph_beta: true
     graph_filter: "signInEventTypes/any(t: t eq 'managedIdentity')"
     diagnostic_category: ManagedIdentitySignInLogs
-    kql_template: signins_failures
+    kql_template: signins
 
 log_queries:
   # Filters and templates for the other log sources.
   audit:
     graph_filter_template: "category eq '{category}'"
+    # How far back to look, applied at Microsoft Graph rather than after the
+    # rows arrive. Without it a lookback narrows nothing and the newest rows
+    # come back whatever period was asked for.
+    graph_since_template: "activityDateTime ge {since}"
+    # One application, matched at Microsoft Graph on the object it changed. A
+    # filter applied after the rows arrive can only narrow the newest rows,
+    # which is why an application changed last month looks like one that was
+    # never changed at all.
+    graph_target_template: "targetResources/any(t: t/id eq '{target}')"
+    # What to sort by, newest first. A log read without an order is a log read
+    # in whatever order the service felt like.
+    graph_order_by: "activityDateTime desc"
     diagnostic_category: AuditLogs
-    kql_template: audit_applicationmanagement
+    kql_template: audit_events
   graph-activity:
     graph_filter_template: ""
     diagnostic_category: MicrosoftGraphActivityLogs

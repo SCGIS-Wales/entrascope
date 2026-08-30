@@ -304,6 +304,11 @@ FINDING_COLUMNS = (
 #: Where a log query is answered from.
 ROUTES = ("graph", "monitor")
 
+#: The category name that means every category rather than one. It is a key in
+#: config/tables.yaml like any other; named here only so the heading can say
+#: "every category" rather than repeat the word.
+EVERY_CATEGORY = "all"
+
 #: Short forms an engineer is likely to type. They resolve to the full name and
 #: are deliberately absent from the help, so that one thing has one name there.
 ALIASES = {"apps": "applications", "sps": "enterprise-apps"}
@@ -651,8 +656,17 @@ ROUTE_HELP = (
     "workspace and needs a diagnostic setting."
 )
 WORKSPACE_HELP = "Log Analytics workspace id. Required by the monitor route."
-HOURS_HELP = "How far back to look, in hours."
+HOURS_HELP = (
+    "How far back to look, in hours. Applied by the service on both routes, so "
+    "the rows returned are the newest inside the period rather than the newest "
+    "of all."
+)
 LIMIT_HELP = "Greatest number of rows to return."
+CATEGORY_HELP = (
+    "Audit category to read. Application management by default, which is where "
+    "changes to applications are recorded. Pass all for every category, and "
+    "run entrascope logs categories for the list."
+)
 TYPE_HELP = (
     "Show only one application type, for example confidential-client, "
     "single-page-application, managed-identity or workload-identity-federation."
@@ -791,6 +805,18 @@ def require_workspace(workspace: str | None, config: Config, source: str = "") -
         "categories. Run entrascope doctor to see which are in place.\n"
         f"  {alternative}"
     )
+
+
+def audit_title(config: Config, category: str | None) -> str:
+    """Return the heading for a listing of audit events.
+
+    Naming the category is the difference between a reader knowing they are
+    looking at part of the audit log and assuming they are looking at all of it.
+    """
+    name = category or config.tables.default_audit_category
+    if name == EVERY_CATEGORY:
+        return "Audit events, every category"
+    return f"Audit events, {name.replace('-', ' ')}"
 
 
 def show(
@@ -2031,6 +2057,7 @@ logs.command_class = GlobalOptionCommand
     help=ROUTE_HELP,
 )
 @click.option("--workspace", default=None, help=WORKSPACE_HELP)
+@click.option("--category", default=None, help=CATEGORY_HELP)
 @click.option("--hours", type=int, default=None, help=HOURS_HELP)
 @click.option("--limit", type=int, default=None, help=LIMIT_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
@@ -2042,13 +2069,20 @@ def logs_audit(
     context: click.Context,
     route: str,
     workspace: str | None,
+    category: str | None,
     hours: int | None,
     limit: int | None,
     app_selector: str,
     failures_only: bool,
     pick: bool,
 ) -> None:
-    """Read directory changes to applications, the ApplicationManagement category."""
+    """Read directory changes recorded in the Entra audit log.
+
+    Application management by default, which is where changes to application
+    registrations and enterprise applications are recorded. Pass --category to
+    read another, or --category all for every one. Run entrascope logs
+    categories for the list.
+    """
     settings = settings_of(context)
     if route == "monitor":
         config, client = logs_client(settings)
@@ -2056,6 +2090,7 @@ def logs_audit(
             client,
             config,
             require_workspace(workspace, config),
+            category=category,
             target=app_selector,
             lookback_hours=hours,
             row_limit=limit,
@@ -2063,14 +2098,17 @@ def logs_audit(
     else:
         config, session, _ = authenticated_session(settings)
         try:
-            rows = query_audit_graph(session, config, top=limit)
+            rows = query_audit_graph(
+                session,
+                config,
+                category=category,
+                target=app_selector,
+                lookback_hours=hours,
+                top=limit,
+            )
         finally:
             session.close()
-        if app_selector:
-            rows = tuple(
-                row for row in rows if app_selector.lower() in row.target.lower()
-            )
-    failures = set(settings["config"].fields.findings.audit_failure_results)
+    failures = set(config.fields.findings.audit_failure_results)
     if failures_only:
         rows = tuple(row for row in rows if row.result.lower() in failures)
     # The reason is only worth a column when something failed, and then it is
@@ -2083,7 +2121,7 @@ def logs_audit(
     show(
         rows,
         settings,
-        "Application management audit events",
+        audit_title(config, category),
         AUDIT_COLUMNS,
         "audit events",
         table_columns,
@@ -2096,7 +2134,11 @@ def logs_audit(
 
 
 @logs.command("signins")
-@click.option("--kind", default="interactive", help="Which sign in kind to read.")
+@click.option(
+    "--kind",
+    default="interactive",
+    help="Which sign in kind to read. Run entrascope logs kinds for the list.",
+)
 @click.option(
     "--route",
     type=click.Choice(ROUTES),
@@ -2137,11 +2179,10 @@ def logs_signins(
             require_workspace(workspace, config),
             kind=kind,
             app_id=app_id,
+            failures_only=failures_only,
             lookback_hours=hours,
             row_limit=limit,
         )
-        if failures_only:
-            rows = tuple(row for row in rows if row.failed())
     else:
         config, session, _ = authenticated_session(settings)
         try:
@@ -2151,6 +2192,7 @@ def logs_signins(
                 kind=kind,
                 app_id=app_id or None,
                 failures_only=failures_only,
+                lookback_hours=hours,
                 top=limit,
             )
         finally:
@@ -2198,6 +2240,37 @@ def logs_graph_activity(
         row_limit=limit,
     )
     show(rows, settings, "Microsoft Graph activity", GRAPH_ACTIVITY_COLUMNS, "requests")
+
+
+@logs.command("categories")
+@click.argument("category", required=False, default="")
+@click.pass_context
+@handled
+def logs_categories(context: click.Context, category: str) -> None:
+    """List the audit categories, or describe one of them.
+
+    Each is read with logs audit --category. Application management is the
+    default, because it is where changes to applications are recorded.
+    """
+    settings = settings_of(context)
+    config: Config = settings["config"]
+    default = config.tables.default_audit_category
+    rows = [
+        {
+            "category": name,
+            "graph_value": value or "every category",
+            "default": name == default,
+        }
+        for name, value in sorted(config.tables.audit_categories.items())
+        if not category or category == name
+    ]
+    if category and not rows:
+        known = ", ".join(sorted(config.tables.audit_categories))
+        raise ConfigError(
+            f"No audit category named {category}. Known categories: {known}."
+        )
+    columns = ("category", "graph_value", "default")
+    show(rows, settings, "Audit categories", columns, "categories")
 
 
 @logs.command("kinds")

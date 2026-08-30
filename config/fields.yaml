@@ -103,6 +103,7 @@ sign_in:
   failure_reason: status.failureReason
   additional_details: status.additionalDetails
   conditional_access_status: conditionalAccessStatus
+  correlation_id: correlationId
 
 audit:
   id: id
@@ -113,6 +114,7 @@ audit:
   activity_date_time: activityDateTime
   initiated_by: initiatedBy
   target_resources: targetResources
+  correlation_id: correlationId
 
 expiry:
   warning_days: 30

@@ -126,11 +126,29 @@ class SignInKind(_Frozen):
     graph_beta: bool = False
 
 
+class SignInFilters(_Frozen):
+    """The Graph clauses applied to every sign in kind alike."""
+
+    #: Narrows to one application. A filter applied after the rows arrive can
+    #: only narrow the newest rows.
+    graph_app_template: str = ""
+    #: Narrows to a period, for the same reason.
+    graph_since_template: str = ""
+    #: Keeps only the sign ins that failed.
+    graph_failures_filter: str = ""
+    #: What to sort by. A log read without an order is a log read in whatever
+    #: order the service felt like.
+    graph_order_by: str = ""
+
+
 class LogQuery(_Frozen):
     graph_filter_template: str
     diagnostic_category: str
     kql_template: str
     graph_supported: bool = True
+    graph_since_template: str = ""
+    graph_target_template: str = ""
+    graph_order_by: str = ""
 
 
 class LogDefaults(_Frozen):
@@ -143,6 +161,8 @@ class LogDefaults(_Frozen):
 class Tables(_Frozen):
     diagnostic_categories: tuple[DiagnosticCategory, ...]
     audit_categories: dict[str, str]
+    default_audit_category: str
+    sign_in_filters: SignInFilters
     sign_in_kinds: dict[str, SignInKind]
     log_queries: dict[str, LogQuery]
     workspace_id: str = ""
@@ -691,16 +711,51 @@ def kql_parameter(value: object) -> object:
     return kql_literal(str(value))
 
 
-def render_kql(template: str, parameters: dict[str, object]) -> str:
+#: A KQL identifier: a table or a column name. Nothing else may be substituted
+#: into a template unquoted.
+KQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def kql_identifier(value: str, what: str) -> str:
+    """Return a name safe to substitute into a template unquoted.
+
+    A table name is an identifier, not a string, so it cannot be quoted and
+    escaped like every other parameter. What makes that safe is that it comes
+    from configuration and is checked here against the shape an identifier is
+    allowed to have, so a template can never be handed a fragment of query.
+    """
+    if not KQL_IDENTIFIER.match(value):
+        raise ConfigError(
+            f"{value!r} is not a valid {what}. A table or column name may hold "
+            "only letters, digits and underscores, and may not begin with a "
+            "digit. Correct it in config/tables.yaml."
+        )
+    return value
+
+
+def render_kql(
+    template: str,
+    parameters: dict[str, object],
+    identifiers: Mapping[str, str] | None = None,
+) -> str:
     """Substitute named parameters into a KQL template.
 
     Queries are never assembled by concatenation, and every value is escaped
     here rather than at the call sites, because a call site is a place to
     forget.
+
+    Identifiers are the exception and are named separately so that the
+    exception is deliberate rather than accidental. A table name cannot be a
+    quoted literal, so each one is validated against the shape a name is
+    allowed to have and substituted as it is.
     """
-    escaped = {name: kql_parameter(value) for name, value in parameters.items()}
+    substitutions: dict[str, object] = {
+        name: kql_parameter(value) for name, value in parameters.items()
+    }
+    for name, value in (identifiers or {}).items():
+        substitutions[name] = kql_identifier(value, name)
     try:
-        return template.format(**escaped)
+        return template.format(**substitutions)
     except KeyError as error:
         raise ConfigError(
             f"KQL template needs a parameter that was not supplied: {error}."
