@@ -472,6 +472,7 @@ async def test_the_tools_take_the_arguments_the_commands_take(server: Any) -> No
         "discover_service_principals": {
             "app",
             "application_type",
+            "expiring_only",
             "include_first_party",
         },
         "sign_ins": {"kind", "app_id", "failures_only", "limit", "lookback_hours"},

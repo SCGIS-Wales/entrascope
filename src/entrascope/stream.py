@@ -36,7 +36,17 @@ from entrascope.logs import (
     sign_in_kinds,
 )
 from entrascope.models import ApiCallError, AuditEvent, SignInEvent
-from entrascope.picker import Scheme, hide_cursor, start_colour
+from entrascope.picker import (
+    DOWN_KEYS,
+    PAGE,
+    QUIT_KEYS,
+    SEARCH_KEYS,
+    UP_KEYS,
+    Scheme,
+    hide_cursor,
+    start_colour,
+    typed,
+)
 from entrascope.redaction import redact_with_config
 from entrascope.render import flatten, format_timestamp
 
@@ -58,12 +68,6 @@ FLOORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("errors only", ("error",)),
 )
 
-DOWN_KEYS = (curses.KEY_DOWN, ord("j"))
-UP_KEYS = (curses.KEY_UP, ord("k"))
-QUIT_KEYS = (27, ord("q"))
-SEARCH_KEYS = (ord("/"),)
-BACKSPACE_KEYS = (curses.KEY_BACKSPACE, 127, 8)
-PAGE = 10
 
 #: How long the view waits for a key before drawing again. Short enough that
 #: an arriving event appears at once, long enough not to spin.
@@ -548,14 +552,9 @@ def run(
                     searching = False
                     continue
                 if searching:
-                    if key in BACKSPACE_KEYS:
-                        term = term[:-1]
-                    elif key == 27:
-                        term, searching = "", False
-                    elif 32 <= key < 127:
-                        character = chr(key)
-                        if not (character == "/" and not term):
-                            term += character
+                    outcome = typed(key, term)
+                    term, searching = outcome.term, outcome.searching
+                    if outcome.reset:
                         selected = 0
                     continue
                 if key in QUIT_KEYS:

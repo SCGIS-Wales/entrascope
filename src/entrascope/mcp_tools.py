@@ -333,6 +333,7 @@ def register_tools(
         app: str = "",
         filter_expression: str | None = None,
         application_type: str | None = None,
+        expiring_only: bool = False,
         include_first_party: bool = False,
         with_details: bool = True,
     ) -> list[dict[str, Any]]:
@@ -347,9 +348,10 @@ def register_tools(
             )
         if not include_first_party:
             rows = tuple(row for row in rows if not is_first_party(row, config))
-        return list(
-            payload(narrowed(rows, app, application_type, matches_principal), config)
-        )
+        found = narrowed(rows, app, application_type, matches_principal)
+        if expiring_only:
+            found = tuple(row for row in found if row.expiring())
+        return list(payload(found, config))
 
     default_category = config.tables.default_audit_category
     known_categories = ", ".join(audit_categories(config))

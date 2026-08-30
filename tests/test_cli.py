@@ -1802,3 +1802,48 @@ def test_leaving_a_list_without_a_terminal_says_how_to_narrow_it(
         module.browse(
             catalogue, build_session(config), config, lambda: "token", [], "yaml"
         )
+
+
+@responses.activate
+def test_expiring_narrows_enterprise_applications_too(authenticated: None) -> None:
+    """A SAML signing certificate is a credential, and when it goes sign on stops."""
+    responses.add(
+        responses.GET,
+        f"{ROOT}/servicePrincipals",
+        json={
+            "value": [
+                {
+                    "id": "sp-1",
+                    "appId": "app-1",
+                    "displayName": "Expiring SAML",
+                    "servicePrincipalType": "Application",
+                    "preferredSingleSignOnMode": "saml",
+                    "keyCredentials": [
+                        {"keyId": "k", "endDateTime": "2020-01-01T00:00:00Z"}
+                    ],
+                },
+                {
+                    "id": "sp-2",
+                    "appId": "app-2",
+                    "displayName": "Healthy",
+                    "servicePrincipalType": "Application",
+                    "keyCredentials": [
+                        {"keyId": "k2", "endDateTime": "2099-01-01T00:00:00Z"}
+                    ],
+                },
+            ]
+        },
+        status=200,
+    )
+    result = run(
+        [
+            "--auth",
+            "file",
+            "inspect",
+            "enterprise-apps",
+            "--no-details",
+            "--expiring",
+        ]
+    )
+    assert "Expiring SAML" in result.output
+    assert "Healthy" not in result.output

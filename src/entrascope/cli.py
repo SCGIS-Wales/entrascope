@@ -697,6 +697,11 @@ EVERYTHING_HELP = (
     "managed identities Azure creates for its own resources. A tenant holds "
     "hundreds of both and they are almost never what somebody is looking for."
 )
+EXPIRING_PRINCIPAL_HELP = (
+    "Show only enterprise applications with a credential expiring or already "
+    "expired. A SAML signing certificate is one of these, and when it goes "
+    "single sign on stops for everybody at once."
+)
 FIRST_PARTY_HELP = (
     "Include Microsoft first party enterprise applications. A tenant carries "
     "hundreds and they are Microsoft's to manage, so they are excluded by "
@@ -1974,6 +1979,7 @@ def discover_apps(
 @click.option("--filter", "filter_expression", default=None, help=FILTER_HELP)
 @click.option("--type", "application_type", default=None, help=TYPE_HELP)
 @click.option("--app", "app_selector", default="", help=APP_SELECTOR_HELP)
+@click.option("--expiring", is_flag=True, help=EXPIRING_PRINCIPAL_HELP)
 @click.option(
     "--no-details",
     is_flag=True,
@@ -1987,6 +1993,7 @@ def discover_service_principals_command(
     filter_expression: str | None,
     application_type: str | None,
     app_selector: str,
+    expiring: bool,
     no_details: bool,
     include_first_party: bool,
 ) -> None:
@@ -2003,6 +2010,8 @@ def discover_service_principals_command(
     if not include_first_party:
         rows = tuple(row for row in rows if not is_first_party(row, config))
     rows = narrowed(rows, app_selector, application_type, matches_principal)
+    if expiring:
+        rows = tuple(row for row in rows if row.expiring())
     show(
         rows,
         settings,
